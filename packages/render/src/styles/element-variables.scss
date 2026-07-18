@@ -6,6 +6,8 @@
  * 再通过 CSS 变量做运行时微调。
  */
 
+@use "sass:color";
+
 // ==================== 主色调 ====================
 // AI 科技蓝 + 紫色点缀
 $colors: (
@@ -22,12 +24,12 @@ $colors: (
     --el-color-#{$type}: #{$color};
 
     // 浅色变体（用于 hover、轻量背景等）
-    --el-color-#{$type}-light-3: #{mix(white, $color, 30%)};
-    --el-color-#{$type}-light-5: #{mix(white, $color, 50%)};
-    --el-color-#{$type}-light-7: #{mix(white, $color, 70%)};
-    --el-color-#{$type}-light-8: #{mix(white, $color, 80%)};
-    --el-color-#{$type}-light-9: #{mix(white, $color, 90%)};
-    --el-color-#{$type}-dark-2: #{mix(black, $color, 20%)};
+    --el-color-#{$type}-light-3: #{color.mix(white, $color, 30%)};
+    --el-color-#{$type}-light-5: #{color.mix(white, $color, 50%)};
+    --el-color-#{$type}-light-7: #{color.mix(white, $color, 70%)};
+    --el-color-#{$type}-light-8: #{color.mix(white, $color, 80%)};
+    --el-color-#{$type}-light-9: #{color.mix(white, $color, 90%)};
+    --el-color-#{$type}-dark-2: #{color.mix(black, $color, 20%)};
   }
 
   // ==================== 背景 & 文字 ====================
