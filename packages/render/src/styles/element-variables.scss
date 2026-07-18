@@ -1,0 +1,89 @@
+/**
+ * AI-Zen Desktop — Element Plus 定制主题
+ *
+ * 深色科技风，适合 AI 工作台产品调性。
+ * 覆盖 Element Plus 的 SCSS 变量实现主色调定制，
+ * 再通过 CSS 变量做运行时微调。
+ */
+
+// ==================== 主色调 ====================
+// AI 科技蓝 + 紫色点缀
+$colors: (
+  "primary": #6366f1,    // 靛蓝紫 — 主色
+  "success": #22d3ee,    // 青色
+  "warning": #fbbf24,    // 琥珀
+  "danger":  #f87171,    // 珊瑚红
+  "info":    #64748b,    // 石板灰
+);
+
+// 将颜色转为 CSS 变量（用于运行时覆盖）
+:root {
+  @each $type, $color in $colors {
+    --el-color-#{$type}: #{$color};
+
+    // 浅色变体（用于 hover、轻量背景等）
+    --el-color-#{$type}-light-3: #{mix(white, $color, 30%)};
+    --el-color-#{$type}-light-5: #{mix(white, $color, 50%)};
+    --el-color-#{$type}-light-7: #{mix(white, $color, 70%)};
+    --el-color-#{$type}-light-8: #{mix(white, $color, 80%)};
+    --el-color-#{$type}-light-9: #{mix(white, $color, 90%)};
+    --el-color-#{$type}-dark-2: #{mix(black, $color, 20%)};
+  }
+
+  // ==================== 背景 & 文字 ====================
+  --el-bg-color: #0f0f1a;
+  --el-bg-color-overlay: #1a1a2e;
+  --el-bg-color-page: #0a0a14;
+  --el-text-color-primary: #e2e8f0;
+  --el-text-color-regular: #cbd5e1;
+  --el-text-color-secondary: #94a3b8;
+  --el-text-color-placeholder: #64748b;
+  --el-border-color: #2d2d44;
+  --el-border-color-light: #1e1e32;
+  --el-border-color-lighter: #18182a;
+  --el-border-color-extra-light: #141425;
+
+  // ==================== 填充 ====================
+  --el-fill-color: #1a1a2e;
+  --el-fill-color-light: #1e1e32;
+  --el-fill-color-lighter: #22223a;
+  --el-fill-color-blank: #0f0f1a;
+
+  // ==================== 其他 ====================
+  --el-border-radius-base: 8px;
+  --el-border-radius-small: 6px;
+  --el-font-size-base: 14px;
+  --el-font-size-small: 13px;
+  --el-font-size-large: 16px;
+
+  // ==================== 遮罩 & 阴影 ====================
+  --el-mask-color: rgba(0, 0, 0, 0.6);
+  --el-box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  --el-box-shadow-light: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+// ==================== 全局样式微调 ====================
+html, body, #app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background-color: var(--el-bg-color-page);
+  color: var(--el-text-color-primary);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans SC", sans-serif;
+}
+
+// 滚动条美化
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--el-border-color);
+  border-radius: 3px;
+  &:hover {
+    background: var(--el-text-color-secondary);
+  }
+}

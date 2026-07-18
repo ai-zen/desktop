@@ -6,13 +6,16 @@
   "scripts": {
     "build": "rolldown -c rolldown.config.mjs",
     "dev": "rolldown -c rolldown.config.mjs --watch",
-    "start": "electron dist/main.mjs"
+    "start": "electron --remote-debugging-port=9222 dist/main.mjs"
   },
   "dependencies": {
     "@ai-zen/agents-sdk": "^0.2.0-alpha.2",
-    "@ai-zen/desktop-shared": "workspace:*"
+    "@ai-zen/desktop-shared": "workspace:*",
+    "ws": "^8.21.1"
   },
   "devDependencies": {
+    "@types/ws": "^8.18.1",
+    "cross-env": "^10.1.0",
     "electron": "^43.1.1",
     "rolldown": "^1.2.0",
     "typescript": "^5.3.3"

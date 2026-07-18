@@ -1,0 +1,84 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "type": "npm",
+      "script": "dev:render",
+      "path": ".",
+      "problemMatcher": {
+        "pattern": [
+          {
+            "regexp": "^([^\\s].*)$",
+            "file": 1
+          },
+          {
+            "regexp": "^\\s+(\\d+):(\\d+)\\s+(error|warning|info)\\s+(.*)\\s\\s+(.*)$",
+            "line": 1,
+            "column": 2,
+            "severity": 3,
+            "message": 4,
+            "code": 5
+          }
+        ],
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "VITE",
+          "endsPattern": "(ready in)|(hmr update)"
+        }
+      },
+      "isBackground": true,
+      "label": "npm: dev:render",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "build"
+      }
+    },
+    {
+      "type": "npm",
+      "script": "dev:main",
+      "path": ".",
+      "problemMatcher": {
+        "pattern": [
+          {
+            "regexp": "^([^\\s].*)$",
+            "file": 1
+          },
+          {
+            "regexp": "^\\s+(\\d+):(\\d+)\\s+(error|warning|info)\\s+(.*)\\s\\s+(.*)$",
+            "line": 1,
+            "column": 2,
+            "severity": 3,
+            "message": 4,
+            "code": 5
+          }
+        ],
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "building",
+          "endsPattern": "Build completed|built in"
+        }
+      },
+      "isBackground": true,
+      "label": "npm: dev:main",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "build"
+      }
+    },
+    {
+      "label": "tasks: pre-launch",
+      "group": "build",
+      "dependsOn": [
+        "npm: dev:main",
+        "npm: dev:render"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "build"
+      }
+    }
+  ]
+}

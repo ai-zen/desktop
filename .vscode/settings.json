@@ -1,0 +1,21 @@
+{
+  "cSpell.words": [
+    "ai-zen",
+    "rolldown",
+    "preload",
+    "Pinia",
+    "ElementPlus",
+    "ElementPlusResolver",
+    "contextBridge",
+    "ipcRenderer",
+    "webContents",
+    "DESKTOP_DIR",
+    "CONVERSATIONS_DIR"
+  ],
+  // 推荐插件
+  "extensions": [
+    "Vue.volar",
+    "dbaeumer.vscode-eslint",
+    "esbenp.prettier-vscode"
+  ]
+}

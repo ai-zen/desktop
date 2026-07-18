@@ -1,6 +1,10 @@
 node_modules
 dist
 *.local
-.vscode
+# .vscode
 .idea
 *.log
+
+# 临时文件
+*.vue.js
+components.d.ts
