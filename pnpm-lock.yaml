@@ -11,8 +11,8 @@ importers:
   packages/main:
     dependencies:
       '@ai-zen/agents-sdk':
-        specifier: ^0.1.0
-        version: 0.1.0(zod@4.4.3)
+        specifier: ^0.2.0-alpha.2
+        version: 0.2.0-alpha.2(zod@4.4.3)
       '@ai-zen/desktop-shared':
         specifier: workspace:*
         version: link:../shared
@@ -53,11 +53,11 @@ importers:
 
 packages:
 
-  '@ai-zen/agents-core@2.6.0':
-    resolution: {integrity: sha512-/h4iSxTgskthsUOGyTmquAYVteyEdc9cCN/BJW4tpI0voelfkCKPq+wY1SSMBtapR/yxTD/tkTJFhFbJn7FPPg==}
+  '@ai-zen/agents-core@3.0.0-alpha.2':
+    resolution: {integrity: sha512-KByN+fLwGPU47tQeL4MJB96+czLDr6GRgtdJJeSZg/oDuvU4N0AA5f6sQjfQehRiIE+ELUrsqUOMkZLmnYGouw==}
 
-  '@ai-zen/agents-sdk@0.1.0':
-    resolution: {integrity: sha512-iquTqtWDMNu3i01ObT9qF0jLnXyzLiItlJpPzKF8SsrmfG508tglHOP17ynxJ1O1cJLIUPoWaZcmpvHqcHyDhQ==}
+  '@ai-zen/agents-sdk@0.2.0-alpha.2':
+    resolution: {integrity: sha512-hvHbwt1MVLznsLi6SUj5sqDRXVOoOl6durzlZ8yusvzjd/x+bF125XcuU4BrvPpolazpdMZK0VtcDhWAATJ0Qg==}
 
   '@ai-zen/async-queue@1.4.0':
     resolution: {integrity: sha512-+LPm6OQl38WqMMzdSqOCWHQw9R5VIumnNEJOj9kTpCZzJAEXlQUCVXwdNzhriVy6kv6fRIEl2E/Gwuh4LdgzrQ==}
@@ -1025,7 +1025,7 @@ packages:
 
 snapshots:
 
-  '@ai-zen/agents-core@2.6.0':
+  '@ai-zen/agents-core@3.0.0-alpha.2':
     dependencies:
       '@ai-zen/async-queue': 1.4.0
       '@ai-zen/event-bus': 1.1.0
@@ -1034,9 +1034,9 @@ snapshots:
     transitivePeerDependencies:
       - encoding
 
-  '@ai-zen/agents-sdk@0.1.0(zod@4.4.3)':
+  '@ai-zen/agents-sdk@0.2.0-alpha.2(zod@4.4.3)':
     dependencies:
-      '@ai-zen/agents-core': 2.6.0
+      '@ai-zen/agents-core': 3.0.0-alpha.2
       '@modelcontextprotocol/sdk': 1.29.0(zod@4.4.3)
       dayjs: 1.11.21
     transitivePeerDependencies:

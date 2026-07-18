@@ -9,7 +9,7 @@
     "start": "electron dist/main.mjs"
   },
   "dependencies": {
-    "@ai-zen/agents-sdk": "^0.1.0",
+    "@ai-zen/agents-sdk": "^0.2.0-alpha.2",
     "@ai-zen/desktop-shared": "workspace:*"
   },
   "devDependencies": {
