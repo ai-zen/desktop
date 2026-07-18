@@ -1,0 +1,12 @@
+{
+  "name": "@ai-zen/desktop-workspace",
+  "private": true,
+  "scripts": {
+    "build:main": "pnpm --filter @ai-zen/desktop-main build",
+    "build:render": "pnpm --filter @ai-zen/desktop-render build",
+    "build": "pnpm build:render && pnpm build:main",
+    "dev:render": "pnpm --filter @ai-zen/desktop-render dev",
+    "dev:main": "pnpm --filter @ai-zen/desktop-main dev",
+    "start": "pnpm --filter @ai-zen/desktop-main start"
+  }
+}

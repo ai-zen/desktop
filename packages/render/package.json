@@ -1,0 +1,20 @@
+{
+  "name": "@ai-zen/desktop-render",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@ai-zen/desktop-shared": "workspace:*",
+    "vue": "^3.5.40"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.8",
+    "typescript": "^5.3.3",
+    "vite": "^8.1.5",
+    "vue-tsc": "^2.2.0"
+  }
+}

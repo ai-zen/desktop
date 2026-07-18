@@ -1,0 +1,7 @@
+{
+  "name": "@ai-zen/desktop-shared",
+  "private": true,
+  "type": "module",
+  "main": "src/types.ts",
+  "scripts": {}
+}
