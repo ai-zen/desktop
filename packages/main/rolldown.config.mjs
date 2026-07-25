@@ -13,11 +13,8 @@ export default defineConfig([
   {
     input: "src/preload.ts",
     output: {
-      format: "iife",
+      format: "cjs",
       file: "dist/preload.js",
-      globals: {
-        "electron/renderer": "electron_renderer",
-      },
     },
     platform: "browser",
     external: ["electron", "electron/renderer"],

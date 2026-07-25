@@ -5,7 +5,7 @@
       "type": "node",
       "request": "launch",
       "name": "Electron Main",
-      "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron",
+      "runtimeExecutable": "${workspaceFolder}/packages/main/node_modules/.bin/electron",
       "runtimeArgs": [
         "${workspaceFolder}/packages/main/dist/main.mjs"
       ],
@@ -16,7 +16,7 @@
         "NODE_ENV": "development"
       },
       "windows": {
-        "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd"
+        "runtimeExecutable": "${workspaceFolder}/packages/main/node_modules/.bin/electron.cmd"
       }
     }
   ]
