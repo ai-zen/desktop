@@ -16,6 +16,8 @@ import ChatPanel from "./components/ChatPanel.vue";
 .app-container {
   height: 100vh;
   overflow: hidden;
+  padding: 8px;
+  gap: 8px;
 }
 
 .main-area {
@@ -23,5 +25,6 @@ import ChatPanel from "./components/ChatPanel.vue";
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  border-radius: 12px;
 }
 </style>

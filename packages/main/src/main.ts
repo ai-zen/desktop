@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, nativeTheme } from "electron";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { existsSync, mkdirSync } from "fs";
@@ -38,6 +38,7 @@ function createMainWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1200,
     height: 800,
+    backgroundMaterial: "mica",
     webPreferences: {
       preload: join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -47,7 +48,7 @@ function createMainWindow(): BrowserWindow {
 
   if (process.env.NODE_ENV === "development") {
     win.loadURL("http://localhost:5173");
-    win.webContents.openDevTools();
+    win.webContents.openDevTools({ mode: "detach" });
   } else {
     win.loadFile(join(__dirname, "static", "index.html"));
   }
@@ -57,6 +58,9 @@ function createMainWindow(): BrowserWindow {
 
 app.whenReady().then(async () => {
   ensureDataDirs();
+
+  // 窗口外观跟随系统设置
+  nativeTheme.themeSource = "system";
 
   // 去掉默认菜单栏
   Menu.setApplicationMenu(null);

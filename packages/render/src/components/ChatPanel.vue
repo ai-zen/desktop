@@ -244,6 +244,9 @@ watch(activeConversationId, async (newId) => {
   flex-direction: column;
   height: 100%;
   background-color: var(--el-bg-color-page);
+  border: 1px solid var(--el-border-color);
+  border-radius: 12px;
+  overflow: hidden;
 }
 
 // ==================== 空状态 ====================

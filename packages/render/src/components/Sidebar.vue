@@ -203,8 +203,10 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   background-color: var(--el-bg-color);
-  border-right: 1px solid var(--el-border-color);
+  border: 1px solid var(--el-border-color);
+  border-radius: 12px;
   user-select: none;
+  overflow: hidden;
 }
 
 .sidebar-header {
