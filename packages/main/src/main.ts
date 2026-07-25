@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, ipcMain, Menu } from "electron";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { existsSync, mkdirSync } from "fs";
@@ -57,6 +57,9 @@ function createMainWindow(): BrowserWindow {
 
 app.whenReady().then(async () => {
   ensureDataDirs();
+
+  // 去掉默认菜单栏
+  Menu.setApplicationMenu(null);
 
   // 注册通用 IPC handler
   ipcMain.handle("invoke", (_event, service: string, method: string, ...args: unknown[]) => {
