@@ -7,6 +7,7 @@
       "name": "Electron Main",
       "runtimeExecutable": "${workspaceFolder}/packages/main/node_modules/.bin/electron",
       "runtimeArgs": [
+        "--remote-debugging-port=9222",
         "${workspaceFolder}/packages/main/dist/main.mjs"
       ],
       "cwd": "${workspaceFolder}",
