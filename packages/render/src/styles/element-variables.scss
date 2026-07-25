@@ -51,10 +51,10 @@ $colors: (
   --el-fill-color-blank: rgba(255, 255, 255, 0.15);
 
   // 覆盖 Element Plus 组件背景
-  --el-dialog-bg-color: var(--el-bg-color-overlay);
-  --el-popup-bg-color: var(--el-bg-color-overlay);
-  --el-dropdown-menu-bg-color: var(--el-bg-color-overlay);
-  --el-select-dropdown-bg-color: var(--el-bg-color-overlay);
+  --el-dialog-bg-color: rgba(248, 250, 252, 0.92);
+  --el-popup-bg-color: rgba(248, 250, 252, 0.85);
+  --el-dropdown-menu-bg-color: rgba(248, 250, 252, 0.7);
+  --el-select-dropdown-bg-color: rgba(248, 250, 252, 0.7);
   --el-input-bg-color: rgba(255, 255, 255, 0.12);
   --el-input-focus-bg-color: rgba(255, 255, 255, 0.20);
   --el-input-hover-border-color: var(--el-color-primary);
@@ -79,6 +79,21 @@ $colors: (
   --el-mask-color: rgba(0, 0, 0, 0.3);
   --el-box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
   --el-box-shadow-light: 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+
+// 直接覆盖 Element Plus 组件上的变量（组件内部会重定义，:root 层级不够）
+.el-dialog {
+  --el-dialog-bg-color: rgba(248, 250, 252, 0.92);
+}
+.el-overlay-dialog {
+  --el-dialog-bg-color: rgba(248, 250, 252, 0.92);
+}
+.el-input,
+.el-textarea {
+  --el-input-border-color: rgba(148, 163, 184, 0.6);
+}
+.el-select {
+  --el-select-input-focus-border-color: var(--el-color-primary);
 }
 
 // ==================== 深色主题（跟随系统） ====================
@@ -106,10 +121,10 @@ $colors: (
     --el-fill-color-blank: rgba(15, 15, 26, 0.15);
 
     // 覆盖 Element Plus 组件背景
-    --el-dialog-bg-color: var(--el-bg-color-overlay);
-    --el-popup-bg-color: var(--el-bg-color-overlay);
-    --el-dropdown-menu-bg-color: var(--el-bg-color-overlay);
-    --el-select-dropdown-bg-color: var(--el-bg-color-overlay);
+    --el-dialog-bg-color: rgba(26, 26, 46, 0.92);
+    --el-popup-bg-color: rgba(26, 26, 46, 0.85);
+    --el-dropdown-menu-bg-color: rgba(26, 26, 46, 0.7);
+    --el-select-dropdown-bg-color: rgba(26, 26, 46, 0.7);
     --el-input-bg-color: rgba(15, 15, 26, 0.12);
     --el-input-focus-bg-color: rgba(15, 15, 26, 0.20);
     --el-input-hover-border-color: var(--el-color-primary);
@@ -127,6 +142,17 @@ $colors: (
     --el-mask-color: rgba(0, 0, 0, 0.5);
     --el-box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
     --el-box-shadow-light: 0 2px 8px rgba(0, 0, 0, 0.2);
+  }
+
+  .el-dialog {
+    --el-dialog-bg-color: rgba(26, 26, 46, 0.92);
+  }
+  .el-overlay-dialog {
+    --el-dialog-bg-color: rgba(26, 26, 46, 0.92);
+  }
+  .el-input,
+  .el-textarea {
+    --el-input-border-color: rgba(100, 116, 139, 0.5);
   }
 }
 
