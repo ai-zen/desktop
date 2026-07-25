@@ -104,7 +104,7 @@ pnpm start
 ## 开发文档
 
 - [Electron 环境搭建](docs/electron-setup.md) — 首次搭建、二进制下载失败处理、path.txt 注意事项
-- [CDP 远程调试](docs/cdp-debug.md) — 通过 Chrome DevTools Protocol 调试 Electron 页面
+- [CDP 远程调试](docs/cdp-debug.md) — 通过 Chrome DevTools Protocol 调试 Electron 页面（推荐使用 `.ai-zen/tools/` 中的 CDP 工具集）
 
 ## License
 
