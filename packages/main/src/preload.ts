@@ -12,6 +12,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.removeListener(channel, callback);
   },
 
+  // 原生目录选择器（默认桌面，记住上次选择）
+  selectDirectory: () => ipcRenderer.invoke("dialog:selectDirectory"),
+
   // 窗口控制
   window: {
     minimize: () => ipcRenderer.invoke("window:minimize"),

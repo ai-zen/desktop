@@ -87,7 +87,11 @@
           <el-input v-model="wsForm.name" placeholder="工作空间名称" @keyup.enter="confirmAddWorkspace" />
         </el-form-item>
         <el-form-item label="目录">
-          <el-input v-model="wsForm.cwd" placeholder="工作目录路径" @keyup.enter="confirmAddWorkspace" />
+          <el-input v-model="wsForm.cwd" placeholder="选填，默认使用桌面" @keyup.enter="confirmAddWorkspace">
+            <template #append>
+              <el-button :icon="Folder" @click="pickWorkspaceDir">选择</el-button>
+            </template>
+          </el-input>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -138,6 +142,7 @@ import {
   ChatDotRound,
   ChatLineSquare,
   WarningFilled,
+  Folder,
 } from "@element-plus/icons-vue";
 import NewChatDialog from "./NewChatDialog.vue";
 import { useWorkspaceStore } from "../../stores/workspace.js";
@@ -205,6 +210,11 @@ function onNodeClick(data: TreeNode) {
 }
 
 // ----- workspace CRUD -----
+async function pickWorkspaceDir() {
+  const dir = await window.electronAPI.selectDirectory();
+  if (dir) wsForm.cwd = dir;
+}
+
 async function confirmAddWorkspace() {
   if (!wsForm.name.trim()) return;
   await workspaceStore.create({

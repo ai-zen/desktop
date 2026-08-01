@@ -5,7 +5,7 @@
  * 待接入：Conversation / Chat 服务（Provider 池、流式推送）。
  */
 
-import { app, BrowserWindow, ipcMain, Menu, nativeTheme } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme } from "electron";
 import { join } from "path";
 import { fileURLToPath } from "url";
 import { existsSync, mkdirSync } from "fs";
@@ -29,6 +29,9 @@ function ensureDataDirs() {
   }
 }
 
+/** 目录选择器记住的上次位置（默认桌面） */
+let lastSelectedDir: string | null = null;
+
 // ==================== 服务组装（手动 DI） ====================
 
 const configManager = new ConfigManager(CONFIG_FILE);
@@ -38,7 +41,10 @@ const agentRepository = new AgentRepository(AGENTS_DIR);
 let mainWindow: BrowserWindow | null = null;
 
 const servicesManager = new ServicesManager({
-  workspace: new WorkspaceService(new WorkspaceRepository(WORKSPACES_DIR)),
+  workspace: new WorkspaceService(
+    new WorkspaceRepository(WORKSPACES_DIR),
+    () => app.getPath("desktop"),
+  ),
   conversation: new ConversationService(
     new ConversationRepository(CONVERSATIONS_DIR),
     agentRepository,
@@ -116,6 +122,20 @@ app.whenReady().then(async () => {
 
   ipcMain.handle("window:isMaximized", (event) => {
     return BrowserWindow.fromWebContents(event.sender)?.isMaximized() ?? false;
+  });
+
+  // ==================== 原生目录选择器 ====================
+  ipcMain.handle("dialog:selectDirectory", async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win) return null;
+    const result = await dialog.showOpenDialog(win, {
+      title: "选择工作空间目录",
+      defaultPath: lastSelectedDir ?? app.getPath("desktop"),
+      properties: ["openDirectory", "createDirectory"],
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    lastSelectedDir = result.filePaths[0];
+    return lastSelectedDir;
   });
 
   // ==================== 创建窗口 ====================

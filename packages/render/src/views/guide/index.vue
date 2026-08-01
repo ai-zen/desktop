@@ -40,9 +40,13 @@
         <el-form-item label="目录">
           <el-input
             v-model="form.cwd"
-            placeholder="工作目录路径（本地目录）"
+            placeholder="选填，默认使用桌面"
             @keyup.enter="handleCreate"
-          />
+          >
+            <template #append>
+              <el-button :icon="Folder" @click="pickDirectory">选择</el-button>
+            </template>
+          </el-input>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -57,7 +61,7 @@
 
 <script setup lang="ts">
 import { ref, reactive } from "vue";
-import { Plus, MagicStick } from "@element-plus/icons-vue";
+import { Plus, MagicStick, Folder } from "@element-plus/icons-vue";
 import { useWorkspaceStore } from "../../stores/workspace.js";
 import { useUiStore } from "../../stores/ui.js";
 
@@ -71,10 +75,15 @@ function openForm() {
   showForm.value = true;
 }
 
+async function pickDirectory() {
+  const dir = await window.electronAPI.selectDirectory();
+  if (dir) form.cwd = dir;
+}
+
 async function handleCreate() {
   if (!form.name.trim()) return;
   const name = form.name.trim();
-  const cwd = form.cwd.trim() || "C:/Projects/" + name.replace(/[\\/:*?"<>|]/g, "_");
+  const cwd = form.cwd.trim();
 
   await workspaceStore.create({ name, cwd });
   form.name = "";

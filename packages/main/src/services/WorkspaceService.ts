@@ -7,14 +7,22 @@ import type { Workspace } from "@ai-zen/desktop-shared";
 import type { WorkspaceRepository } from "../storage/WorkspaceRepository.js";
 
 export class WorkspaceService {
-  constructor(private repo: WorkspaceRepository) {}
+  constructor(
+    private repo: WorkspaceRepository,
+    /** 用户不填目录时的默认工作目录（main 侧注入，如桌面） */
+    private defaultCwd: () => string,
+  ) {}
 
   async list(): Promise<Workspace[]> {
     return this.repo.list();
   }
 
   async create(name: string, cwd: string): Promise<Workspace> {
-    const workspace: Workspace = { id: randomUUID(), name, cwd };
+    const workspace: Workspace = {
+      id: randomUUID(),
+      name,
+      cwd: cwd?.trim() || this.defaultCwd(),
+    };
     await this.repo.write(workspace);
     return workspace;
   }

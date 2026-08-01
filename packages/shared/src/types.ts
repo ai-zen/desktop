@@ -88,6 +88,8 @@ export interface ElectronAPI {
   on: (channel: string, callback: (...args: unknown[]) => void) => void;
   /** 取消监听 */
   off: (channel: string, callback: (...args: unknown[]) => void) => void;
+  /** 打开原生目录选择器，返回选中路径（取消则 null） */
+  selectDirectory: () => Promise<string | null>;
   /** 窗口控制 */
   window: WindowControls;
 }
