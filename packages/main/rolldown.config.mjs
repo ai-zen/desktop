@@ -6,6 +6,7 @@ export default defineConfig([
     output: {
       format: "esm",
       file: "dist/main.mjs",
+      sourcemap: true,
     },
     platform: "node",
     external: ["electron", "@ai-zen/agents-sdk", "@ai-zen/desktop-shared"],
@@ -15,6 +16,7 @@ export default defineConfig([
     output: {
       format: "cjs",
       file: "dist/preload.js",
+      sourcemap: true,
     },
     platform: "browser",
     external: ["electron", "electron/renderer"],

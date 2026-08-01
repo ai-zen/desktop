@@ -2,9 +2,11 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "type": "npm",
-      "script": "dev:render",
-      "path": ".",
+      "label": "compile:render",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["--filter", "@ai-zen/desktop-render", "dev"],
+      "isBackground": true,
       "problemMatcher": {
         "pattern": [
           {
@@ -26,8 +28,6 @@
           "endsPattern": "(ready in)|(hmr update)"
         }
       },
-      "isBackground": true,
-      "label": "npm: dev:render",
       "presentation": {
         "reveal": "always",
         "panel": "dedicated",
@@ -35,9 +35,11 @@
       }
     },
     {
-      "type": "npm",
-      "script": "dev:main",
-      "path": ".",
+      "label": "compile:main",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["--filter", "@ai-zen/desktop-main", "dev"],
+      "isBackground": true,
       "problemMatcher": {
         "pattern": [
           {
@@ -59,8 +61,6 @@
           "endsPattern": "Rebuilt|Build completed|built in"
         }
       },
-      "isBackground": true,
-      "label": "npm: dev:main",
       "presentation": {
         "reveal": "always",
         "panel": "dedicated",
@@ -71,8 +71,8 @@
       "label": "tasks: pre-launch",
       "group": "build",
       "dependsOn": [
-        "npm: dev:main",
-        "npm: dev:render"
+        "compile:main",
+        "compile:render"
       ],
       "presentation": {
         "reveal": "always",

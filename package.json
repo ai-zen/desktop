@@ -5,8 +5,10 @@
     "build:main": "pnpm --filter @ai-zen/desktop-main build",
     "build:render": "pnpm --filter @ai-zen/desktop-render build",
     "build": "pnpm build:render && pnpm build:main",
-    "dev:render": "pnpm --filter @ai-zen/desktop-render dev",
-    "dev:main": "pnpm --filter @ai-zen/desktop-main dev",
-    "start": "pnpm --filter @ai-zen/desktop-main start"
+    "dev": "node scripts/dev.mjs"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.4",
+    "nodemon": "^3.1.14"
   }
 }

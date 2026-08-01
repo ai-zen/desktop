@@ -1,13 +1,5 @@
 <template>
   <el-aside width="280px" class="sidebar">
-    <!-- 头部 -->
-    <div class="sidebar-header">
-      <el-icon :size="22" color="var(--el-color-primary)">
-        <MagicStick />
-      </el-icon>
-      <span class="app-title">AI-Zen</span>
-    </div>
-
     <!-- Workspace 选择器 -->
     <div class="section">
       <div class="section-title">
@@ -45,6 +37,26 @@
             <span v-if="data.type === 'conversation'" class="msg-count">
               {{ data.messageCount || 0 }}
             </span>
+
+            <!-- Workspace 悬停操作按钮 -->
+            <span v-if="data.type === 'workspace'" class="node-actions" @click.stop>
+              <el-tooltip content="重命名" placement="top">
+                <el-button
+                  :icon="Edit"
+                  size="small"
+                  text
+                  @click="openRenameDialog(data)"
+                />
+              </el-tooltip>
+              <el-tooltip content="删除" placement="top">
+                <el-button
+                  :icon="Delete"
+                  size="small"
+                  text
+                  @click="openDeleteConfirm(data)"
+                />
+              </el-tooltip>
+            </span>
           </span>
         </template>
       </el-tree>
@@ -63,7 +75,7 @@
       </el-button>
     </div>
 
-    <!-- 新建 Workspace 对话框 -->
+    <!-- ========== 新建 Workspace 对话框 ========== -->
     <el-dialog
       v-model="showAddWorkspace"
       title="新建工作空间"
@@ -72,7 +84,11 @@
     >
       <el-form :model="workspaceForm" label-width="80px">
         <el-form-item label="名称" required>
-          <el-input v-model="workspaceForm.name" placeholder="输入工作空间名称" />
+          <el-input
+            v-model="workspaceForm.name"
+            placeholder="输入工作空间名称"
+            @keyup.enter="handleAddWorkspace"
+          />
         </el-form-item>
         <el-form-item label="路径">
           <el-input v-model="workspaceForm.path" placeholder="可选：工作目录路径" />
@@ -83,12 +99,62 @@
         <el-button type="primary" @click="handleAddWorkspace">确定</el-button>
       </template>
     </el-dialog>
+
+    <!-- ========== 重命名 Workspace 对话框 ========== -->
+    <el-dialog
+      v-model="showRenameDialog"
+      title="重命名工作空间"
+      width="400px"
+      :close-on-click-modal="false"
+    >
+      <el-form label-width="80px">
+        <el-form-item label="名称" required>
+          <el-input
+            v-model="renameForm.name"
+            placeholder="输入新名称"
+            @keyup.enter="handleRename"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showRenameDialog = false">取消</el-button>
+        <el-button type="primary" @click="handleRename">确定</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- ========== 删除确认对话框 ========== -->
+    <el-dialog
+      v-model="showDeleteConfirm"
+      title="删除工作空间"
+      width="360px"
+      :close-on-click-modal="false"
+    >
+      <div class="delete-warning">
+        <el-icon :size="20" color="var(--el-color-warning)">
+          <WarningFilled />
+        </el-icon>
+        <span>确定要删除工作空间「<strong>{{ deleteTargetName }}</strong>」吗？</span>
+      </div>
+      <p class="delete-hint">该操作仅删除工作空间条目，不会删除本地文件。</p>
+      <template #footer>
+        <el-button @click="showDeleteConfirm = false">取消</el-button>
+        <el-button type="danger" @click="handleDelete">删除</el-button>
+      </template>
+    </el-dialog>
   </el-aside>
 </template>
 
 <script setup lang="ts">
 import { ref, reactive, onMounted, computed } from "vue";
-import { Plus, FolderOpened, ChatDotRound, ChatLineSquare, MagicStick } from "@element-plus/icons-vue";
+import {
+  Plus,
+  Edit,
+  Delete,
+  FolderOpened,
+  ChatDotRound,
+  ChatLineSquare,
+  WarningFilled,
+} from "@element-plus/icons-vue";
 import type { Workspace, ConversationSummary } from "@ai-zen/desktop-shared";
 
 // ==================== 状态 ====================
@@ -96,8 +162,19 @@ const workspaces = ref<Workspace[]>([]);
 const activeWorkspaceId = ref<string>("");
 const conversations = ref<ConversationSummary[]>([]);
 const activeConversationId = ref<string | undefined>();
+
+// 新建
 const showAddWorkspace = ref(false);
 const workspaceForm = reactive({ name: "", path: "" });
+
+// 重命名
+const showRenameDialog = ref(false);
+const renameForm = reactive({ id: "", name: "" });
+
+// 删除
+const showDeleteConfirm = ref(false);
+const deleteTargetId = ref("");
+const deleteTargetName = ref("");
 
 // ==================== 树形数据 ====================
 interface TreeNode {
@@ -143,6 +220,9 @@ async function loadWorkspaces() {
     if (list.length > 0 && !activeWorkspaceId.value) {
       activeWorkspaceId.value = list[0].id;
       await loadConversations();
+    } else if (list.length === 0) {
+      activeWorkspaceId.value = "";
+      conversations.value = [];
     }
   } catch (e) {
     console.error("加载工作空间失败:", e);
@@ -172,6 +252,7 @@ function onNodeClick(data: TreeNode) {
   }
 }
 
+// ----- 新建 -----
 async function handleAddWorkspace() {
   if (!workspaceForm.name.trim()) return;
   const api = getAPI();
@@ -187,6 +268,50 @@ async function handleAddWorkspace() {
   }
 }
 
+// ----- 重命名 -----
+function openRenameDialog(data: TreeNode) {
+  renameForm.id = data.id;
+  renameForm.name = data.label;
+  showRenameDialog.value = true;
+}
+
+async function handleRename() {
+  if (!renameForm.name.trim()) return;
+  const api = getAPI();
+  if (!api) return;
+  try {
+    await api.invoke("workspace", "rename", renameForm.id, renameForm.name);
+    showRenameDialog.value = false;
+    await loadWorkspaces();
+  } catch (e) {
+    console.error("重命名工作空间失败:", e);
+  }
+}
+
+// ----- 删除 -----
+function openDeleteConfirm(data: TreeNode) {
+  deleteTargetId.value = data.id;
+  deleteTargetName.value = data.label;
+  showDeleteConfirm.value = true;
+}
+
+async function handleDelete() {
+  const api = getAPI();
+  if (!api) return;
+  try {
+    await api.invoke("workspace", "remove", deleteTargetId.value);
+    showDeleteConfirm.value = false;
+    // 如果删除的是当前选中的 workspace，切换到第一个
+    if (activeWorkspaceId.value === deleteTargetId.value) {
+      activeWorkspaceId.value = "";
+    }
+    await loadWorkspaces();
+  } catch (e) {
+    console.error("删除工作空间失败:", e);
+  }
+}
+
+// ----- 新建对话 -----
 function handleNewChat() {
   // TODO: 触发新建对话流程
   console.log("新建对话:", activeWorkspaceId.value);
@@ -207,23 +332,6 @@ onMounted(() => {
   border-radius: 12px;
   user-select: none;
   overflow: hidden;
-}
-
-.sidebar-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 16px;
-  border-bottom: 1px solid var(--el-border-color);
-
-  .app-title {
-    font-size: 18px;
-    font-weight: 700;
-    background: linear-gradient(135deg, var(--el-color-primary), #a78bfa);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-  }
 }
 
 .section {
@@ -287,9 +395,48 @@ onMounted(() => {
     padding: 0 6px;
     border-radius: 10px;
     line-height: 18px;
+    flex-shrink: 0;
   }
 }
 
+// ==================== 悬停操作按钮 ====================
+.node-actions {
+  display: none;
+  flex-shrink: 0;
+  gap: 1px;
+  margin-left: auto;
+
+  :deep(.el-button) {
+    --el-button-size: 22px;
+    font-size: 13px;
+    color: var(--el-text-color-secondary);
+
+    &:hover {
+      color: var(--el-color-primary);
+    }
+  }
+}
+
+:deep(.el-tree-node__content:hover) .node-actions {
+  display: inline-flex;
+}
+
+// ==================== 删除确认 ====================
+.delete-warning {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  margin-bottom: 8px;
+}
+
+.delete-hint {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  margin: 0 0 0 28px;
+}
+
+// ==================== 底部 ====================
 .sidebar-footer {
   padding: 12px;
   border-top: 1px solid var(--el-border-color);

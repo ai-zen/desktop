@@ -2,20 +2,22 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "调试 Electron 主进程",
       "type": "node",
       "request": "launch",
-      "name": "Electron Main",
+      "cwd": "${workspaceFolder}",
       "runtimeExecutable": "${workspaceFolder}/packages/main/node_modules/.bin/electron",
       "runtimeArgs": [
         "--remote-debugging-port=9222",
         "${workspaceFolder}/packages/main/dist/main.mjs"
       ],
-      "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "preLaunchTask": "tasks: pre-launch",
       "env": {
         "NODE_ENV": "development"
       },
+      "sourceMaps": true,
+      "outFiles": ["${workspaceFolder}/packages/main/dist/**/*.mjs"],
       "windows": {
         "runtimeExecutable": "${workspaceFolder}/packages/main/node_modules/.bin/electron.cmd"
       }

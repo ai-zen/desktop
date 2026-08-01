@@ -1,13 +1,19 @@
+/**
+ * Desktop 主进程入口（骨架）
+ *
+ * 当前仅保留：窗口生命周期、窗口控制 IPC、数据目录初始化。
+ * 业务部分（Workspace/Conversation/Chat 服务、Provider 池、事件推送）按
+ * docs/desktop-design.md 的实现顺序逐步接入。
+ */
+
 import { app, BrowserWindow, ipcMain, Menu, nativeTheme } from "electron";
-import { join, dirname } from "path";
+import { join } from "path";
 import { fileURLToPath } from "url";
 import { existsSync, mkdirSync } from "fs";
-import { servicesManager } from "./modules/servicesManager.js";
-import { ConfigManager, Provider } from "@ai-zen/agents-sdk";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 
-// 数据目录
+// 数据目录（存储骨架，业务实现时使用）
 const AI_ZEN_DIR = process.env.AI_ZEN_DIR || join(app.getPath("home"), ".ai-zen");
 const DESKTOP_DIR = join(AI_ZEN_DIR, "desktop");
 
@@ -17,27 +23,11 @@ function ensureDataDirs() {
   }
 }
 
-function createProvider(): Provider {
-  // 初始化 ConfigManager（读取 ~/.ai-zen/config.json）
-  const configManager = new ConfigManager(join(AI_ZEN_DIR, "config.json"));
-  const { config } = configManager.bootstrap();
-
-  return new Provider({
-    config,
-    agentsDir: join(AI_ZEN_DIR, "agents"),
-    subAgentsPaths: [join(AI_ZEN_DIR, "sub-agents")],
-    skillsPaths: [join(AI_ZEN_DIR, "skills")],
-    toolsPaths: [join(AI_ZEN_DIR, "tools")],
-    mcpPaths: [join(AI_ZEN_DIR, "mcp.json")],
-    conversationsDir: join(DESKTOP_DIR, "conversations"),
-    draftsDir: join(DESKTOP_DIR, "drafts"),
-  });
-}
-
 function createMainWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1200,
     height: 800,
+    frame: false,
     backgroundMaterial: "mica",
     webPreferences: {
       preload: join(__dirname, "preload.js"),
@@ -56,7 +46,7 @@ function createMainWindow(): BrowserWindow {
   return win;
 }
 
-app.whenReady().then(async () => {
+app.whenReady().then(() => {
   ensureDataDirs();
 
   // 窗口外观跟随系统设置
@@ -65,16 +55,38 @@ app.whenReady().then(async () => {
   // 去掉默认菜单栏
   Menu.setApplicationMenu(null);
 
-  // 注册通用 IPC handler
-  ipcMain.handle("invoke", (_event, service: string, method: string, ...args: unknown[]) => {
-    return servicesManager.invoke(service, method, ...args);
+  // ==================== 窗口控制 IPC ====================
+  ipcMain.handle("window:minimize", (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.minimize();
   });
 
-  // 初始化服务（传入 Provider）
-  const provider = createProvider();
-  await servicesManager.init(provider);
+  ipcMain.handle("window:maximize", (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win?.isMaximized()) {
+      win.unmaximize();
+    } else {
+      win?.maximize();
+    }
+  });
 
-  createMainWindow();
+  ipcMain.handle("window:close", (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.close();
+  });
+
+  ipcMain.handle("window:isMaximized", (event) => {
+    return BrowserWindow.fromWebContents(event.sender)?.isMaximized() ?? false;
+  });
+
+  // ==================== 创建窗口 ====================
+  const mainWin = createMainWindow();
+
+  // 监听窗口最大化/还原变化，通知渲染进程更新按钮图标
+  mainWin.on("maximize", () => {
+    mainWin.webContents.send("window:maximizeChange", true);
+  });
+  mainWin.on("unmaximize", () => {
+    mainWin.webContents.send("window:maximizeChange", false);
+  });
 });
 
 app.on("activate", () => {
