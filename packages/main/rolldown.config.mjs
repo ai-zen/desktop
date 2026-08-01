@@ -9,7 +9,7 @@ export default defineConfig([
       sourcemap: true,
     },
     platform: "node",
-    external: ["electron", "@ai-zen/agents-sdk", "@ai-zen/desktop-shared"],
+    external: ["electron", "@ai-zen/agents-core", "@ai-zen/agents-sdk", "@ai-zen/desktop-shared"],
   },
   {
     input: "src/preload.ts",

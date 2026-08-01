@@ -10,7 +10,7 @@
 
 // ==================== 主色调（明暗通用） ====================
 $colors: (
-  "primary": #6366f1,    // 靛蓝紫 — 主色
+  "primary": #3b82f6,    // 蓝色（色相 ~210）— 主色
   "success": #22d3ee,    // 青色
   "warning": #fbbf24,    // 琥珀
   "danger":  #f87171,    // 珊瑚红
@@ -69,11 +69,15 @@ $colors: (
   --el-notification-bg-color: var(--el-bg-color-overlay);
 
   // 其他
-  --el-border-radius-base: 8px;
-  --el-border-radius-small: 6px;
+  --el-border-radius-base: 6px;
+  --el-border-radius-small: 4px;
   --el-font-size-base: 14px;
   --el-font-size-small: 13px;
   --el-font-size-large: 16px;
+
+  // 树/列表选中态（浅色：浅紫底 + 主色字）
+  --tree-current-bg: var(--el-color-primary-light-9);
+  --tree-current-text: var(--el-color-primary);
 
   // 遮罩 & 阴影
   --el-mask-color: rgba(0, 0, 0, 0.3);
@@ -142,6 +146,10 @@ $colors: (
     --el-mask-color: rgba(0, 0, 0, 0.5);
     --el-box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
     --el-box-shadow-light: 0 2px 8px rgba(0, 0, 0, 0.2);
+
+    // 树/列表选中态（深色：半透明主色底 + 亮紫字，避免浅色块突兀）
+    --tree-current-bg: rgba(59, 130, 246, 0.22);
+    --tree-current-text: #93c5fd;
   }
 
   .el-dialog {
@@ -153,6 +161,16 @@ $colors: (
   .el-input,
   .el-textarea {
     --el-input-border-color: rgba(100, 116, 139, 0.5);
+  }
+
+  // 禁用态 primary 按钮：默认是主色 light-5（亮浅紫），深色界面下太突兀，
+  // 改为低饱和半透明主色，贴合深色主题
+  .el-button--primary.is-disabled,
+  .el-button--primary.is-disabled:hover,
+  .el-button--primary.is-disabled:focus {
+    --el-button-disabled-bg-color: rgba(59, 130, 246, 0.28);
+    --el-button-disabled-border-color: rgba(59, 130, 246, 0.28);
+    --el-button-disabled-text-color: rgba(226, 232, 240, 0.45);
   }
 }
 

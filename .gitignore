@@ -8,3 +8,6 @@ dist
 # 临时文件
 *.vue.js
 components.d.ts
+
+# CDP 调试截图
+preview-*.png

@@ -17,9 +17,12 @@ importers:
 
   packages/main:
     dependencies:
+      '@ai-zen/agents-core':
+        specifier: 3.0.1
+        version: 3.0.1
       '@ai-zen/agents-sdk':
-        specifier: ^0.2.0-alpha.2
-        version: 0.2.0-alpha.2(zod@4.4.3)
+        specifier: 0.5.0
+        version: 0.5.0(zod@4.4.3)
       '@ai-zen/desktop-shared':
         specifier: workspace:*
         version: link:../shared
@@ -45,6 +48,9 @@ importers:
 
   packages/render:
     dependencies:
+      '@ai-zen/agents-core':
+        specifier: 3.0.1
+        version: 3.0.1
       '@ai-zen/desktop-shared':
         specifier: workspace:*
         version: link:../shared
@@ -54,6 +60,9 @@ importers:
       element-plus:
         specifier: ^2.14.3
         version: 2.14.3(vue@3.5.40(typescript@5.9.3))
+      pinia:
+        specifier: ^2.3.0
+        version: 2.3.1(typescript@5.9.3)(vue@3.5.40(typescript@5.9.3))
       vue:
         specifier: ^3.5.40
         version: 3.5.40(typescript@5.9.3)
@@ -77,15 +86,19 @@ importers:
         specifier: ^2.2.0
         version: 2.2.12(typescript@5.9.3)
 
-  packages/shared: {}
+  packages/shared:
+    dependencies:
+      '@ai-zen/agents-core':
+        specifier: 3.0.1
+        version: 3.0.1
 
 packages:
 
-  '@ai-zen/agents-core@3.0.0-alpha.2':
-    resolution: {integrity: sha512-KByN+fLwGPU47tQeL4MJB96+czLDr6GRgtdJJeSZg/oDuvU4N0AA5f6sQjfQehRiIE+ELUrsqUOMkZLmnYGouw==}
+  '@ai-zen/agents-core@3.0.1':
+    resolution: {integrity: sha512-PN2VbE1CHg6mZmkwjHhd3Xcaplg3z2UThGR3hGc13CPlH9LQz+oIseJTjEaQ7XPlK/3dN3CQHIYh3PI5ADcygg==}
 
-  '@ai-zen/agents-sdk@0.2.0-alpha.2':
-    resolution: {integrity: sha512-hvHbwt1MVLznsLi6SUj5sqDRXVOoOl6durzlZ8yusvzjd/x+bF125XcuU4BrvPpolazpdMZK0VtcDhWAATJ0Qg==}
+  '@ai-zen/agents-sdk@0.5.0':
+    resolution: {integrity: sha512-f6hGfTLQm8LIZCY8cs+NgAq/E2kLhpo+crTUkvA9E/xtaVT6zCTz/t9gmitDSlEdu0qajoIRK08SoQIMhg7y7A==}
 
   '@ai-zen/async-queue@1.4.0':
     resolution: {integrity: sha512-+LPm6OQl38WqMMzdSqOCWHQw9R5VIumnNEJOj9kTpCZzJAEXlQUCVXwdNzhriVy6kv6fRIEl2E/Gwuh4LdgzrQ==}
@@ -516,6 +529,9 @@ packages:
 
   '@vue/compiler-vue2@2.7.16':
     resolution: {integrity: sha512-qYC3Psj9S/mfu9uVi5WvNZIzq+xnXMhOwbTFKKDD7b1lhpnn71jXSFdTQ+WsIEk0ONCd7VV2IMm7ONl6tbQ86A==}
+
+  '@vue/devtools-api@6.6.4':
+    resolution: {integrity: sha512-sGhTPMuXqZ1rVOk32RylztWkfXTRhuS7vgAKv0zjqk8gbsHkJ7xfFf+jbySxt7tWObEJwyKaHMikV/WGDiQm8g==}
 
   '@vue/language-core@2.2.12':
     resolution: {integrity: sha512-IsGljWbKGU1MZpBPN+BvPAdr55YPkj2nB/TBNGNC32Vy2qLG25DYu/NBN2vNtZqdRbTRjaoYrahLrToim2NanA==}
@@ -1152,6 +1168,15 @@ packages:
     resolution: {integrity: sha512-RvwwcruNjI1ncT5xRakeyS9Lf8lcItv34KD+aif+VH9kduAyfYBipGh12274xtenIPZ119/R9BdTBa8gAwSh0A==}
     engines: {node: '>=12'}
 
+  pinia@2.3.1:
+    resolution: {integrity: sha512-khUlZSwt9xXCaTbbxFYBKDc/bWAGWJjOgvxETwkTN7KRm66EeT1ZdZj6i2ceh9sP2Pzqsbc704r2yngBrxBVug==}
+    peerDependencies:
+      typescript: '>=4.4.4'
+      vue: ^2.7.0 || ^3.5.11
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
   pkce-challenge@5.0.1:
     resolution: {integrity: sha512-wQ0b/W4Fr01qtpHlqSqspcj3EhBvimsdh0KlHhH8HRZnMsEa0ea2fTULOXOS9ccQr3om+GcGRk4e+isrZWV8qQ==}
     engines: {node: '>=16.20.0'}
@@ -1457,6 +1482,17 @@ packages:
   vue-component-type-helpers@3.3.7:
     resolution: {integrity: sha512-Skkhw9agYSgsWqv7bxSOGJZa9SaiJbZVGdXuFWnrzKaQYHnw9qbjD630rw6RyMqDbp54nfLCLw5SZA55if7JLg==}
 
+  vue-demi@0.14.10:
+    resolution: {integrity: sha512-nMZBOwuzabUO0nLgIcc6rycZEebF6eeUfaiQx9+WSk8e29IbLvPU9feI6tqW4kTo3hvoYAJkMh8n8D0fuISphg==}
+    engines: {node: '>=12'}
+    hasBin: true
+    peerDependencies:
+      '@vue/composition-api': ^1.0.0-rc.1
+      vue: ^3.0.0-0 || ^2.6.0
+    peerDependenciesMeta:
+      '@vue/composition-api':
+        optional: true
+
   vue-tsc@2.2.12:
     resolution: {integrity: sha512-P7OP77b2h/Pmk+lZdJ0YWs+5tJ6J2+uOQPo7tlBnY44QqQSPYvS0qVT4wqDJgwrZaLe47etJLLQRFia71GYITw==}
     hasBin: true
@@ -1526,7 +1562,7 @@ packages:
 
 snapshots:
 
-  '@ai-zen/agents-core@3.0.0-alpha.2':
+  '@ai-zen/agents-core@3.0.1':
     dependencies:
       '@ai-zen/async-queue': 1.4.0
       '@ai-zen/event-bus': 1.1.0
@@ -1535,9 +1571,9 @@ snapshots:
     transitivePeerDependencies:
       - encoding
 
-  '@ai-zen/agents-sdk@0.2.0-alpha.2(zod@4.4.3)':
+  '@ai-zen/agents-sdk@0.5.0(zod@4.4.3)':
     dependencies:
-      '@ai-zen/agents-core': 3.0.0-alpha.2
+      '@ai-zen/agents-core': 3.0.1
       '@modelcontextprotocol/sdk': 1.29.0(zod@4.4.3)
       dayjs: 1.11.21
     transitivePeerDependencies:
@@ -1929,6 +1965,8 @@ snapshots:
     dependencies:
       de-indent: 1.0.2
       he: 1.2.0
+
+  '@vue/devtools-api@6.6.4': {}
 
   '@vue/language-core@2.2.12(typescript@5.9.3)':
     dependencies:
@@ -2528,6 +2566,16 @@ snapshots:
 
   picomatch@4.0.5: {}
 
+  pinia@2.3.1(typescript@5.9.3)(vue@3.5.40(typescript@5.9.3)):
+    dependencies:
+      '@vue/devtools-api': 6.6.4
+      vue: 3.5.40(typescript@5.9.3)
+      vue-demi: 0.14.10(vue@3.5.40(typescript@5.9.3))
+    optionalDependencies:
+      typescript: 5.9.3
+    transitivePeerDependencies:
+      - '@vue/composition-api'
+
   pkce-challenge@5.0.1: {}
 
   pkg-types@1.3.1:
@@ -2834,6 +2882,10 @@ snapshots:
   vscode-uri@3.1.0: {}
 
   vue-component-type-helpers@3.3.7: {}
+
+  vue-demi@0.14.10(vue@3.5.40(typescript@5.9.3)):
+    dependencies:
+      vue: 3.5.40(typescript@5.9.3)
 
   vue-tsc@2.2.12(typescript@5.9.3):
     dependencies:

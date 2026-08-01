@@ -117,7 +117,7 @@ onUnmounted(() => {
 .app-title {
   font-size: 14px;
   font-weight: 600;
-  background: linear-gradient(135deg, var(--el-color-primary), #a78bfa);
+  background: linear-gradient(135deg, var(--el-color-primary), #60a5fa);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;

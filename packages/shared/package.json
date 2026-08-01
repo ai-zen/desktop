@@ -3,5 +3,8 @@
   "private": true,
   "type": "module",
   "main": "src/types.ts",
-  "scripts": {}
+  "scripts": {},
+  "dependencies": {
+    "@ai-zen/agents-core": "3.0.1"
+  }
 }
