@@ -76,8 +76,11 @@ cd packages/main && pnpm build
 ## 其他
 
 - 数据根目录：`~/.ai-zen/`（共享根，CLI/Desktop 共用）
-  - workspaces：`~/.ai-zen/desktop/workspaces/{id}.json`
-  - conversations：`~/.ai-zen/desktop/conversations/{wsId}/{convId}.json`
+  - **持久化：SQLite**（`~/.ai-zen/desktop/ai-zen.db`，WAL 模式）——当前唯一数据源
+    - 实现：`packages/main/src/storage/db.ts`（`node:sqlite` `DatabaseSync` 单例，懒初始化；**Electron 43 = Node 24.18 内置，勿引入 better-sqlite3/sqlite3 native 依赖**）
+    - 表：`workspaces(id, name, cwd, created_at)`、`conversations(id, workspace_id, agent_id, model_id, name, message_count, messages JSON blob, created_at, updated_at)` + 索引 `(workspace_id, updated_at DESC)`
+    - Repository 接口不变（list/read/write/delete/removeWorkspace），services/render 零感知
   - 全局配置：`~/.ai-zen/config.json`（含 endpoints/models，DeepSeek apiKey 明文）
 - IPC 通道：`invokeService`（业务）+ `window:xxx`（窗口控制）+ `dialog:selectDirectory`（原生目录选择，默认桌面、记住上次位置）
+- 业务语义：工作空间 cwd **选填，默认桌面**（`app.getPath("desktop")` 兜底）；删 workspace 级联删会话，删会话不碰 workspace
 - 调试截图（`preview-*.png`）已加入 `.gitignore`，勿提交
