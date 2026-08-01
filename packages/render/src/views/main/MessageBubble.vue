@@ -39,8 +39,19 @@
           </div>
         </div>
 
-        <!-- 正文 -->
-        <div class="content" v-html="textContentHtml"></div>
+        <!-- 工具结果（折叠） -->
+        <div v-if="isTool" class="fold-section">
+          <button class="fold-toggle" @click="showToolResult = !showToolResult">
+            <el-icon :size="12"><ArrowRight v-if="!showToolResult" /><ArrowDown v-else /></el-icon>
+            <span>工具结果</span>
+          </button>
+          <div v-show="showToolResult" class="tool-result">
+            {{ textContent || "（空）" }}
+          </div>
+        </div>
+
+        <!-- 正文（工具消息结果已折叠展示，不重复渲染） -->
+        <div v-if="!isTool" class="content" v-html="textContentHtml"></div>
 
         <!-- 错误状态 + 重试 -->
         <div v-if="isError" class="error-bar">
@@ -71,10 +82,12 @@ defineEmits<{ retry: [] }>();
 
 const showThinking = ref(false);
 const showTools = ref(false);
+const showToolResult = ref(false);
 
 const role = computed(() => props.message.role);
 const isUser = computed(() => role.value === AgentNS.Role.User);
 const isSystem = computed(() => role.value === AgentNS.Role.System);
+const isTool = computed(() => role.value === AgentNS.Role.Tool);
 const isError = computed(
   () => props.message.status === AgentNS.MessageStatus.Error,
 );
@@ -251,6 +264,21 @@ const errorText = computed(() => textContent.value || "发生错误");
         color: var(--el-text-color-regular);
       }
     }
+  }
+
+  .tool-result {
+    margin-top: 6px;
+    padding: 8px 10px;
+    background: var(--el-fill-color-light);
+    border-left: 2px solid var(--el-color-warning-light-5);
+    border-radius: 4px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--el-text-color-regular);
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 200px;
+    overflow-y: auto;
   }
 }
 
