@@ -15,16 +15,18 @@
       </div>
 
       <el-tree
+        ref="treeRef"
         :data="treeData"
         :props="treeProps"
         node-key="id"
         highlight-current
         :current-node-key="currentNodeKey"
-        :expand-on-click-node="true"
-        :default-expand-all="true"
+        :expand-on-click-node="false"
         empty-text=""
         class="workspace-tree"
         @node-click="onNodeClick"
+        @node-expand="onNodeExpand"
+        @node-collapse="onNodeCollapse"
       >
         <template #default="{ data }">
           <span class="tree-node-label">
@@ -37,10 +39,19 @@
 
             <span class="node-text">{{ data.label }}</span>
 
+            <!-- workspace：会话数 -->
+            <span v-if="data.type === 'workspace'" class="node-meta">
+              <span class="msg-count" :title="`${data.messageCount || 0} 个会话`">
+                {{ data.messageCount || 0 }}
+              </span>
+            </span>
+
             <!-- 会话：消息数 + 运行中标记 -->
             <span v-if="data.type === 'conversation'" class="node-meta">
               <span v-if="data.running" class="running-dot" title="运行中"></span>
-              <span class="msg-count">{{ data.messageCount || 0 }}</span>
+              <span class="msg-count" :title="`${data.messageCount || 0} 条消息`">
+                {{ data.messageCount || 0 }}
+              </span>
             </span>
 
             <!-- workspace 悬停操作 -->
@@ -133,7 +144,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed } from "vue";
+import { ref, reactive, computed, watch, nextTick } from "vue";
 import {
   Plus,
   Edit,
@@ -175,8 +186,11 @@ interface TreeNode {
   id: string;
   label: string;
   type: "workspace" | "conversation";
+  /** conversation 节点所属的 workspace */
+  workspaceId?: string;
   messageCount?: number;
   running?: boolean;
+  children?: TreeNode[];
 }
 
 const treeData = computed<TreeNode[]>(() =>
@@ -184,12 +198,13 @@ const treeData = computed<TreeNode[]>(() =>
     id: ws.id,
     label: ws.name,
     type: "workspace" as const,
-    children: conversationStore.conversations
-      .filter((c) => c.workspaceId === ws.id)
-      .map((c) => ({
+    // 会话数（页面加载后即预载，树节点可直接显示）
+    messageCount: conversationStore.listOf(ws.id).length,
+    children: conversationStore.listOf(ws.id).map((c) => ({
         id: c.id,
         label: c.name,
         type: "conversation" as const,
+        workspaceId: c.workspaceId,
         messageCount: c.messageCount,
         running: c.running,
       })),
@@ -200,12 +215,67 @@ const treeProps = { children: "children", label: "label" };
 
 const currentNodeKey = computed(() => conversationStore.activeConversationId || workspaceStore.activeWorkspaceId);
 
+// ==================== 受控展开 ====================
+// el-tree 在 data 更新时会重置展开状态（切换 workspace 后已折叠的节点自动展开）。
+// 这里自己维护 expandedKeys，树数据变化后通过 setExpandedKeys 恢复。
+const treeRef = ref<{
+  store: {
+    getNode: (key: string) => { expand: () => void } | undefined;
+  };
+}>();
+const expandedKeys = ref<string[]>([]);
+
+function collectAllKeys(nodes: TreeNode[]): string[] {
+  const keys: string[] = [];
+  for (const n of nodes) {
+    keys.push(n.id);
+    if (n.children?.length) keys.push(...collectAllKeys(n.children));
+  }
+  return keys;
+}
+
+/** 展开指定节点（el-tree 重建后默认全折叠，只恢复用户展开过的） */
+function applyExpandedKeys(keys: string[]) {
+  const store = treeRef.value?.store;
+  if (!store) return;
+  for (const key of keys) {
+    store.getNode(key)?.expand();
+  }
+}
+
+// 树数据变化（切换 workspace / 会话刷新）：首次全展开，之后恢复用户展开状态
+watch(
+  treeData,
+  (nodes) => {
+    const keys = expandedKeys.value.length
+      ? expandedKeys.value
+      : collectAllKeys(nodes);
+    expandedKeys.value = keys;
+    nextTick(() => applyExpandedKeys(keys));
+  },
+  { immediate: true },
+);
+
+function onNodeExpand(data: TreeNode) {
+  if (!expandedKeys.value.includes(data.id)) {
+    expandedKeys.value.push(data.id);
+  }
+}
+
+function onNodeCollapse(data: TreeNode) {
+  expandedKeys.value = expandedKeys.value.filter((k) => k !== data.id);
+}
+
 // ==================== 事件 ====================
 function onNodeClick(data: TreeNode) {
   if (data.type === "workspace") {
     void workspaceStore.setActive(data.id);
   } else {
-    conversationStore.select(data.id);
+    // 会话：若跨 workspace，先把激活工作空间切过去
+    if (data.workspaceId && data.workspaceId !== workspaceStore.activeWorkspaceId) {
+      void workspaceStore.setActive(data.workspaceId);
+    }
+    conversationStore.select(data.workspaceId ?? "", data.id);
   }
 }
 

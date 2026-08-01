@@ -23,6 +23,8 @@ export const useWorkspaceStore = defineStore("workspace", {
     async load() {
       this.workspaces = await api.listWorkspaces();
       this.loaded = true;
+      // 预载所有 workspace 的会话列表：树加载后即显示各 ws 是否有会话、能否展开、会话条数
+      await useConversationStore().preloadAll(this.workspaces.map((w) => w.id));
       // 若当前激活的 workspace 已被删除，回退到第一个
       if (!this.workspaces.some((w) => w.id === this.activeWorkspaceId)) {
         this.setActive(this.workspaces[0]?.id ?? "");
@@ -67,7 +69,7 @@ export const useWorkspaceStore = defineStore("workspace", {
       const target = this.workspaces.find((w) => w.id === workspaceId) ?? this.workspaces[0];
       this.activeWorkspaceId = target.id;
       await useConversationStore().load(target.id);
-      useConversationStore().select(conversationId);
+      useConversationStore().select(target.id, conversationId);
     },
   },
 });
