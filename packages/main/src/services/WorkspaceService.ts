@@ -5,12 +5,15 @@
 import { randomUUID } from "node:crypto";
 import type { Workspace } from "@ai-zen/desktop-shared";
 import type { WorkspaceRepository } from "../storage/WorkspaceRepository.js";
+import type { ConversationRepository } from "../storage/ConversationRepository.js";
 
 export class WorkspaceService {
   constructor(
     private repo: WorkspaceRepository,
     /** 用户不填目录时的默认工作目录（main 侧注入，如桌面） */
     private defaultCwd: () => string,
+    /** 用于删除工作空间时级联清理其全部会话 */
+    private conversationRepo: ConversationRepository,
   ) {}
 
   async list(): Promise<Workspace[]> {
@@ -36,5 +39,7 @@ export class WorkspaceService {
 
   async remove(id: string): Promise<void> {
     await this.repo.delete(id);
+    // 级联清理该工作空间下的全部会话（删工作空间 → 删会话；反向不成立）
+    await this.conversationRepo.removeWorkspace(id);
   }
 }

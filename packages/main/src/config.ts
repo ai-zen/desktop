@@ -6,7 +6,9 @@
  *   ├── config.json        ← 全局配置（端点、模型等，CLI/Desktop 共享）
  *   ├── agents/            ← Agent 定义（共享）
  *   └── desktop/           ← Desktop 运行时数据
- *       └── workspaces/    ← 工作空间（每 workspace 一个 JSON 文件）
+ *       ├── ai-zen.db      ← 主存储（SQLite：workspaces + conversations）
+ *       ├── workspaces/    ← 旧 JSON 数据（已迁移至 ai-zen.db，保留未删）
+ *       └── conversations/ ← 旧 JSON 数据（已迁移至 ai-zen.db，保留未删）
  */
 
 import { app } from "electron";

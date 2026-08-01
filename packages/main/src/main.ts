@@ -10,7 +10,7 @@ import { join } from "path";
 import { fileURLToPath } from "url";
 import { existsSync, mkdirSync } from "fs";
 import { AgentRepository, ConfigManager } from "@ai-zen/agents-sdk";
-import { AGENTS_DIR, AI_ZEN_DIR, CONFIG_FILE, CONVERSATIONS_DIR, DESKTOP_DIR, WORKSPACES_DIR } from "./config.js";
+import { AGENTS_DIR, AI_ZEN_DIR, CONFIG_FILE, DESKTOP_DIR } from "./config.js";
 import { WorkspaceRepository } from "./storage/WorkspaceRepository.js";
 import { ConversationRepository } from "./storage/ConversationRepository.js";
 import { WorkspaceService } from "./services/WorkspaceService.js";
@@ -36,25 +36,28 @@ let lastSelectedDir: string | null = null;
 
 const configManager = new ConfigManager(CONFIG_FILE);
 const agentRepository = new AgentRepository(AGENTS_DIR);
+const workspaceRepository = new WorkspaceRepository();
+const conversationRepository = new ConversationRepository();
 
 /** 当前主窗口（创建后赋值，用于向 render 推送 chat:push 事件） */
 let mainWindow: BrowserWindow | null = null;
 
 const servicesManager = new ServicesManager({
   workspace: new WorkspaceService(
-    new WorkspaceRepository(WORKSPACES_DIR),
+    workspaceRepository,
     () => app.getPath("desktop"),
+    conversationRepository,
   ),
   conversation: new ConversationService(
-    new ConversationRepository(CONVERSATIONS_DIR),
+    conversationRepository,
     agentRepository,
     configManager,
   ),
   agent: new AgentService(agentRepository),
   model: new ModelService(configManager),
   chat: new ChatService(
-    new WorkspaceRepository(WORKSPACES_DIR),
-    new ConversationRepository(CONVERSATIONS_DIR),
+    workspaceRepository,
+    conversationRepository,
     new ProviderPool(configManager, AGENTS_DIR, AI_ZEN_DIR),
     (evt) => mainWindow?.webContents.send("chat:push", evt),
   ),
