@@ -6,9 +6,7 @@
  *   ├── config.json        ← 全局配置（端点、模型等，CLI/Desktop 共享）
  *   ├── agents/            ← Agent 定义（共享）
  *   └── desktop/           ← Desktop 运行时数据
- *       ├── ai-zen.db      ← 主存储（SQLite：workspaces + conversations）
- *       ├── workspaces/    ← 旧 JSON 数据（已迁移至 ai-zen.db，保留未删）
- *       └── conversations/ ← 旧 JSON 数据（已迁移至 ai-zen.db，保留未删）
+ *       └── ai-zen.db      ← 主存储（SQLite：workspaces + conversations）
  */
 
 import { app } from "electron";
@@ -19,5 +17,3 @@ export const CONFIG_FILE = join(AI_ZEN_DIR, "config.json");
 export const AGENTS_DIR = join(AI_ZEN_DIR, "agents");
 
 export const DESKTOP_DIR = join(AI_ZEN_DIR, "desktop");
-export const WORKSPACES_DIR = join(DESKTOP_DIR, "workspaces");
-export const CONVERSATIONS_DIR = join(DESKTOP_DIR, "conversations");
