@@ -25,6 +25,7 @@
         empty-text=""
         class="workspace-tree"
         @node-click="onNodeClick"
+        @node-contextmenu="onContextMenu"
         @node-expand="onNodeExpand"
         @node-collapse="onNodeCollapse"
       >
@@ -54,15 +55,6 @@
               </span>
             </span>
 
-            <!-- workspace 悬停操作 -->
-            <span v-if="data.type === 'workspace'" class="node-actions" @click.stop>
-              <el-tooltip content="重命名" placement="top" effect="light">
-                <el-button :icon="Edit" size="small" text @click="openRename(data)" />
-              </el-tooltip>
-              <el-tooltip content="删除" placement="top" effect="light">
-                <el-button :icon="Delete" size="small" text @click="openDelete(data)" />
-              </el-tooltip>
-            </span>
           </span>
         </template>
       </el-tree>
@@ -113,8 +105,13 @@
       </template>
     </el-dialog>
 
-    <!-- ========== 重命名 workspace ========== -->
-    <el-dialog v-model="showRename" title="重命名工作空间" width="400px" :close-on-click-modal="false">
+    <!-- ========== 重命名（workspace / conversation） ========== -->
+    <el-dialog
+      v-model="showRename"
+      :title="renameTargetType === 'workspace' ? '重命名工作空间' : '重命名对话'"
+      width="400px"
+      :close-on-click-modal="false"
+    >
       <el-form label-width="64px" @submit.prevent>
         <el-form-item label="名称" required>
           <el-input v-model="renameName" @keyup.enter="confirmRename" />
@@ -126,11 +123,21 @@
       </template>
     </el-dialog>
 
-    <!-- ========== 删除确认 ========== -->
-    <el-dialog v-model="showDelete" title="删除工作空间" width="380px" :close-on-click-modal="false">
+    <!-- ========== 删除确认（workspace / conversation） ========== -->
+    <el-dialog
+      v-model="showDelete"
+      :title="deleteTargetType === 'workspace' ? '删除工作空间' : '删除对话'"
+      width="380px"
+      :close-on-click-modal="false"
+    >
       <div class="delete-warning">
         <el-icon :size="20" color="var(--el-color-warning)"><WarningFilled /></el-icon>
-        <span>确定删除「<strong>{{ deleteTargetName }}</strong>」？其全部会话将一并删除。</span>
+        <span v-if="deleteTargetType === 'workspace'">
+          确定删除「<strong>{{ deleteTargetName }}</strong>」？其全部会话将一并删除。
+        </span>
+        <span v-else>
+          确定删除对话「<strong>{{ deleteTargetName }}</strong>」？
+        </span>
       </div>
       <template #footer>
         <el-button @click="showDelete = false">取消</el-button>
@@ -140,11 +147,40 @@
 
     <!-- ========== 新建对话（选 Agent） ========== -->
     <NewChatDialog v-model="showNewChat" />
+
+    <!-- ========== 右键菜单（workspace / conversation） ========== -->
+    <teleport to="body">
+      <div
+        v-if="ctxMenu.visible"
+        class="context-menu"
+        :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }"
+        @click.stop
+        @contextmenu.prevent.stop
+      >
+        <!-- workspace 右键：可新建对话 -->
+        <div
+          v-if="ctxMenu.target?.type === 'workspace'"
+          class="context-menu-item"
+          @click="ctxNewChat"
+        >
+          <el-icon :size="14"><ChatLineSquare /></el-icon>
+          <span>新建对话</span>
+        </div>
+        <div class="context-menu-item" @click="ctxRename">
+          <el-icon :size="14"><Edit /></el-icon>
+          <span>重命名</span>
+        </div>
+        <div class="context-menu-item danger" @click="ctxDelete">
+          <el-icon :size="14"><Delete /></el-icon>
+          <span>删除</span>
+        </div>
+      </div>
+    </teleport>
   </el-aside>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, watch, nextTick } from "vue";
+import { ref, reactive, computed, watch, nextTick, onMounted, onUnmounted } from "vue";
 import {
   Plus,
   Edit,
@@ -168,18 +204,30 @@ const activeWorkspaceId = computed(() => workspaceStore.activeWorkspaceId);
 const showAddWorkspace = ref(false);
 const wsForm = reactive({ name: "", cwd: "" });
 
-// 重命名
+// 重命名（workspace / conversation 共用，按类型分发）
 const showRename = ref(false);
 const renameTargetId = ref("");
+const renameTargetType = ref<"workspace" | "conversation">("workspace");
+const renameTargetWorkspaceId = ref("");
 const renameName = ref("");
 
-// 删除
+// 删除（workspace / conversation 共用，按类型分发）
 const showDelete = ref(false);
 const deleteTargetId = ref("");
+const deleteTargetType = ref<"workspace" | "conversation">("workspace");
+const deleteTargetWorkspaceId = ref("");
 const deleteTargetName = ref("");
 
 // 新建对话
 const showNewChat = ref(false);
+
+// 右键菜单（workspace / conversation 共用）
+const ctxMenu = reactive({
+  visible: false,
+  x: 0,
+  y: 0,
+  target: null as TreeNode | null,
+});
 
 // ==================== 树数据 ====================
 interface TreeNode {
@@ -279,6 +327,70 @@ function onNodeClick(data: TreeNode) {
   }
 }
 
+// ----- 右键菜单 -----
+function onContextMenu(event: MouseEvent, data: TreeNode) {
+  event.preventDefault();
+  // 右键即选中该节点（与左键一致），操作目标 = 右键的节点
+  if (data.type === "workspace") {
+    void workspaceStore.setActive(data.id);
+  } else if (data.workspaceId) {
+    if (data.workspaceId !== workspaceStore.activeWorkspaceId) {
+      void workspaceStore.setActive(data.workspaceId);
+    }
+    conversationStore.select(data.workspaceId, data.id);
+  }
+  // 菜单定位在鼠标处，视口边缘自动收拢
+  // workspace 有「新建对话/重命名/删除」3 项，conversation 2 项
+  const itemCount = data.type === "workspace" ? 3 : 2;
+  const menuW = 128;
+  const menuH = itemCount * 34 + 8;
+  ctxMenu.x = Math.min(event.clientX, window.innerWidth - menuW);
+  ctxMenu.y = Math.min(event.clientY, window.innerHeight - menuH);
+  ctxMenu.target = data;
+  ctxMenu.visible = true;
+}
+
+function closeCtxMenu() {
+  ctxMenu.visible = false;
+  ctxMenu.target = null;
+}
+
+function ctxNewChat() {
+  // 右键 workspace 时已 setActive，直接打开新建对话（落在该 workspace 下）
+  showNewChat.value = true;
+  closeCtxMenu();
+}
+
+function ctxRename() {
+  if (ctxMenu.target) openRename(ctxMenu.target);
+  closeCtxMenu();
+}
+
+function ctxDelete() {
+  if (ctxMenu.target) openDelete(ctxMenu.target);
+  closeCtxMenu();
+}
+
+function onDocPointerDown() {
+  closeCtxMenu();
+}
+
+onMounted(() => {
+  document.addEventListener("pointerdown", onDocPointerDown);
+  document.addEventListener("contextmenu", onDocPointerDown);
+  window.addEventListener("blur", onDocPointerDown);
+  window.addEventListener("resize", onDocPointerDown);
+  document.addEventListener("scroll", onDocPointerDown, true);
+});
+
+onUnmounted(() => {
+  document.removeEventListener("pointerdown", onDocPointerDown);
+  document.removeEventListener("contextmenu", onDocPointerDown);
+  window.removeEventListener("blur", onDocPointerDown);
+  window.removeEventListener("resize", onDocPointerDown);
+  document.removeEventListener("scroll", onDocPointerDown, true);
+});
+
 // ----- workspace CRUD -----
 async function pickWorkspaceDir() {
   const dir = await window.electronAPI.selectDirectory();
@@ -298,24 +410,43 @@ async function confirmAddWorkspace() {
 
 function openRename(data: TreeNode) {
   renameTargetId.value = data.id;
+  renameTargetType.value = data.type;
+  renameTargetWorkspaceId.value = data.workspaceId ?? "";
   renameName.value = data.label;
   showRename.value = true;
 }
 
 async function confirmRename() {
   if (!renameName.value.trim()) return;
-  await workspaceStore.rename(renameTargetId.value, renameName.value.trim());
+  if (renameTargetType.value === "workspace") {
+    await workspaceStore.rename(renameTargetId.value, renameName.value.trim());
+  } else {
+    await conversationStore.rename(
+      renameTargetWorkspaceId.value,
+      renameTargetId.value,
+      renameName.value.trim(),
+    );
+  }
   showRename.value = false;
 }
 
 function openDelete(data: TreeNode) {
   deleteTargetId.value = data.id;
+  deleteTargetType.value = data.type;
+  deleteTargetWorkspaceId.value = data.workspaceId ?? "";
   deleteTargetName.value = data.label;
   showDelete.value = true;
 }
 
 async function confirmDelete() {
-  await workspaceStore.remove(deleteTargetId.value);
+  if (deleteTargetType.value === "workspace") {
+    await workspaceStore.remove(deleteTargetId.value);
+  } else {
+    await conversationStore.remove(
+      deleteTargetWorkspaceId.value,
+      deleteTargetId.value,
+    );
+  }
   showDelete.value = false;
 }
 </script>
@@ -379,6 +510,46 @@ async function confirmDelete() {
   }
 }
 
+// ==================== 右键菜单 ====================
+.context-menu {
+  position: fixed;
+  z-index: 3000;
+  min-width: 128px;
+  padding: 4px;
+  background: var(--el-bg-color-overlay);
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 6px;
+  box-shadow: var(--el-box-shadow-light);
+
+  .context-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 12px;
+    font-size: 13px;
+    color: var(--el-text-color-regular);
+    border-radius: 4px;
+    cursor: pointer;
+    user-select: none;
+
+    &:hover {
+      background: rgba(var(--el-color-primary-rgb), 0.12);
+      color: var(--el-color-primary);
+      font-weight: 500;
+    }
+
+    &.danger {
+      color: var(--el-color-danger);
+
+      &:hover {
+        background: rgba(var(--el-color-danger-rgb), 0.12);
+        color: var(--el-color-danger);
+        font-weight: 500;
+      }
+    }
+  }
+}
+
 .tree-node-label {
   display: flex;
   align-items: center;
@@ -422,27 +593,6 @@ async function confirmDelete() {
 @keyframes blink {
   0%, 100% { opacity: 0.2; }
   50% { opacity: 1; }
-}
-
-.node-actions {
-  display: none;
-  flex-shrink: 0;
-  gap: 1px;
-  margin-left: auto;
-
-  :deep(.el-button) {
-    --el-button-size: 22px;
-    font-size: 13px;
-    color: var(--el-text-color-secondary);
-
-    &:hover {
-      color: var(--el-color-primary);
-    }
-  }
-}
-
-:deep(.el-tree-node__content:hover) .node-actions {
-  display: inline-flex;
 }
 
 .tree-empty {

@@ -21,6 +21,7 @@ $colors: (
 :root {
   @each $type, $color in $colors {
     --el-color-#{$type}: #{$color};
+    --el-color-#{$type}-rgb: #{color.red($color)}, #{color.green($color)}, #{color.blue($color)};
     --el-color-#{$type}-light-3: #{color.mix(white, $color, 30%)};
     --el-color-#{$type}-light-5: #{color.mix(white, $color, 50%)};
     --el-color-#{$type}-light-7: #{color.mix(white, $color, 70%)};
