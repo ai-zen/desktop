@@ -4,7 +4,9 @@
 
 ## ✅ 已完成
 
-- Markdown 渲染（markstream-vue + Shiki）
+- Markdown 渲染：markdown-it + highlight.js（按需注册 30 语言、同步渲染）替换 markstream-vue + Shiki —— 窗口内代码块全部即时高亮，无懒加载/渐进渲染导致的滚动抖动
+- 消息窗口性能：QQ/微信式分页（首屏 20 条 + 上翻 20 条 + DOM 常驻上限 200，窗口内整页立即渲染）替代虚拟滚动；`v-show` 常驻提示 + 稳定 key（= 消息 id），折叠状态天然保持
+- Message.id 全链路：agents-core 3.1.0（构造自动生成、跨环境随机）+ agents-sdk 0.5.1（core 依赖改 `workspace:^` 范围版本）；user/delta 事件携带 agent 真实消息 id，render 按 id 就地累积，v-for key 全程 = msg.id；历史消息懒迁移补 id（幂等）
 - 对话重命名与删除（侧栏右键菜单）
 - 自动生成对话名称（首轮后异步，防覆盖手动改名）
 - agent 运行注册表（运行期驻留、运行完释放）+ getState + 每轮内循环持久化
@@ -13,24 +15,14 @@
 - UI：消息头像（User / ChatDotRound 图标 + rgba 低透明背景适配深浅主题）
 - UI：消息气泡圆角（助手左上 / 用户右上尖锐）
 - 性能：main 同步 IO 异步化——SQLite 走 worker_threads（dbWorker 独立线程）、fs 用 `fs/promises`（app.ts / ProviderPool），主进程事件循环不再被同步 SQL 阻塞
+- 清理：移除消息隐藏功能（contentHidden/眼睛按钮，鸡肋且默认隐藏反直觉）
 
-## 1. 性能：render 切换对话虚拟滚动（高优先级）
-
-- **现状**：`ChatPanel` 对全部消息 `v-for` 渲染；每条 assistant 消息走 `markstream-vue` + Shiki 高亮（DOM 重、高亮贵）；大对话（50+ 条）切换时一次性全量渲染，明显卡顿
-- **目标**：消息列表虚拟滚动（只渲染视口附近），候选：
-  - `@tanstack/vue-virtual`（轻量，无额外依赖）
-  - `vue-virtual-scroller`（功能全）
-- **注意**：
-  - 流式进行中的消息必须始终在视口内（自动滚底逻辑要适配虚拟化）
-  - 复用在视口外的已渲染消息，避免滚动时反复触发 Shiki 高亮
-  - 折叠区（思考过程 / 工具调用 / 工具结果）的展开状态在虚拟化下如何保持
-
-## 2. 设置页 SettingsView（低优先级）
+## 1. 设置页 SettingsView（低优先级）
 
 - 现状：`uiStore.currentView` 已支持 `settings`，入口未加
 - 目标：设置页 SettingsView，内容：API Key / 默认模型 / Agent 列表 / 数据目录
 
-## 3. UI：更换软件 LOGO（低优先级，等找到合适的 LOGO 素材再完成）
+## 2. UI：更换软件 LOGO（低优先级，等找到合适的 LOGO 素材再完成）
 
 - 现状：项目内无任何图标/LOGO 资源（png/ico/icns/svg 全无）——TitleBar 用 `MagicStick` 图标 + "AI-Zen" 渐变文字；BrowserWindow 无自定义 icon（显示默认 Electron 图标）
 - 目标：
@@ -38,3 +30,17 @@
   - 覆盖：TitleBar 应用图标、BrowserWindow 窗口/任务栏图标（`BrowserWindow({ icon })`）、打包图标（.ico/.icns）
   - 资源文件放 `packages/main/assets/` 或 `resources/`，render 侧引用需走打包路径
 - 注意：LOGO 尺寸需覆盖 16px（TitleBar）~ 256px（打包）；生成 SVG 源文件 + 导出各尺寸
+
+## 3. 端到端实测（功能已实现，需逐项验收）
+
+- 错误重试 UI：消息 error 状态 → 重试按钮 → 重新发送
+- 切换模型后发送：对话级 `modelId` 覆盖 Agent 定义（优先级：对话 > Agent > 全局）
+- 运行中删除会话：abort 进行中的 agent + 释放注册表
+- worker 崩溃重建路径：dbWorker 异常后主进程的恢复行为
+- autoRename 兜底名：本地降级取名（首条用户消息前 16 字符）是否合适
+
+## 4. 测试数据清理（临时数据，非功能）
+
+- `useMemo与useCallback区别`（63 条，含多轮验证消息）
+- `简单问候`（26 条）
+- `李白是唐代伟大的浪漫主义诗人...`（5 条 + 验证时追加的 8 条测试消息）
