@@ -156,28 +156,15 @@ export const useChatStore = defineStore("chat", {
           });
           break;
 
-        case "delta": {
-          // 按真实消息 id 就地累积（与 done 全量数组 id 一致 → key 全程稳定）。
-          // last 是当前流式中的 assistant（main 按 receiver 推 id，匹配即累积）；
-          // 不匹配（如工具调用后新一轮 assistant）则 push 新消息。
-          const last = st.messages.at(-1);
-          if (
-            last &&
-            last.id === evt.id &&
-            last.role === AgentNS.Role.Assistant &&
-            last.status !== AgentNS.MessageStatus.Error
-          ) {
-            // 累积到当前 assistant 消息（思考 + 正文都作为 delta 流入）
-            last.content =
-              (typeof last.content === "string" ? last.content : "") +
-              evt.content;
+        case "message": {
+          // 完整消息按 id 就地 upsert：有则替换、无则追加末尾。
+          // 事件到达顺序即消息顺序（chunk 实时同步 → 工具结果补推 → 下一轮），
+          // 与 done 全量数组 id 一致 → v-for key 从流式开始即稳定。
+          const idx = st.messages.findIndex((m) => m.id === evt.id);
+          if (idx >= 0) {
+            st.messages[idx] = evt.message;
           } else {
-            st.messages.push({
-              id: evt.id,
-              role: AgentNS.Role.Assistant,
-              content: evt.content,
-              status: AgentNS.MessageStatus.Writing,
-            });
+            st.messages.push(evt.message);
           }
           break;
         }

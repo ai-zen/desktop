@@ -10,7 +10,7 @@
  *   - 运行中状态用 agent.isHasPendingMessage 查询，main 不另存一份 streaming。
  *
  * 流式协议（chat:push 单通道，见 shared ChatStreamEvent）：
- *   start  →  delta（正文增量） →  done（全量 messages）/ error
+ *   start  →  message（完整消息实时同步：正文/工具调用/工具结果） →  done（全量 messages）/ error
  *   done 后异步自动生成对话标题 → renamed（不阻塞 done，侧栏据此更新名称）
  */
 
@@ -77,8 +77,7 @@ export class ChatService {
         conversation,
       );
 
-      // 流式循环后台执行；runAgentSend 的同步部分（触发 send + 推 user/start）
-      // 在调用栈内立即完成，UI 即时上屏，不阻塞本调用
+      // 流式循环后台执行（user/delta/done 均由 agent 事件驱动），不阻塞本调用
       void this.runAgentSend(workspaceId, conversationId, agent, content);
     } catch (error) {
       // 取 agent 阶段的错误（会话不存在/创建失败等）通过事件通知 UI
@@ -92,8 +91,11 @@ export class ChatService {
 
   /**
    * 后台执行完整一轮流式（agent.send 可含多轮工具调用，全程不阻塞 send 调用方）。
-   * 同步部分：触发 agent.send（同步追加 user + assistant 占位，均带真实 id）、
-   * 推 user + start（UI 即时上屏）；后台部分：流式增量 → delta → 完成落库 → done → 自动命名。
+   * 订阅 agent 事件转发 chat:push，事件驱动、不手动读 agent.messages：
+   *   inner-loops-start（整组开始，一次 send 仅一次）→ user + start
+   *   chunk-parsed（每 chunk）                        → message（完整 receiver 实时同步：正文/reasoning/tool_calls/status）
+   *   inner-loop-end（每轮结束）                      → message（补推本轮新增的工具结果 Tool/Function）
+   *   inner-loops-end（整组结束，一次 send 仅一次）   → 落库 + done + 自动命名
    */
   private async runAgentSend(
     workspaceId: string,
@@ -101,47 +103,76 @@ export class ChatService {
     agent: Agent,
     content: string,
   ): Promise<void> {
-    // 触发 send 的同步部分：agent.messages 立即追加 user + assistant 占位（带真实 id）
-    const sendPromise = agent.send(content);
-    const userMsg = agent.messages.at(-2)!; // send 无条件追加 user + assistant 两条
-    this.opts.push({ conversationId, type: "user", id: userMsg.id!, content }); // agent 内消息构造即带 id
-    this.opts.push({ conversationId, type: "start" });
+    // 整组内循环开始：user + assistant 占位已就绪（事件参数 messages 即当前完整消息）
+    const onLoopsStart = (messages: AgentNS.Message[]) => {
+      const userMsg = messages.at(-2)!; // send 无条件追加 user + assistant 两条（带真实 id）
+      this.opts.push({ conversationId, type: "user", id: userMsg.id!, content });
+      this.opts.push({ conversationId, type: "start" });
+    };
 
-    // 流式增量（正文）→ chat:push delta（chunk-parsed 带当前 receiver，取真实消息 id）
-    const onChunkParsed = (
-      receiver: AgentNS.Message,
-      chunk: AgentNS.StreamResponseData,
-    ) => {
-      const delta = chunk?.choices?.[0]?.delta;
-      const text = delta?.content;
-      if (typeof text === "string" && text.length > 0) {
-        this.opts.push({
-          conversationId,
-          type: "delta",
-          id: receiver.id!, // agent 内消息构造即带 id
-          content: text,
-        });
+    // 流式实时同步 → message（chunk-parsed 带当前 receiver 完整对象，
+    // 正文/reasoning/tool_calls/status 一次到位，前端按 id 就地替换）
+    const onChunkParsed = (receiver: AgentNS.Message) => {
+      this.opts.push({
+        conversationId,
+        type: "message",
+        id: receiver.id!, // agent 内消息构造即带 id
+        message: receiver,
+      });
+    };
+
+    // 每轮内循环结束：补推本轮新增的工具结果消息（Tool/Function）——
+    // chunk-parsed 只覆盖 assistant，工具执行结果靠这里实时上屏，
+    // 前端无需全量替换即可看到「调用了什么工具、返回了什么」
+    const pushedToolIds = new Set<string>();
+    const onLoopEnd = () => {
+      for (const m of agent.messages) {
+        if (
+          (m.role === AgentNS.Role.Tool || m.role === AgentNS.Role.Function) &&
+          m.id &&
+          !pushedToolIds.has(m.id)
+        ) {
+          pushedToolIds.add(m.id);
+          this.opts.push({
+            conversationId,
+            type: "message",
+            id: m.id,
+            message: m,
+          });
+        }
       }
     };
-    agent.events.on("chunk-parsed", onChunkParsed);
 
-    try {
-      // 同步部分已完成（上方），此处 await 等待流式填充完成，返回完整 messages。
-      // 每轮内循环结束的落库由 createAndRegisterAgent 注册的
-      // onInnerLoopEnd 插件完成（工具调用结果不丢）；此处再做最终落库（幂等）。
-      const messages = await sendPromise;
+    agent.events.on("inner-loop-end", onLoopEnd);
+
+    // 整组内循环结束：messages 为完整结果（正常/error/abort 均到达）→ 落库 + done + 自动命名
+    const onLoopsEnd = async (messages: AgentNS.Message[]) => {
       await this.persistSnapshot(workspaceId, conversationId, messages);
       this.opts.push({ conversationId, type: "done", messages });
       // 自动生成对话标题：异步执行，不阻塞 done（防重复由 naming Set + 默认名判断保证）
       void this.autoRename(workspaceId, conversationId);
+    };
+
+    agent.events.on("inner-loops-start", onLoopsStart);
+    agent.events.on("chunk-parsed", onChunkParsed);
+    agent.events.on("inner-loop-end", onLoopEnd);
+    agent.events.on("inner-loops-end", onLoopsEnd);
+
+    try {
+      // user/delta/done 均由 agent 事件驱动；此处 await 仅等待流式跑完（异常兜底）
+      await agent.send(content);
     } catch (error) {
+      // 兜底：send 意外 reject（正常/error 均走 inner-loops-end，一般不会到这里）
       this.opts.push({
         conversationId,
         type: "error",
         message: error instanceof Error ? error.message : String(error),
       });
     } finally {
+      agent.events.off("inner-loops-start", onLoopsStart);
       agent.events.off("chunk-parsed", onChunkParsed);
+      agent.events.off("inner-loop-end", onLoopEnd);
+      agent.events.off("inner-loops-end", onLoopsEnd);
       // 运行结束释放：仅当注册表里仍是本 agent 才删（新一轮可能已注册新 agent，
       // 或被 release 提前清掉 —— 都跳过，避免误删）
       if (this.agents.get(conversationId)?.agent === agent) {

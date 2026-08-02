@@ -69,9 +69,10 @@ export type ChatStreamEvent =
   /** main 确认收到用户消息（render 据此上屏，不再本地乐观插入）
    *  id 为 agent 中真实 user 消息 id（send 同步部分创建后读取） */
   | { conversationId: string; type: "user"; id: string; content: string }
-  /** 流式增量。id 为当前流式填充中的 assistant 消息 id（render 按 id 就地累积，
-   *  与 done 全量消息一致 → v-for key 从流式开始即稳定） */
-  | { conversationId: string; type: "delta"; id: string; content: string }
+  /** 一条完整消息的实时同步（chunk-parsed 的 receiver 完整状态：正文/reasoning/tool_calls/status；
+   *  以及每轮结束补推的工具结果消息）。id 为 agent 中真实消息 id（v-for key 从流式开始即稳定），
+   *  render 按 id 就地 upsert：有则替换、无则追加末尾 —— 事件到达顺序即消息顺序 */
+  | { conversationId: string; type: "message"; id: string; message: AgentNS.Message }
   | { conversationId: string; type: "done"; messages: AgentNS.Message[] }
   | { conversationId: string; type: "error"; message: string }
   /** 自动生成对话标题后推送（不阻塞 done，侧栏据此更新名称） */
