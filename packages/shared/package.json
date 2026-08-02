@@ -5,6 +5,6 @@
   "main": "src/types.ts",
   "scripts": {},
   "dependencies": {
-    "@ai-zen/agents-core": "3.0.1"
+    "@ai-zen/agents-core": "3.1.0"
   }
 }

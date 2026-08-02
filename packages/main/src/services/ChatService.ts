@@ -77,9 +77,8 @@ export class ChatService {
         conversation,
       );
 
-      // 提交：推 user（render 上屏）+ start，然后后台跑流式循环，不阻塞本调用
-      this.opts.push({ conversationId, type: "user", content });
-      this.opts.push({ conversationId, type: "start" });
+      // 流式循环后台执行；runAgentSend 的同步部分（触发 send + 推 user/start）
+      // 在调用栈内立即完成，UI 即时上屏，不阻塞本调用
       void this.runAgentSend(workspaceId, conversationId, agent, content);
     } catch (error) {
       // 取 agent 阶段的错误（会话不存在/创建失败等）通过事件通知 UI
@@ -92,8 +91,9 @@ export class ChatService {
   }
 
   /**
-   * 后台执行流式循环（agent.send 可含多轮工具调用，全程不阻塞 send 调用方）：
-   * 流式增量 → delta 事件 → 完成后持久化快照 → done 事件 → 自动命名。
+   * 后台执行完整一轮流式（agent.send 可含多轮工具调用，全程不阻塞 send 调用方）。
+   * 同步部分：触发 agent.send（同步追加 user + assistant 占位，均带真实 id）、
+   * 推 user + start（UI 即时上屏）；后台部分：流式增量 → delta → 完成落库 → done → 自动命名。
    */
   private async runAgentSend(
     workspaceId: string,
@@ -101,21 +101,35 @@ export class ChatService {
     agent: Agent,
     content: string,
   ): Promise<void> {
-    // 流式增量（正文）→ chat:push delta
-    const onChunk = (chunk: AgentNS.StreamResponseData) => {
+    // 触发 send 的同步部分：agent.messages 立即追加 user + assistant 占位（带真实 id）
+    const sendPromise = agent.send(content);
+    const userMsg = agent.messages.at(-2)!; // send 无条件追加 user + assistant 两条
+    this.opts.push({ conversationId, type: "user", id: userMsg.id!, content }); // agent 内消息构造即带 id
+    this.opts.push({ conversationId, type: "start" });
+
+    // 流式增量（正文）→ chat:push delta（chunk-parsed 带当前 receiver，取真实消息 id）
+    const onChunkParsed = (
+      receiver: AgentNS.Message,
+      chunk: AgentNS.StreamResponseData,
+    ) => {
       const delta = chunk?.choices?.[0]?.delta;
       const text = delta?.content;
       if (typeof text === "string" && text.length > 0) {
-        this.opts.push({ conversationId, type: "delta", content: text });
+        this.opts.push({
+          conversationId,
+          type: "delta",
+          id: receiver.id!, // agent 内消息构造即带 id
+          content: text,
+        });
       }
     };
-    agent.events.on("chunk", onChunk);
+    agent.events.on("chunk-parsed", onChunkParsed);
 
     try {
-      // agent.send：内部把 user 消息 + assistant 占位追加到 agent.messages 并流式填充，
-      // 返回完整 messages。每轮内循环结束的落库由 createAndRegisterAgent 注册的
+      // 同步部分已完成（上方），此处 await 等待流式填充完成，返回完整 messages。
+      // 每轮内循环结束的落库由 createAndRegisterAgent 注册的
       // onInnerLoopEnd 插件完成（工具调用结果不丢）；此处再做最终落库（幂等）。
-      const messages = await agent.send(content);
+      const messages = await sendPromise;
       await this.persistSnapshot(workspaceId, conversationId, messages);
       this.opts.push({ conversationId, type: "done", messages });
       // 自动生成对话标题：异步执行，不阻塞 done（防重复由 naming Set + 默认名判断保证）
@@ -127,7 +141,7 @@ export class ChatService {
         message: error instanceof Error ? error.message : String(error),
       });
     } finally {
-      agent.events.off("chunk", onChunk);
+      agent.events.off("chunk-parsed", onChunkParsed);
       // 运行结束释放：仅当注册表里仍是本 agent 才删（新一轮可能已注册新 agent，
       // 或被 release 提前清掉 —— 都跳过，避免误删）
       if (this.agents.get(conversationId)?.agent === agent) {

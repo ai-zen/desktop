@@ -52,20 +52,10 @@
 
         <!-- 正文（工具消息结果已折叠展示，不重复渲染） -->
         <template v-if="!isTool">
-          <!-- AI 消息：流式 Markdown 渲染 -->
-          <MarkdownRender
+          <!-- AI 消息：markdown-it 同步一次成型，无占位符/无视口懒加载/无动态高度 -->
+          <MarkdownContent
             v-if="isAssistant"
-            class="md-content"
-            mode="chat"
             :content="textContent"
-            :final="final"
-            html-policy="escape"
-            :is-dark="isDark"
-            :fade="false"
-            :smooth-streaming="'auto'"
-            :max-live-nodes="0"
-            code-renderer="shiki"
-            :code-block-props="{ theme: { light: 'vitesse-light', dark: 'vitesse-dark' } }"
           />
           <!-- 用户消息：纯文本 -->
           <div v-else class="content" v-html="textContentHtml"></div>
@@ -85,10 +75,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from "vue";
+import { ref, computed } from "vue";
 import { AgentNS } from "@ai-zen/agents-core";
-import MarkdownRender from "markstream-vue";
-import "markstream-vue/index.css";
+import MarkdownContent from "@/components/MarkdownContent.vue";
 import {
   ArrowRight,
   ArrowDown,
@@ -99,28 +88,12 @@ import {
 
 const props = defineProps<{
   message: AgentNS.Message;
-  /** 是否已结束流式（false = 正在流式输出，展示打字机效果） */
-  final?: boolean;
 }>();
-defineEmits<{ retry: [] }>();
+const emit = defineEmits<{
+  retry: [];
+}>();
 
-const isDark = ref(
-  typeof window !== "undefined" &&
-    window.matchMedia("(prefers-color-scheme: dark)").matches,
-);
-
-let darkMq: MediaQueryList | undefined;
-function onDarkChange(e: MediaQueryListEvent) {
-  isDark.value = e.matches;
-}
-onMounted(() => {
-  darkMq = window.matchMedia("(prefers-color-scheme: dark)");
-  darkMq.addEventListener("change", onDarkChange);
-});
-onUnmounted(() => {
-  darkMq?.removeEventListener("change", onDarkChange);
-});
-
+// ==================== 折叠状态（组件内部状态，DOM 常驻天然保持） ====================
 const showThinking = ref(false);
 const showTools = ref(false);
 const showToolResult = ref(false);
@@ -175,6 +148,7 @@ const errorText = computed(() => textContent.value || "发生错误");
   display: flex;
   gap: 12px;
   max-width: 85%;
+  align-self: flex-start;
 
   &.user {
     align-self: flex-end;
@@ -193,8 +167,6 @@ const errorText = computed(() => textContent.value || "发生错误");
   }
 
   &.assistant {
-    align-self: flex-start;
-
     .avatar {
       background: rgba(var(--el-color-primary-rgb), 0.12);
     }
@@ -249,122 +221,6 @@ const errorText = computed(() => textContent.value || "发生错误");
 .content {
   word-break: break-word;
   white-space: pre-wrap;
-}
-
-// ==================== Markdown 渲染适配（markstream） ====================
-.md-content {
-  font-size: 13px;
-  line-height: 1.6;
-  word-break: break-word;
-
-  :deep(p) {
-    margin: 0 0 10px;
-
-    &:last-child {
-      margin-bottom: 0;
-    }
-  }
-
-  :deep(h1),
-  :deep(h2),
-  :deep(h3),
-  :deep(h4) {
-    margin: 14px 0 8px;
-    font-weight: 600;
-    line-height: 1.4;
-    color: var(--el-text-color-primary);
-  }
-
-  :deep(h1) { font-size: 16px; }
-  :deep(h2) { font-size: 15px; }
-  :deep(h3) { font-size: 14px; }
-  :deep(h4) { font-size: 13px; }
-
-  // 代码块
-  :deep(pre) {
-    margin: 10px 0;
-    padding: 12px 14px;
-    background: var(--el-fill-color-light);
-    border: 1px solid var(--el-border-color);
-    border-radius: 6px;
-    font-size: 13px;
-    line-height: 1.6;
-    overflow-x: auto;
-  }
-
-  :deep(code) {
-    font-family: "JetBrains Mono", "Fira Code", Consolas, "Courier New", monospace;
-    font-size: 0.92em;
-  }
-
-  // 行内代码
-  :deep(p code),
-  :deep(li code),
-  :deep(td code),
-  :deep(th code) {
-    padding: 1px 5px;
-    background: var(--el-fill-color-light);
-    border-radius: 4px;
-    color: var(--el-color-primary);
-  }
-
-  :deep(ul),
-  :deep(ol) {
-    margin: 0 0 10px;
-    padding-left: 20px;
-  }
-
-  :deep(li) {
-    margin: 2px 0;
-  }
-
-  :deep(a) {
-    color: var(--el-color-primary);
-    text-decoration: none;
-
-    &:hover {
-      text-decoration: underline;
-    }
-  }
-
-  :deep(blockquote) {
-    margin: 10px 0;
-    padding: 2px 12px;
-    border-left: 3px solid var(--el-color-primary-light-5);
-    color: var(--el-text-color-secondary);
-    background: var(--el-fill-color-light);
-    border-radius: 0 4px 4px 0;
-  }
-
-  :deep(table) {
-    margin: 10px 0;
-    border-collapse: collapse;
-    font-size: 13px;
-    width: 100%;
-  }
-
-  :deep(th),
-  :deep(td) {
-    border: 1px solid var(--el-border-color);
-    padding: 6px 10px;
-    text-align: left;
-  }
-
-  :deep(th) {
-    background: var(--el-fill-color-light);
-    font-weight: 600;
-  }
-
-  :deep(hr) {
-    border: none;
-    border-top: 1px solid var(--el-border-color);
-    margin: 14px 0;
-  }
-
-  :deep(img) {
-    max-width: 100%;
-    border-radius: 6px;
-  }
 }
 
 // ==================== 折叠区（思考 / 工具调用） ====================

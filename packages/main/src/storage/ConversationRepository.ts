@@ -5,6 +5,7 @@
  */
 
 import type { Conversation } from "@ai-zen/desktop-shared";
+import { AgentNS } from "@ai-zen/agents-core";
 import type { Database } from "./Database.js";
 
 interface ConversationRow {
@@ -52,7 +53,19 @@ export class ConversationRepository {
        FROM conversations WHERE id = ? AND workspace_id = ?`,
       [id, workspaceId],
     );
-    return row ? rowToConversation(row) : null;
+    if (!row) return null;
+    const conversation = rowToConversation(row);
+    // 历史消息 id 迁移：agents-core 3.1.0 前落库的旧快照无 id，
+    // 读回时补齐（幂等：有 id 跳过），仅首次写回一次。
+    let migrated = false;
+    for (const m of conversation.messages) {
+      if (m && !m.id) {
+        m.id = globalThis.crypto.randomUUID();
+        migrated = true;
+      }
+    }
+    if (migrated) await this.write(workspaceId, conversation);
+    return conversation;
   }
 
   /** 全量快照写：meta 列 + messages blob；更新时保留 created_at */

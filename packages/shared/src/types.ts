@@ -66,9 +66,12 @@ export interface ModelOption {
  *  状态源在 main 的 agent：send 只提交（快速返回），user/delta/done 全由事件回流 */
 export type ChatStreamEvent =
   | { conversationId: string; type: "start" }
-  /** main 确认收到用户消息（render 据此上屏，不再本地乐观插入） */
-  | { conversationId: string; type: "user"; content: string }
-  | { conversationId: string; type: "delta"; content: string }
+  /** main 确认收到用户消息（render 据此上屏，不再本地乐观插入）
+   *  id 为 agent 中真实 user 消息 id（send 同步部分创建后读取） */
+  | { conversationId: string; type: "user"; id: string; content: string }
+  /** 流式增量。id 为当前流式填充中的 assistant 消息 id（render 按 id 就地累积，
+   *  与 done 全量消息一致 → v-for key 从流式开始即稳定） */
+  | { conversationId: string; type: "delta"; id: string; content: string }
   | { conversationId: string; type: "done"; messages: AgentNS.Message[] }
   | { conversationId: string; type: "error"; message: string }
   /** 自动生成对话标题后推送（不阻塞 done，侧栏据此更新名称） */

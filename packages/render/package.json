@@ -8,17 +8,17 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@ai-zen/agents-core": "3.0.1",
+    "@ai-zen/agents-core": "3.1.0",
     "@ai-zen/desktop-shared": "workspace:*",
     "@element-plus/icons-vue": "^2.3.2",
     "element-plus": "^2.14.3",
-    "markstream-vue": "^1.0.8",
+    "highlight.js": "^11.11.1",
+    "markdown-it": "^15.0.0",
     "pinia": "^2.3.0",
-    "shiki": "^3.23.0",
-    "stream-markdown": "^0.0.16",
     "vue": "^3.5.40"
   },
   "devDependencies": {
+    "@types/markdown-it": "^14.1.2",
     "@vitejs/plugin-vue": "^6.0.8",
     "sass": "^1.101.0",
     "typescript": "^5.3.3",

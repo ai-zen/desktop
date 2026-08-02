@@ -147,15 +147,23 @@ export const useChatStore = defineStore("chat", {
           convStore.setRunning(evt.conversationId, true);
           break;
 
-        // main 确认收到用户消息 → 上屏（不再由 render 本地乐观插入）
+        // main 确认收到用户消息 → 上屏（id 为 agent 中真实 user 消息 id）
         case "user":
-          st.messages.push({ role: AgentNS.Role.User, content: evt.content });
+          st.messages.push({
+            id: evt.id,
+            role: AgentNS.Role.User,
+            content: evt.content,
+          });
           break;
 
         case "delta": {
+          // 按真实消息 id 就地累积（与 done 全量数组 id 一致 → key 全程稳定）。
+          // last 是当前流式中的 assistant（main 按 receiver 推 id，匹配即累积）；
+          // 不匹配（如工具调用后新一轮 assistant）则 push 新消息。
           const last = st.messages.at(-1);
           if (
             last &&
+            last.id === evt.id &&
             last.role === AgentNS.Role.Assistant &&
             last.status !== AgentNS.MessageStatus.Error
           ) {
@@ -165,8 +173,10 @@ export const useChatStore = defineStore("chat", {
               evt.content;
           } else {
             st.messages.push({
+              id: evt.id,
               role: AgentNS.Role.Assistant,
               content: evt.content,
+              status: AgentNS.MessageStatus.Writing,
             });
           }
           break;

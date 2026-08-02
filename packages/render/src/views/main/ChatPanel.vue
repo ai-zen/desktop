@@ -16,18 +16,30 @@
         <span class="chat-title">{{ conversationStore.activeConversation?.name }}</span>
       </div>
 
-      <!-- 消息列表 -->
-      <div class="messages" ref="messagesRef">
+      <!-- 消息列表（QQ/微信式：DOM 常驻 + 首屏最近 N 条 + 上翻分页加载历史）
+           items 带稳定 key（= 消息 id），prepend 更早消息时已有消息 key 不变
+           → DOM 常驻，折叠状态天然保持；
+           分页窗口内的消息全部完整渲染（不惰性），滚动不触发渲染 → 无高度抖动 -->
+      <div
+        class="messages"
+        :class="{ 'is-hidden': contentHidden }"
+        ref="messagesRef"
+        @scroll="onScroll"
+      >
+        <!-- 上翻加载历史提示（v-show：DOM 常驻，仅切换 display，保持子节点顺序稳定） -->
+        <div v-show="hasOlder" class="load-older-hint">
+          <span>{{ loadingOlder ? "正在加载更早消息…" : "上翻加载更早消息" }}</span>
+        </div>
+
         <MessageBubble
-          v-for="(msg, idx) in chatStore.messages"
-          :key="`${idx}-${msg.role}`"
+          v-for="msg in items"
+          :key="msg.id"
           :message="msg"
-          :final="!chatStore.streaming || idx < chatStore.messages.length - 1"
           @retry="chatStore.retry"
         />
 
-        <!-- 正在生成标识 -->
-        <div v-if="chatStore.streaming" class="streaming-hint">
+        <!-- 正在生成标识（v-show：DOM 常驻，仅切换 display，保持子节点顺序稳定） -->
+        <div v-show="chatStore.streaming" class="streaming-hint">
           <span class="dot"></span>
           正在思考...
         </div>
@@ -49,6 +61,15 @@
               :value="m.id"
             />
           </el-select>
+          <el-tooltip :content="contentHidden ? '显示消息' : '隐藏消息'" placement="top" effect="light">
+            <el-button
+              size="small"
+              :icon="contentHidden ? View : Hide"
+              circle
+              class="hide-toggle"
+              @click="contentHidden = !contentHidden"
+            />
+          </el-tooltip>
         </div>
         <el-input
           v-model="inputText"
@@ -78,13 +99,25 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted } from "vue";
-import { ChatDotRound, Promotion } from "@element-plus/icons-vue";
+import { ref, computed, watch, onMounted } from "vue";
+import { ChatDotRound, Promotion, View, Hide } from "@element-plus/icons-vue";
 import MessageBubble from "./MessageBubble.vue";
 import { useUiStore } from "../../stores/ui.js";
 import { useWorkspaceStore } from "../../stores/workspace.js";
 import { useConversationStore } from "../../stores/conversation.js";
 import { useChatStore } from "../../stores/chat.js";
+import { useMessageWindow } from "../../composables/useMessageWindow.js";
+import { useAutoScroll } from "../../composables/useAutoScroll.js";
+
+// ==================== QQ/微信式渲染参数 ====================
+/** 首屏加载条数（底部开始，加载最近 N 条） */
+const INITIAL_LOAD = 20;
+/** 上翻历史每次加载条数 */
+const PAGE_SIZE = 20;
+/** DOM 常驻上限（超出丢最旧，控制 DOM 数量） */
+const MAX_LOADED = 200;
+/** 距顶部多少 px 触发加载更早历史 */
+const LOAD_OLDER_TOP = 120;
 
 const uiStore = useUiStore();
 const workspaceStore = useWorkspaceStore();
@@ -93,6 +126,10 @@ const chatStore = useChatStore();
 
 const inputText = ref("");
 const messagesRef = ref<HTMLElement | null>(null);
+const scroller = () => messagesRef.value;
+
+/** 消息隐藏：一开始不可见，滚动到底部后自动显示（工具栏可手动切换） */
+const contentHidden = ref(true);
 
 const activeConversationId = computed(() => conversationStore.activeConversationId);
 
@@ -101,6 +138,124 @@ const currentModelId = computed(() => {
   return conversationStore.activeConversation?.modelId ?? uiStore.models[0]?.id ?? "";
 });
 
+// ==================== 渲染窗口 / 滚底策略（由 composables 提供） ====================
+const { items, hasOlder, loadingOlder, resetToTail, loadOlder } =
+  useMessageWindow(() => chatStore.messages, scroller, {
+    initialLoad: INITIAL_LOAD,
+    pageSize: PAGE_SIZE,
+    maxLoaded: MAX_LOADED,
+  });
+
+const { isNearBottom, scrollToBottom, alignToBottom, followIfNearBottom } = useAutoScroll(scroller);
+
+// ==================== 隐藏解除（滚动到底立即显示） ====================
+// markdown 同步渲染，滚动到底时内容已就绪，直接解除隐藏即可
+function scheduleReveal() {
+  if (contentHidden.value && isNearBottom()) contentHidden.value = false;
+}
+
+// ==================== 时序：会话初始化 ====================
+// initializing 表示「等待当前会话首帧消息」：消息数组被替换（getChatState 返回）
+// 前保持该状态；空数组 = 仍在加载，等待下一次替换。
+let initializing = false;
+
+/** 完成初始化：窗口对齐最近 INITIAL_LOAD 条 + 滚底 */
+function finalizeInitialization() {
+  if (!initializing || chatStore.messages.length === 0) return;
+  initializing = false;
+  resetToTail();
+  alignToBottom(); // markdown/代码块异步渲染高度延迟稳定，多次延迟滚底对齐真底
+}
+
+/** 开始一次会话初始化：消息已就绪立即完成，否则等 messages watch 消费 */
+function beginConversation() {
+  initializing = true;
+  contentHidden.value = true; // 每次切换会话：一开始不可见
+  // 新会话默认关注底部，清除上翻状态
+  userScrollingUp = false;
+  if (scrollUpResetTimer) {
+    clearTimeout(scrollUpResetTimer);
+    scrollUpResetTimer = 0;
+  }
+  lastScrollTop = 0;
+  resetToTail(); // 立即对齐（即使空数组也安全），消息到达后再对齐一次
+  finalizeInitialization();
+}
+
+watch(activeConversationId, () => beginConversation());
+
+// ==================== 用户上翻：暂停自动滚底 ====================
+// 用户主动向上滚动（上翻历史）后一段时间内，流式增量 / done 替换消息数组
+// 触发的 followIfNearBottom 不执行 —— 避免「底部附近滚两下就被拽回底部」。
+let userScrollingUp = false;
+let scrollUpResetTimer = 0;
+let lastScrollTop = 0;
+
+// 消息数组引用替换（activate 首载 / done 完成）：
+// - initializing（切会话首载）→ finalizeInitialization()
+// - 已完成初始化（done 替换）→ 若在底部附近重新对齐（用户上翻中则跳过）
+watch(
+  () => chatStore.messages,
+  (msgs) => {
+    if (initializing) {
+      if (msgs.length === 0) return; // 仍在加载（槽位未填充），保持 initializing
+      finalizeInitialization();
+    } else if (!userScrollingUp) {
+      followIfNearBottom();
+    }
+  },
+);
+
+// 消息条数变化（user 事件 push / 流式 append）：追加时仅在底部附近跟随滚底
+watch(
+  () => chatStore.messages.length,
+  () => {
+    if (!initializing && !userScrollingUp) followIfNearBottom();
+  },
+);
+
+// 流式增量：最后一条 content 变长时，若在底部附近则跟随（打字机滚底）
+watch(
+  () => {
+    const last = chatStore.messages.at(-1);
+    return typeof last?.content === "string" ? last.content.length : 0;
+  },
+  () => {
+    if (!userScrollingUp) followIfNearBottom();
+  },
+);
+
+// 流式结束（done 替换消息数组、高度变化）：若在底部附近重新对齐
+watch(
+  () => chatStore.streaming,
+  (s) => {
+    if (!s && !userScrollingUp) followIfNearBottom();
+  },
+);
+
+// ==================== 滚动处理：上翻加载历史 + 用户上翻检测 ====================
+function onScroll() {
+  const el = scroller();
+  if (el) {
+    // 检测主动上翻：scrollTop 减小（loadOlder 补偿是增大，不会误判）
+    if (el.scrollTop < lastScrollTop - 2) {
+      userScrollingUp = true;
+      if (scrollUpResetTimer) clearTimeout(scrollUpResetTimer);
+      scrollUpResetTimer = window.setTimeout(() => {
+        userScrollingUp = false;
+        scrollUpResetTimer = 0;
+      }, 2000);
+    }
+    lastScrollTop = el.scrollTop;
+  }
+  // 隐藏状态下滚动到底 → 解除隐藏（内容已同步渲染，直接显示）
+  scheduleReveal();
+  if (el && el.scrollTop < LOAD_OLDER_TOP) {
+    void loadOlder(); // 内部处理 loadingOlder 防重入 + scrollTop 补偿
+  }
+}
+
+// ==================== 发送 / 模型 ====================
 async function handleModelChange(modelId: string) {
   const wsId = workspaceStore.activeWorkspaceId;
   const convId = conversationStore.activeConversationId;
@@ -112,6 +267,12 @@ async function handleSend() {
   const text = inputText.value.trim();
   if (!text) return;
   inputText.value = "";
+  // 发送 = 用户回到关注底部，清除上翻状态（否则流式增量不会滚底）
+  userScrollingUp = false;
+  if (scrollUpResetTimer) {
+    clearTimeout(scrollUpResetTimer);
+    scrollUpResetTimer = 0;
+  }
   await chatStore.send(text);
   scrollToBottom();
 }
@@ -123,27 +284,13 @@ function onInputKeydown(e: KeyboardEvent) {
   }
 }
 
-function scrollToBottom() {
-  nextTick(() => {
-    if (messagesRef.value) {
-      messagesRef.value.scrollTop = messagesRef.value.scrollHeight;
-    }
-  });
-}
-
-// 流式增量时自动滚底
-watch(
-  () => chatStore.messages.length,
-  () => scrollToBottom(),
-);
-
-// 加载会话历史后滚底
-watch(activeConversationId, () => scrollToBottom());
-
 onMounted(() => {
   if (!uiStore.models.length) {
     void uiStore.loadOptions();
   }
+  // 应用启动即恢复会话：挂载时会话可能已激活且消息已就绪，
+  // watch(activeConversationId) 不会触发（id 未变化），需手动补齐初始化。
+  if (activeConversationId.value) beginConversation();
 });
 </script>
 
@@ -201,7 +348,7 @@ onMounted(() => {
   }
 }
 
-// ==================== 消息列表 ====================
+// ==================== 消息列表（普通 flex 布局，DOM 常驻） ====================
 .messages {
   flex: 1;
   overflow-y: auto;
@@ -209,6 +356,26 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  position: relative;
+  // 禁用浏览器滚动锚定：消息增量/渲染变化时锚定会擅自调整 scrollTop，
+  // 滚动位置由我们自己的 loadOlder 补偿逻辑管理。
+  overflow-anchor: none;
+}
+
+// 隐藏状态：消息内容不可见（visibility 隐藏但保留布局与滚动）
+.messages.is-hidden {
+  .message,
+  .load-older-hint,
+  .streaming-hint {
+    visibility: hidden;
+  }
+}
+
+.load-older-hint {
+  align-self: center;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  padding: 4px 0;
 }
 
 .streaming-hint {
