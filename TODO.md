@@ -12,21 +12,9 @@
 - UI：标题栏窗口控制（hover 加强 + 最大化/还原方块图标）
 - UI：消息头像（User / ChatDotRound 图标 + rgba 低透明背景适配深浅主题）
 - UI：消息气泡圆角（助手左上 / 用户右上尖锐）
+- 性能：main 同步 IO 异步化——SQLite 走 worker_threads（dbWorker 独立线程）、fs 用 `fs/promises`（app.ts / ProviderPool），主进程事件循环不再被同步 SQL 阻塞
 
-## 1. 性能：main 同步代码改为异步（高优先级）
-
-- **现状**：
-  - SQLite 用 `node:sqlite` 的 `DatabaseSync`，**全部是同步 API**——`WorkspaceRepository` / `ConversationRepository` 的 list/read/write 都同步阻塞主进程事件循环
-  - `app.ts` / `ProviderPool.ts` 有同步 fs（`existsSync` / `mkdirSync`）
-  - SDK 侧 `AgentRepository` / `ConfigManager` 的读取若为同步也需一并评估
-- **影响**：流式热路径上 `persistSnapshot` 每轮 read + write 同步阻塞；发送 / 列表刷新 / 落库并发时互相卡顿（大对话尤甚）
-- **目标**：IO 全部异步化，不阻塞主进程
-  - SQLite：`DatabaseSync` → worker_threads 封装（或等价异步方案），Repository 接口改 async
-  - fs：`existsSync` / `mkdirSync` → `fs.promises`
-  - SDK 同步读取：确认后决定包异步 or 接受低频阻塞（启动/切会话）
-- **注意**：Repository 接口签名变更会波及 services / render 调用点——优先保持接口稳定，内部异步化
-
-## 2. 性能：render 切换对话虚拟滚动（高优先级）
+## 1. 性能：render 切换对话虚拟滚动（高优先级）
 
 - **现状**：`ChatPanel` 对全部消息 `v-for` 渲染；每条 assistant 消息走 `markstream-vue` + Shiki 高亮（DOM 重、高亮贵）；大对话（50+ 条）切换时一次性全量渲染，明显卡顿
 - **目标**：消息列表虚拟滚动（只渲染视口附近），候选：
@@ -37,12 +25,12 @@
   - 复用在视口外的已渲染消息，避免滚动时反复触发 Shiki 高亮
   - 折叠区（思考过程 / 工具调用 / 工具结果）的展开状态在虚拟化下如何保持
 
-## 3. 设置页 SettingsView（低优先级）
+## 2. 设置页 SettingsView（低优先级）
 
 - 现状：`uiStore.currentView` 已支持 `settings`，入口未加
 - 目标：设置页 SettingsView，内容：API Key / 默认模型 / Agent 列表 / 数据目录
 
-## 4. UI：更换软件 LOGO（低优先级，等找到合适的 LOGO 素材再完成）
+## 3. UI：更换软件 LOGO（低优先级，等找到合适的 LOGO 素材再完成）
 
 - 现状：项目内无任何图标/LOGO 资源（png/ico/icns/svg 全无）——TitleBar 用 `MagicStick` 图标 + "AI-Zen" 渐变文字；BrowserWindow 无自定义 icon（显示默认 Electron 图标）
 - 目标：

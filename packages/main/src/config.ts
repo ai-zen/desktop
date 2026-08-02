@@ -17,3 +17,5 @@ export const CONFIG_FILE = join(AI_ZEN_DIR, "config.json");
 export const AGENTS_DIR = join(AI_ZEN_DIR, "agents");
 
 export const DESKTOP_DIR = join(AI_ZEN_DIR, "desktop");
+/** 主存储 SQLite 文件路径（由 DesktopApp 单根创建 Database 实例） */
+export const DB_FILE = join(DESKTOP_DIR, "ai-zen.db");

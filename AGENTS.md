@@ -92,6 +92,10 @@ cd packages/main && pnpm build
 - **electron 加载的 dist 版本 ≠ 源码版本**：rolldown watch + nodemon 有编译/重启时序，改完 main 代码后必须确认 `(Get-Process electron).StartTime` 晚于 dist 的 `LastWriteTime`，再实测
 - **electron 由根目录 `pnpm dev` 的 nodemon 管理**：nodemon watch `packages/main/dist/main.mjs`，main 源码变更自动编译+重启 electron（自动带 `NODE_ENV=development` 加载 localhost:5173）。**不要手动 `pnpm build` / kill electron / 单独 `pnpm start`**——手动启动的 electron 缺 NODE_ENV 会加载 file:// 旧 render 产物，且与 nodemon 实例抢 9222 端口造成多实例混乱。需重启 electron 时：touch dist/main.mjs 触发 nodemon，或等 watch 编译自动触发
 - **main 进程是 ESM**（package.json `type: module`）：调试日志用 `import { appendFileSync } from "node:fs"`，不能用 `require`（ReferenceError 会被 try/catch 吞掉，症状是"日志写不出来"）
+- **node:sqlite 只有同步 `DatabaseSync`**（无异步版），主进程同步 SQL 会阻塞事件循环——异步化用 **worker_threads 隔离**（`dbWorker.ts` 独立线程持 DB，主线程消息调用）。worker 打包注意：
+  - rolldown config 需**新增独立入口**（输出 `dist/dbWorker.mjs`），主线程 `new Worker(new URL("./dbWorker.mjs", import.meta.url), { workerData })` 引用
+  - **新增入口后已运行的 rolldown watch 不会加载新配置**（内存旧配置），需手动 `pnpm build` 一次生成新产物，或重启 dev
+  - **worker 内不要 import electron 相关模块**（如 config.ts 里 `app.getPath` 在 worker 线程不可用）——路径等参数用 `workerData` 从主线程注入
 
 ## 其他
 

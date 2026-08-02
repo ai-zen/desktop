@@ -14,9 +14,10 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme } from "electron";
 import { join } from "path";
 import { fileURLToPath } from "url";
-import { existsSync, mkdirSync } from "fs";
+import { mkdir } from "fs/promises";
 import { AgentRepository, ConfigManager } from "@ai-zen/agents-sdk";
-import { AGENTS_DIR, AI_ZEN_DIR, CONFIG_FILE, DESKTOP_DIR } from "./config.js";
+import { AGENTS_DIR, AI_ZEN_DIR, CONFIG_FILE, DB_FILE, DESKTOP_DIR } from "./config.js";
+import { Database } from "./storage/Database.js";
 import { WorkspaceRepository } from "./storage/WorkspaceRepository.js";
 import { ConversationRepository } from "./storage/ConversationRepository.js";
 import { WorkspaceService } from "./services/WorkspaceService.js";
@@ -34,8 +35,10 @@ export class DesktopApp {
   // ==================== 基础设施 ====================
   private readonly configManager = new ConfigManager(CONFIG_FILE);
   private readonly agentRepository = new AgentRepository(AGENTS_DIR);
-  private readonly workspaceRepository = new WorkspaceRepository();
-  private readonly conversationRepository = new ConversationRepository();
+  /** SQLite 数据库（worker 线程异步访问），单根创建、注入给各 Repository */
+  private readonly db = new Database(DB_FILE);
+  private readonly workspaceRepository = new WorkspaceRepository(this.db);
+  private readonly conversationRepository = new ConversationRepository(this.db);
   private readonly providerPool = new ProviderPool(
     this.configManager,
     AGENTS_DIR,
@@ -90,7 +93,7 @@ export class DesktopApp {
   async start(): Promise<void> {
     await app.whenReady();
 
-    this.ensureDataDirs();
+    await this.ensureDataDirs();
     // 初始化共享配置目录 + 默认 Agent / SubAgent（已有文件不覆盖）
     await this.configManager.bootstrap();
 
@@ -110,6 +113,10 @@ export class DesktopApp {
       if (process.platform !== "darwin") {
         app.quit();
       }
+    });
+    // 退出前优雅关闭数据库 worker（断引用后 terminate，避免 exit 竞态）
+    app.on("will-quit", () => {
+      void this.db.close();
     });
   }
 
@@ -153,10 +160,8 @@ export class DesktopApp {
     });
   }
 
-  private ensureDataDirs(): void {
-    if (!existsSync(DESKTOP_DIR)) {
-      mkdirSync(DESKTOP_DIR, { recursive: true });
-    }
+  private async ensureDataDirs(): Promise<void> {
+    await mkdir(DESKTOP_DIR, { recursive: true });
   }
 
   // ==================== IPC ====================

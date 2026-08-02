@@ -1,11 +1,11 @@
 /**
- * 会话仓储 — SQLite 实现（表 conversations）。
+ * 会话仓储 — SQLite 实现（表 conversations，经 worker 异步访问）。
  * 元数据走结构化列（列表/排序/搜索不解析大 JSON），消息整体存 messages blob。
  * 接口保持与原来一致：list/read/write/delete/removeWorkspace。
  */
 
 import type { Conversation } from "@ai-zen/desktop-shared";
-import { getDb } from "./db.js";
+import type { Database } from "./Database.js";
 
 interface ConversationRow {
   id: string;
@@ -32,13 +32,14 @@ function rowToConversation(row: ConversationRow): Conversation {
 }
 
 export class ConversationRepository {
+  constructor(private readonly db: Database) {}
+
   async list(workspaceId: string): Promise<Conversation[]> {
-    const rows = getDb()
-      .prepare(
-        `SELECT id, workspace_id, agent_id, model_id, name, messages, created_at, updated_at
-         FROM conversations WHERE workspace_id = ? ORDER BY updated_at DESC`,
-      )
-      .all(workspaceId) as unknown as ConversationRow[];
+    const rows = await this.db.all<ConversationRow>(
+      `SELECT id, workspace_id, agent_id, model_id, name, messages, created_at, updated_at
+       FROM conversations WHERE workspace_id = ? ORDER BY updated_at DESC`,
+      [workspaceId],
+    );
     return rows.map(rowToConversation);
   }
 
@@ -46,12 +47,11 @@ export class ConversationRepository {
     workspaceId: string,
     id: string,
   ): Promise<Conversation | null> {
-    const row = getDb()
-      .prepare(
-        `SELECT id, workspace_id, agent_id, model_id, name, messages, created_at, updated_at
-         FROM conversations WHERE id = ? AND workspace_id = ?`,
-      )
-      .get(id, workspaceId) as unknown as ConversationRow | undefined;
+    const row = await this.db.get<ConversationRow>(
+      `SELECT id, workspace_id, agent_id, model_id, name, messages, created_at, updated_at
+       FROM conversations WHERE id = ? AND workspace_id = ?`,
+      [id, workspaceId],
+    );
     return row ? rowToConversation(row) : null;
   }
 
@@ -60,22 +60,20 @@ export class ConversationRepository {
     workspaceId: string,
     conversation: Conversation,
   ): Promise<void> {
-    getDb()
-      .prepare(
-        `INSERT INTO conversations(
-           id, workspace_id, agent_id, model_id, name,
-           message_count, messages, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-           workspace_id = excluded.workspace_id,
-           agent_id     = excluded.agent_id,
-           model_id     = excluded.model_id,
-           name         = excluded.name,
-           message_count = excluded.message_count,
-           messages     = excluded.messages,
-           updated_at   = excluded.updated_at`,
-      )
-      .run(
+    await this.db.run(
+      `INSERT INTO conversations(
+         id, workspace_id, agent_id, model_id, name,
+         message_count, messages, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         workspace_id = excluded.workspace_id,
+         agent_id     = excluded.agent_id,
+         model_id     = excluded.model_id,
+         name         = excluded.name,
+         message_count = excluded.message_count,
+         messages     = excluded.messages,
+         updated_at   = excluded.updated_at`,
+      [
         conversation.id,
         workspaceId,
         conversation.agentId,
@@ -85,19 +83,22 @@ export class ConversationRepository {
         JSON.stringify(conversation.messages ?? []),
         conversation.createdAt,
         conversation.updatedAt,
-      );
+      ],
+    );
   }
 
   async delete(workspaceId: string, id: string): Promise<void> {
-    getDb()
-      .prepare("DELETE FROM conversations WHERE id = ? AND workspace_id = ?")
-      .run(id, workspaceId);
+    await this.db.run(
+      "DELETE FROM conversations WHERE id = ? AND workspace_id = ?",
+      [id, workspaceId],
+    );
   }
 
   /** 删除某 workspace 的全部会话（删除工作空间时级联清理） */
   async removeWorkspace(workspaceId: string): Promise<void> {
-    getDb()
-      .prepare("DELETE FROM conversations WHERE workspace_id = ?")
-      .run(workspaceId);
+    await this.db.run(
+      "DELETE FROM conversations WHERE workspace_id = ?",
+      [workspaceId],
+    );
   }
 }
