@@ -81,6 +81,18 @@ export class ConversationService {
     await this.repo.delete(workspaceId, id);
   }
 
+  async rename(
+    workspaceId: string,
+    id: string,
+    name: string,
+  ): Promise<void> {
+    const conversation = await this.repo.read(workspaceId, id);
+    if (!conversation) throw new Error(`会话不存在: ${id}`);
+    conversation.name = name;
+    conversation.updatedAt = new Date().toISOString();
+    await this.repo.write(workspaceId, conversation);
+  }
+
   async setModel(
     workspaceId: string,
     id: string,

@@ -32,6 +32,14 @@ export function removeConversation(
   return invokeService("conversation", "remove", workspaceId, id);
 }
 
+export function renameConversation(
+  workspaceId: string,
+  id: string,
+  name: string,
+): Promise<void> {
+  return invokeService("conversation", "rename", workspaceId, id, name);
+}
+
 export function setConversationModel(
   workspaceId: string,
   id: string,

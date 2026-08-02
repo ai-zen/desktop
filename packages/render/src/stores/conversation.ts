@@ -89,6 +89,12 @@ export const useConversationStore = defineStore("conversation", {
       await this.load(workspaceId);
     },
 
+    async rename(workspaceId: string, id: string, name: string) {
+      await api.renameConversation(workspaceId, id, name);
+      const c = (this.byWorkspace[workspaceId] ?? []).find((x) => x.id === id);
+      if (c) c.name = name;
+    },
+
     async setModel(workspaceId: string, id: string, modelId: string) {
       await api.setConversationModel(workspaceId, id, modelId);
       const c = (this.byWorkspace[workspaceId] ?? []).find((x) => x.id === id);
