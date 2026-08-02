@@ -83,6 +83,15 @@ cd packages/main && pnpm build
 - **shiki 用 3.23.0**：满足 stream-markdown peer，4.x 有 API 变化风险
 - 装新依赖后建议重启 dev（vite 重新 optimize），热更新可能造成状态混乱假象
 
+## main 端调试经验教训（本次自动命名踩坑）
+
+- **rolldown 会把正则字面量里的 `\d` 转义成 `\\d`**（语义从「数字」变成「反斜杠+d」），正则永远不匹配——排查时先 `node -e` 验证构建产物里的正则源码。**规避：正则里用 `[0-9]` 而非 `\d`**
+- **`import type { AgentNS }` 是 type-only**，运行时 `AgentNS` 是 undefined，`AgentNS.Role.User` 访问直接 TypeError（被 async void 调用吞掉，症状是函数"莫名提前结束"）。**需要运行时枚举值必须用值导入 `import { AgentNS }`**
+- **main 进程异步逻辑异常排查**：`void this.xxx()` 的 rejection 会被吞（无人监听），症状是"执行到一半没下文"。定位手段：关键步骤写文件日志（`appendFileSync` 到项目根，dev 是 detached 无 stdout），逐段确认执行流；切忌只改代码重测而不看证据
+- **electron 加载的 dist 版本 ≠ 源码版本**：rolldown watch + nodemon 有编译/重启时序，改完 main 代码后必须确认 `(Get-Process electron).StartTime` 晚于 dist 的 `LastWriteTime`，再实测
+- **electron 由根目录 `pnpm dev` 的 nodemon 管理**：nodemon watch `packages/main/dist/main.mjs`，main 源码变更自动编译+重启 electron（自动带 `NODE_ENV=development` 加载 localhost:5173）。**不要手动 `pnpm build` / kill electron / 单独 `pnpm start`**——手动启动的 electron 缺 NODE_ENV 会加载 file:// 旧 render 产物，且与 nodemon 实例抢 9222 端口造成多实例混乱。需重启 electron 时：touch dist/main.mjs 触发 nodemon，或等 watch 编译自动触发
+- **main 进程是 ESM**（package.json `type: module`）：调试日志用 `import { appendFileSync } from "node:fs"`，不能用 `require`（ReferenceError 会被 try/catch 吞掉，症状是"日志写不出来"）
+
 ## 其他
 
 - 数据根目录：`~/.ai-zen/`（共享根，CLI/Desktop 共用）

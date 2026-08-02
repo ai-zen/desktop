@@ -69,22 +69,23 @@ export const useConversationStore = defineStore("conversation", {
     },
 
     /**
-     * 选中会话，联动加载其消息。
-     * workspaceId 由调用方显式传入（点击会话时上下文明确），
-     * 避免跨 workspace 直接点会话时因 currentWorkspaceId 未更新而加载失败。
+     * 选中会话，切换查看视角。
+     * 各会话的消息/流式状态由 chat store 按会话隔离（byConversation），
+     * 首次打开才加载，已加载过的会话（含流式进行中）切回即恢复，互不覆盖。
      */
     select(workspaceId: string, id: string) {
       this.activeConversationId = id;
       if (workspaceId && id) {
         this.currentWorkspaceId = workspaceId;
-        useChatStore().load(workspaceId, id);
+        useChatStore().activate(workspaceId, id);
       } else {
-        useChatStore().clear();
+        useChatStore().deactivate();
       }
     },
 
     async remove(workspaceId: string, id: string) {
       await api.removeConversation(workspaceId, id);
+      useChatStore().remove(id);
       if (this.activeConversationId === id) this.select(workspaceId, "");
       await this.load(workspaceId);
     },
@@ -93,6 +94,14 @@ export const useConversationStore = defineStore("conversation", {
       await api.renameConversation(workspaceId, id, name);
       const c = (this.byWorkspace[workspaceId] ?? []).find((x) => x.id === id);
       if (c) c.name = name;
+    },
+
+    /** 自动命名（chat:push renamed 事件）更新缓存名称 —— 遍历所有 workspace 兜底 */
+    applyRename(id: string, name: string) {
+      for (const list of Object.values(this.byWorkspace)) {
+        const c = list.find((x) => x.id === id);
+        if (c) c.name = name;
+      }
     },
 
     async setModel(workspaceId: string, id: string, modelId: string) {

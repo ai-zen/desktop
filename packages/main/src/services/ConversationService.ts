@@ -24,6 +24,8 @@ export class ConversationService {
     private repo: ConversationRepository,
     private agentRepo: AgentRepository,
     private configManager: ConfigManager,
+    /** 删除后的联动钩子（如释放运行中的 agent） */
+    private hooks?: { onRemove?: (workspaceId: string, id: string) => Promise<void> | void },
   ) {}
 
   async list(workspaceId: string): Promise<ConversationSummary[]> {
@@ -79,6 +81,7 @@ export class ConversationService {
 
   async remove(workspaceId: string, id: string): Promise<void> {
     await this.repo.delete(workspaceId, id);
+    await this.hooks?.onRemove?.(workspaceId, id);
   }
 
   async rename(

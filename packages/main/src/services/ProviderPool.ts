@@ -31,7 +31,7 @@ export class ProviderPool {
   private async create(workspace: Workspace): Promise<Provider> {
     const cwd = workspace.cwd;
     const exists = existsSync;
-    const project = (sub: string) => join(cwd, sub);
+    const project = (...sub: string[]) => join(cwd, ...sub);
     const shared = (sub: string) => join(this.aiZenDir, sub);
     const userAgentsDir = join(
       process.env.HOME || process.env.USERPROFILE || "",

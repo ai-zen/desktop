@@ -15,6 +15,8 @@ export class WorkspaceService {
     private defaultCwd: () => string,
     /** 用于删除工作空间时级联清理其全部会话 */
     private conversationRepo: ConversationRepository,
+    /** 删除后的联动钩子（如释放运行中的 agent） */
+    private hooks?: { onRemove?: (id: string) => Promise<void> | void },
   ) {}
 
   async list(): Promise<Workspace[]> {
@@ -44,5 +46,6 @@ export class WorkspaceService {
     await this.repo.delete(id);
     // 级联清理该工作空间下的全部会话（删工作空间 → 删会话；反向不成立）
     await this.conversationRepo.removeWorkspace(id);
+    await this.hooks?.onRemove?.(id);
   }
 }

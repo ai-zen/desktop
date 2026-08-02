@@ -41,6 +41,12 @@ export interface ConversationSummary {
   running?: boolean;
 }
 
+/** chat.getState 返回：会话实时状态（有常驻 agent 则取 agent.messages，含流式进行中的消息） */
+export interface ConversationState {
+  messages: AgentNS.Message[];
+  streaming: boolean;
+}
+
 // ==================== Agent / Model 选项 ====================
 
 export interface AgentOption {
@@ -56,12 +62,17 @@ export interface ModelOption {
 
 // ==================== 推送事件 DTO ====================
 
-/** chat:push 单通道推送（discriminated union） */
+/** chat:push 单通道推送（discriminated union）
+ *  状态源在 main 的 agent：send 只提交（快速返回），user/delta/done 全由事件回流 */
 export type ChatStreamEvent =
   | { conversationId: string; type: "start" }
+  /** main 确认收到用户消息（render 据此上屏，不再本地乐观插入） */
+  | { conversationId: string; type: "user"; content: string }
   | { conversationId: string; type: "delta"; content: string }
   | { conversationId: string; type: "done"; messages: AgentNS.Message[] }
-  | { conversationId: string; type: "error"; message: string };
+  | { conversationId: string; type: "error"; message: string }
+  /** 自动生成对话标题后推送（不阻塞 done，侧栏据此更新名称） */
+  | { conversationId: string; type: "renamed"; name: string };
 
 /** 窗口最大化状态变更 */
 export interface WindowStateEvent {
