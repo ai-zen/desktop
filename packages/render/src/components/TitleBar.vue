@@ -25,8 +25,35 @@
         @click="toggleMaximize"
       >
         <el-icon :size="16">
-          <FullScreen v-if="!isMaximized" />
-          <CopyDocument v-else />
+          <!-- 最大化：空心方块 -->
+          <svg
+            v-if="!isMaximized"
+            viewBox="0 0 16 16"
+            width="16"
+            height="16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.4"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <rect x="3" y="3" width="10" height="10" rx="1.5" />
+          </svg>
+          <!-- 还原：两个重叠方块（后块露出左下角） -->
+          <svg
+            v-else
+            viewBox="0 0 16 16"
+            width="16"
+            height="16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.4"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <rect x="3.5" y="5.5" width="9" height="9" rx="1.5" opacity="0.45" />
+            <rect x="5.5" y="3.5" width="9" height="9" rx="1.5" />
+          </svg>
         </el-icon>
       </button>
       <button
@@ -44,8 +71,6 @@
 import { ref, onMounted, onUnmounted } from "vue";
 import {
   Minus,
-  FullScreen,
-  CopyDocument,
   Close,
   MagicStick,
 } from "@element-plus/icons-vue";
@@ -145,12 +170,12 @@ onUnmounted(() => {
   padding: 0;
 
   &:hover {
-    background-color: var(--el-fill-color-light);
+    background-color: rgba(var(--el-text-color-rgb), 0.08);
     color: var(--el-text-color-primary);
   }
 
   &:active {
-    background-color: var(--el-fill-color);
+    background-color: rgba(var(--el-text-color-rgb), 0.14);
   }
 
   &.close-btn:hover {

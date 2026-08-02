@@ -3,10 +3,10 @@
     <!-- 头像 -->
     <div class="avatar">
       <el-icon v-if="isUser" :size="18" color="var(--el-color-success)">
-        <UserFilled />
+        <User />
       </el-icon>
       <el-icon v-else :size="18" :color="isSystem ? 'var(--el-text-color-secondary)' : 'var(--el-color-primary)'">
-        <MagicStick />
+        <ChatDotRound />
       </el-icon>
     </div>
 
@@ -92,8 +92,8 @@ import "markstream-vue/index.css";
 import {
   ArrowRight,
   ArrowDown,
-  UserFilled,
-  MagicStick,
+  User,
+  ChatDotRound,
   WarningFilled,
 } from "@element-plus/icons-vue";
 
@@ -181,13 +181,14 @@ const errorText = computed(() => textContent.value || "发生错误");
     flex-direction: row-reverse;
 
     .avatar {
-      background: var(--el-color-success-light-9);
+      background: rgba(var(--el-color-success-rgb), 0.12);
     }
 
     .bubble {
       background: var(--el-color-primary);
       color: #fff;
-      border-radius: 12px 12px 4px 12px;
+      // 右上角尖锐（靠近右侧头像）
+      border-radius: 12px 4px 12px 12px;
     }
   }
 
@@ -195,13 +196,14 @@ const errorText = computed(() => textContent.value || "发生错误");
     align-self: flex-start;
 
     .avatar {
-      background: var(--el-color-primary-light-9);
+      background: rgba(var(--el-color-primary-rgb), 0.12);
     }
 
     .bubble {
       background: var(--el-fill-color);
       border: 1px solid var(--el-border-color);
-      border-radius: 12px 12px 12px 4px;
+      // 左上角尖锐（靠近左侧头像）
+      border-radius: 4px 12px 12px 12px;
     }
   }
 
@@ -251,7 +253,7 @@ const errorText = computed(() => textContent.value || "发生错误");
 
 // ==================== Markdown 渲染适配（markstream） ====================
 .md-content {
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1.6;
   word-break: break-word;
 
@@ -273,10 +275,10 @@ const errorText = computed(() => textContent.value || "发生错误");
     color: var(--el-text-color-primary);
   }
 
-  :deep(h1) { font-size: 18px; }
-  :deep(h2) { font-size: 16px; }
-  :deep(h3) { font-size: 15px; }
-  :deep(h4) { font-size: 14px; }
+  :deep(h1) { font-size: 16px; }
+  :deep(h2) { font-size: 15px; }
+  :deep(h3) { font-size: 14px; }
+  :deep(h4) { font-size: 13px; }
 
   // 代码块
   :deep(pre) {
