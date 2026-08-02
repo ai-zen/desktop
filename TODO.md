@@ -70,3 +70,11 @@
   - 覆盖：TitleBar 应用图标、BrowserWindow 窗口/任务栏图标（`BrowserWindow({ icon })`）、打包图标（.ico/.icns）
   - 资源文件放 `packages/main/assets/` 或 `resources/`，render 侧引用需走打包路径
 - 注意：LOGO 尺寸需覆盖 16px（TitleBar）~ 256px（打包）；生成 SVG 源文件 + 导出各尺寸
+
+## 9. UI：消息气泡圆角尖锐角调整（低优先级）
+
+- 现状：`MessageBubble.vue` —— 用户气泡 `border-radius: 12px 12px 4px 12px`（**右下角**尖锐 4px）；助手气泡 `12px 12px 12px 4px`（**左下角**尖锐 4px）
+- 目标：尖锐角改到靠近头像的一端（聊天气泡常规风格）：
+  - 助手消息（左对齐，头像在左）→ **左上角**尖锐：`4px 12px 12px 12px`
+  - 用户消息（右对齐，头像在右）→ **右上角**尖锐：`12px 4px 12px 12px`
+- 注意：仅改两处 `border-radius`，不动背景/边框/内边距
