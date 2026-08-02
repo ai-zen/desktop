@@ -3,6 +3,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { basename } from "node:path";
 import type { Workspace } from "@ai-zen/desktop-shared";
 import type { WorkspaceRepository } from "../storage/WorkspaceRepository.js";
 import type { ConversationRepository } from "../storage/ConversationRepository.js";
@@ -21,10 +22,12 @@ export class WorkspaceService {
   }
 
   async create(name: string, cwd: string): Promise<Workspace> {
+    const resolvedCwd = cwd?.trim() || this.defaultCwd();
     const workspace: Workspace = {
       id: randomUUID(),
-      name,
-      cwd: cwd?.trim() || this.defaultCwd(),
+      // 名称选填：不填则默认使用所选目录的文件夹名
+      name: name?.trim() || basename(resolvedCwd),
+      cwd: resolvedCwd,
     };
     await this.repo.write(workspace);
     return workspace;

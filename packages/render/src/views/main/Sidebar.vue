@@ -86,8 +86,8 @@
       :close-on-click-modal="false"
     >
       <el-form :model="wsForm" label-width="64px" @submit.prevent>
-        <el-form-item label="名称" required>
-          <el-input v-model="wsForm.name" placeholder="工作空间名称" @keyup.enter="confirmAddWorkspace" />
+        <el-form-item label="名称">
+          <el-input v-model="wsForm.name" placeholder="选填，默认使用文件夹名称" @keyup.enter="confirmAddWorkspace" />
         </el-form-item>
         <el-form-item label="目录">
           <el-input v-model="wsForm.cwd" placeholder="选填，默认使用桌面" @keyup.enter="confirmAddWorkspace">
@@ -99,9 +99,7 @@
       </el-form>
       <template #footer>
         <el-button @click="showAddWorkspace = false">取消</el-button>
-        <el-button type="primary" :disabled="!wsForm.name.trim()" @click="confirmAddWorkspace">
-          确定
-        </el-button>
+        <el-button type="primary" @click="confirmAddWorkspace">确定</el-button>
       </template>
     </el-dialog>
 
@@ -371,7 +369,12 @@ function ctxDelete() {
   closeCtxMenu();
 }
 
-function onDocPointerDown() {
+function onDocPointerDown(event: Event) {
+  // 点击在菜单内部不关闭（菜单项靠 click 触发；否则 pointerdown 会先销毁菜单导致 click 落空）
+  const menuEl = document.querySelector(".context-menu");
+  if (menuEl && event.target instanceof Node && menuEl.contains(event.target)) {
+    return;
+  }
   closeCtxMenu();
 }
 
@@ -398,7 +401,7 @@ async function pickWorkspaceDir() {
 }
 
 async function confirmAddWorkspace() {
-  if (!wsForm.name.trim()) return;
+  // 名称/目录均选填：名称空由服务端兜底为文件夹名，目录空默认桌面
   await workspaceStore.create({
     name: wsForm.name.trim(),
     cwd: wsForm.cwd.trim(),

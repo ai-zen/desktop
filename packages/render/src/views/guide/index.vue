@@ -30,10 +30,10 @@
       :close-on-click-modal="false"
     >
       <el-form :model="form" label-width="64px" @submit.prevent>
-        <el-form-item label="名称" required>
+        <el-form-item label="名称">
           <el-input
             v-model="form.name"
-            placeholder="例如：我的项目"
+            placeholder="选填，默认使用文件夹名称"
             @keyup.enter="handleCreate"
           />
         </el-form-item>
@@ -51,9 +51,7 @@
       </el-form>
       <template #footer>
         <el-button @click="showForm = false">取消</el-button>
-        <el-button type="primary" :disabled="!form.name.trim()" @click="handleCreate">
-          创建
-        </el-button>
+        <el-button type="primary" @click="handleCreate">创建</el-button>
       </template>
     </el-dialog>
   </div>
@@ -81,7 +79,7 @@ async function pickDirectory() {
 }
 
 async function handleCreate() {
-  if (!form.name.trim()) return;
+  // 名称/目录均选填：名称空由服务端兜底为文件夹名，目录空默认桌面
   const name = form.name.trim();
   const cwd = form.cwd.trim();
 
