@@ -22,6 +22,7 @@
           v-for="(msg, idx) in chatStore.messages"
           :key="`${idx}-${msg.role}`"
           :message="msg"
+          :final="!chatStore.streaming || idx < chatStore.messages.length - 1"
           @retry="chatStore.retry"
         />
 

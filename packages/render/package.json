@@ -12,7 +12,10 @@
     "@ai-zen/desktop-shared": "workspace:*",
     "@element-plus/icons-vue": "^2.3.2",
     "element-plus": "^2.14.3",
+    "markstream-vue": "^1.0.8",
     "pinia": "^2.3.0",
+    "shiki": "^3.23.0",
+    "stream-markdown": "^0.0.16",
     "vue": "^3.5.40"
   },
   "devDependencies": {

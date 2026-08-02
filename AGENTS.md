@@ -73,6 +73,16 @@ cd packages/render && pnpm exec vue-tsc --noEmit
 cd packages/main && pnpm build
 ```
 
+## Markdown 渲染（markstream-vue）经验教训
+
+消息正文用 `markstream-vue` 做流式 Markdown 渲染（assistant 消息），Shiki 代码高亮已启用（`main.ts` 注册 `setCustomComponents({ code_block: MarkdownCodeBlockNode })`）。
+
+- **最大坑：Shadow DOM 隔离**。代码高亮在 `<diffs-container>` 的 shadowRoot 里，常规 DOM 查询（textContent/innerHTML/querySelector）看不到内容，极易误判"内容丢失/没渲染"。检查渲染结果要访问 `el.shadowRoot`。看到"内容为空"先怀疑渲染隔离，不要急着下"库有 bug"的结论
+- **启用 Shiki**：装 `markstream-vue` + `shiki@3.23.0` + `stream-markdown`；组件配 `code-renderer="shiki"` + `html-policy="escape"`（防 XSS）+ `:final`（流式结束才 true）+ `max-live-nodes="0"`（chat 打字机模式）
+- **不要装 stream-diffs**：peer 版本冲突会导致渲染静默失败，且 markstream 自带 runtime，不需要它（装了反而抢占 Shiki 路径）
+- **shiki 用 3.23.0**：满足 stream-markdown peer，4.x 有 API 变化风险
+- 装新依赖后建议重启 dev（vite 重新 optimize），热更新可能造成状态混乱假象
+
 ## 其他
 
 - 数据根目录：`~/.ai-zen/`（共享根，CLI/Desktop 共用）
