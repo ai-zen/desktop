@@ -22,7 +22,6 @@
            分页窗口内的消息全部完整渲染（不惰性），滚动不触发渲染 → 无高度抖动 -->
       <div
         class="messages"
-        :class="{ 'is-hidden': contentHidden }"
         ref="messagesRef"
         @scroll="onScroll"
       >
@@ -61,15 +60,6 @@
               :value="m.id"
             />
           </el-select>
-          <el-tooltip :content="contentHidden ? '显示消息' : '隐藏消息'" placement="top" effect="light">
-            <el-button
-              size="small"
-              :icon="contentHidden ? View : Hide"
-              circle
-              class="hide-toggle"
-              @click="contentHidden = !contentHidden"
-            />
-          </el-tooltip>
         </div>
         <el-input
           v-model="inputText"
@@ -100,7 +90,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from "vue";
-import { ChatDotRound, Promotion, View, Hide } from "@element-plus/icons-vue";
+import { ChatDotRound, Promotion } from "@element-plus/icons-vue";
 import MessageBubble from "./MessageBubble.vue";
 import { useUiStore } from "../../stores/ui.js";
 import { useWorkspaceStore } from "../../stores/workspace.js";
@@ -128,9 +118,6 @@ const inputText = ref("");
 const messagesRef = ref<HTMLElement | null>(null);
 const scroller = () => messagesRef.value;
 
-/** 消息隐藏：一开始不可见，滚动到底部后自动显示（工具栏可手动切换） */
-const contentHidden = ref(true);
-
 const activeConversationId = computed(() => conversationStore.activeConversationId);
 
 const currentModelId = computed(() => {
@@ -146,13 +133,7 @@ const { items, hasOlder, loadingOlder, resetToTail, loadOlder } =
     maxLoaded: MAX_LOADED,
   });
 
-const { isNearBottom, scrollToBottom, alignToBottom, followIfNearBottom } = useAutoScroll(scroller);
-
-// ==================== 隐藏解除（滚动到底立即显示） ====================
-// markdown 同步渲染，滚动到底时内容已就绪，直接解除隐藏即可
-function scheduleReveal() {
-  if (contentHidden.value && isNearBottom()) contentHidden.value = false;
-}
+const { scrollToBottom, alignToBottom, followIfNearBottom } = useAutoScroll(scroller);
 
 // ==================== 时序：会话初始化 ====================
 // initializing 表示「等待当前会话首帧消息」：消息数组被替换（getChatState 返回）
@@ -170,7 +151,6 @@ function finalizeInitialization() {
 /** 开始一次会话初始化：消息已就绪立即完成，否则等 messages watch 消费 */
 function beginConversation() {
   initializing = true;
-  contentHidden.value = true; // 每次切换会话：一开始不可见
   // 新会话默认关注底部，清除上翻状态
   userScrollingUp = false;
   if (scrollUpResetTimer) {
@@ -248,8 +228,6 @@ function onScroll() {
     }
     lastScrollTop = el.scrollTop;
   }
-  // 隐藏状态下滚动到底 → 解除隐藏（内容已同步渲染，直接显示）
-  scheduleReveal();
   if (el && el.scrollTop < LOAD_OLDER_TOP) {
     void loadOlder(); // 内部处理 loadingOlder 防重入 + scrollTop 补偿
   }
@@ -360,15 +338,6 @@ onMounted(() => {
   // 禁用浏览器滚动锚定：消息增量/渲染变化时锚定会擅自调整 scrollTop，
   // 滚动位置由我们自己的 loadOlder 补偿逻辑管理。
   overflow-anchor: none;
-}
-
-// 隐藏状态：消息内容不可见（visibility 隐藏但保留布局与滚动）
-.messages.is-hidden {
-  .message,
-  .load-older-hint,
-  .streaming-hint {
-    visibility: hidden;
-  }
 }
 
 .load-older-hint {
