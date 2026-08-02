@@ -62,7 +62,7 @@ exec_async({ command: "cd <项目根目录> && pnpm dev", detached: true });
 - 端口固定 `9222`，只有唯一实例能绑定
 - 页面标题 `AI-Zen Desktop`，URL `http://localhost:5173/`
 - 常用：`cdp_list_pages` / `cdp_evaluate` / `cdp_screenshot` / `cdp_get_dom`
-- **不要在项目目录保存调试截图**：`cdp_screenshot` 等产生的 `preview-*.png` 属临时产物（已 gitignore，但也别留在工作区），用完全部删除；需要留档的图放到项目外（如系统临时目录），不要污染仓库目录
+- **调试截图原则（按模型区分）**：**非视觉模型不要截图**——截图对它无意义，只会产生垃圾文件；只有**视觉模型**才考虑截图（可作视觉上下文分析 UI）。当前项目是非视觉模型（DeepSeek），所以默认不截图；确需截图时用完即删，`preview-*.png` 属临时产物（已 gitignore，但也别留在工作区），留档图放到项目外（如系统临时目录），不要污染仓库目录
 
 ## 构建与类型检查
 
