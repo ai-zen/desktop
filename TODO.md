@@ -53,3 +53,20 @@
   - hover 反馈更明确（背景加深 / 圆角色块，可参考关闭键的强反馈但更柔和）
   - 最大化/还原图标换成更直观的方块风格（单个方块 = 最大化，重叠方块 = 还原）
 - 注意：`TitleBar.vue` 的 `.control-btn` 样式 + 图标；hover 颜色遵守项目偏好（不用 `-light-N` 混白变量）
+
+## 7. UI：更换助手/用户图标 + 头像背景适配主题（低优先级）
+
+- 现状：`MessageBubble.vue` 头像——用户用 `UserFilled`（`--el-color-success` 绿）+ 背景 `--el-color-success-light-9`；助手用 `MagicStick`（`--el-color-primary` 蓝）+ 背景 `--el-color-primary-light-9`
+- 问题：
+  - 图标（UserFilled / MagicStick）不够贴合"助手/用户"语义，需更换
+  - 头像背景用 `-light-9` **混白变量**（深色模式下大量混白，刺眼）——违反项目偏好，需改为适配主题的写法（如 `rgba(var(--el-color-*-rgb), 0.1~0.15)` 或主题色低透明度）
+- 注意：改完回归浅色/深色两种主题下的对比度
+
+## 8. UI：更换软件 LOGO（低优先级）
+
+- 现状：项目内无任何图标/LOGO 资源（png/ico/icns/svg 全无）——TitleBar 用 `MagicStick` 图标 + "AI-Zen" 渐变文字；BrowserWindow 无自定义 icon（显示默认 Electron 图标）
+- 目标：
+  - 设计一个 LOGO（与 AI-Zen 品牌一致，如 AI/魔法主题）
+  - 覆盖：TitleBar 应用图标、BrowserWindow 窗口/任务栏图标（`BrowserWindow({ icon })`）、打包图标（.ico/.icns）
+  - 资源文件放 `packages/main/assets/` 或 `resources/`，render 侧引用需走打包路径
+- 注意：LOGO 尺寸需覆盖 16px（TitleBar）~ 256px（打包）；生成 SVG 源文件 + 导出各尺寸
