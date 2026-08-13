@@ -1,6 +1,6 @@
 # @ai-zen/desktop
 
-AI-ZEN Desktop — 多 Workspace、多会话并存的 AI 工作台（Electron + Vue 3）。
+AI-Zen Desktop — 多 Workspace、多会话并存的 AI 工作台（Electron + Vue 3）。
 
 > **🤖 给 AI Agent / 开发者的接手指南**
 > 任何 AI 助手或开发者**接手本项目前，务必先阅读 [AGENTS.md](./AGENTS.md)** —— 它包含最高优先级的协作原则、启动/调试方式、架构决策与关键踩坑记录。忽略它可能导致方向性错误或重复踩坑。
