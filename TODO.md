@@ -16,25 +16,14 @@
 - UI：消息气泡圆角（助手左上 / 用户右上尖锐）
 - 性能：main 同步 IO 异步化——SQLite 走 worker_threads（dbWorker 独立线程）、fs 用 `fs/promises`（app.ts / ProviderPool），主进程事件循环不再被同步 SQL 阻塞
 - 清理：移除消息隐藏功能（contentHidden/眼睛按钮，鸡肋且默认隐藏反直觉）
+- 中止生成：streaming 时发送按钮切换「停止」→ `ChatService.abort()` + IPC `chat.abort`；中断保留已生成部分（Aborted），core 3.3.0 接管防孤儿（删除 `cleanupOrphanToolMessages`，formatHistory 过滤 Aborted）——已端到端实测：中断后无孤儿消息、继续对话无 400
 
-## 1. 中止生成（高优先级）
-
-- **现状**：UI 无「停止」按钮——streaming 时输入框禁用 + 「正在思考...」提示，只能等生成结束；main 端 `agent.abort()` 仅在删除会话（`release()`）时调用，**无独立中止入口、无 IPC 通道**
-- **目标**：
-  - main：`ChatService` 增加 `abort(conversationId)`——对运行中 agent 调 `abort()`，中止后保留已生成部分（receiver 状态为 Aborted）、落库并推送 done（render 结束流式态），最后释放注册表
-  - IPC：`chat.abort` 走 ServicesManager 动态分发
-  - render：streaming 时发送按钮切换为「停止」按钮 → 调 `chat.abort`
-- **注意**：
-  - 中止后 `runAgentSend` 的 try/finally 路径要兼容（abort 不是异常，但 `await sendPromise` 正常返回后 status 是 Aborted，需识别并跳过/正常落库）
-  - 防重复：仅运行中（注册表存在）才可中止
-  - 中止后已生成内容保留在消息里（用户能看到部分回复），不删消息
-
-## 2. 设置页 SettingsView（中优先级）
+## 1. 设置页 SettingsView（中优先级）
 
 - 现状：`uiStore.currentView` 已支持 `settings`，入口未加
 - 目标：设置页 SettingsView，内容：API Key / 默认模型 / Agent 列表 / 数据目录
 
-## 3. UI：更换软件 LOGO（低优先级，等找到合适的 LOGO 素材再完成）
+## 2. UI：更换软件 LOGO（低优先级，等找到合适的 LOGO 素材再完成）
 
 - 现状：项目内无任何图标/LOGO 资源（png/ico/icns/svg 全无）——TitleBar 用 `MagicStick` 图标 + "AI-Zen" 渐变文字；BrowserWindow 无自定义 icon（显示默认 Electron 图标）
 - 目标：
@@ -43,10 +32,19 @@
   - 资源文件放 `packages/main/assets/` 或 `resources/`，render 侧引用需走打包路径
 - 注意：LOGO 尺寸需覆盖 16px（TitleBar）~ 256px（打包）；生成 SVG 源文件 + 导出各尺寸
 
-## 4. 端到端实测（功能已实现，需逐项验收）
+## 3. 端到端实测（功能已实现，需逐项验收）
 
 - 错误重试 UI：消息 error 状态 → 重试按钮 → 重新发送
 - 切换模型后发送：对话级 `modelId` 覆盖 Agent 定义（优先级：对话 > Agent > 全局）
 - 运行中删除会话：abort 进行中的 agent + 释放注册表（`release()` 已实现，需实测）
 - worker 崩溃重建路径：dbWorker 异常后主进程的恢复行为
 - autoRename 兜底名：本地降级取名（首条用户消息前 16 字符）是否合适
+
+## 4. UI：思考过程/工具调用的展示与自动折叠（中优先级）
+
+- 现状：MessageBubble 中「思考过程」「工具调用」「工具结果」折叠区**默认全部折叠**（`showThinking`/`showTools`/`showToolResult` 初始为 `false`）——生成过程中用户看不到思考内容和工具调用进展，需手动点开
+- 目标：折叠状态由**消息时序**自动驱动：
+  - 思考过程：流式生成中**自动展开**展示思考内容；思考完毕（消息完成）**自动折叠**回一行「思考过程」
+  - 工具调用：工具执行中**自动展开**展示调用内容；调用完成**自动折叠**
+  - （可选）工具结果同理：执行中展开、完成后折叠
+- 注意：需与「DOM 常驻、折叠状态由组件内部保持」的既有设计配合——仅在「进行中 → 完成」转变时自动收拢/展开，不覆盖用户手动切换的中间态；MessageBubble 需感知消息状态（如 `status` 从流式变为 `completed`，或通过 props 传入 streaming 标记）
