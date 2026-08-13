@@ -8,15 +8,30 @@
  */
 
 const DEFAULT_HOST = "127.0.0.1";
-const DEFAULT_PORT = 9222;
+// CDP 端口：默认 9222，可通过环境变量 CDP_PORT 覆盖
+const DEFAULT_PORT = Number(process.env.CDP_PORT) || 9222;
 
 /**
  * 通过 HTTP 获取所有可调试页面列表
  * GET http://host:port/json
+ *
+ * @param {string} [host]   - CDP 主机地址
+ * @param {number} [port]   - CDP 调试端口
+ * @param {number} [timeout=5000] - 请求超时毫秒数，防止端口被占用/挂起时无限等待
  */
-export async function listPages(host = DEFAULT_HOST, port = DEFAULT_PORT) {
+export async function listPages(host = DEFAULT_HOST, port = DEFAULT_PORT, timeout = 5000) {
   const url = `http://${host}:${port}/json`;
-  const res = await fetch(url);
+  let res;
+  try {
+    res = await fetch(url, { signal: AbortSignal.timeout(timeout) });
+  } catch (err) {
+    if (err?.name === "TimeoutError" || err?.name === "AbortError") {
+      throw new Error(
+        `CDP HTTP 请求超时 (${timeout}ms): ${url}。请确认 Electron 已以 --remote-debugging-port=${port} 启动且端口未被其他进程占用。`
+      );
+    }
+    throw err;
+  }
   if (!res.ok) throw new Error(`CDP HTTP 错误: ${res.status} ${res.statusText}`);
   return res.json();
 }

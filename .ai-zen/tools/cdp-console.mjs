@@ -43,8 +43,8 @@ export default {
         },
         port: {
           type: "number",
-          description: "CDP 调试端口，默认 9222",
-          default: 9222,
+          description: "CDP 调试端口，默认 9222（可用环境变量 CDP_PORT 覆盖）",
+          default: Number(process.env.CDP_PORT) || 9222,
         },
       },
       required: [],
@@ -62,7 +62,7 @@ export default {
       url,
       index,
       host = "127.0.0.1",
-      port = 9222,
+      port = Number(process.env.CDP_PORT) || 9222,
     } = args || {};
 
     const page = await findTargetPage({ host, port, title, url, index });

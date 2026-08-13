@@ -18,8 +18,8 @@ export default {
         },
         port: {
           type: "number",
-          description: "CDP 调试端口，默认 9222",
-          default: 9222,
+          description: "CDP 调试端口，默认 9222（可用环境变量 CDP_PORT 覆盖）",
+          default: Number(process.env.CDP_PORT) || 9222,
         },
         filterDevtools: {
           type: "boolean",
@@ -35,10 +35,20 @@ export default {
    * @param {{ host?: string, port?: number, filterDevtools?: boolean }} args
    */
   exec: async function (args) {
-    const { host = "127.0.0.1", port = 9222, filterDevtools = true } = args || {};
+    const { host = "127.0.0.1", port = Number(process.env.CDP_PORT) || 9222, filterDevtools = true } = args || {};
 
     const url = `http://${host}:${port}/json`;
-    const res = await fetch(url);
+    let res;
+    try {
+      res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    } catch (err) {
+      if (err?.name === "TimeoutError" || err?.name === "AbortError") {
+        throw new Error(
+          `CDP HTTP 请求超时 (5000ms): ${url}。请确认 Electron 已以 --remote-debugging-port=${port} 启动且端口未被其他进程占用。`
+        );
+      }
+      throw err;
+    }
 
     if (!res.ok) {
       throw new Error(`CDP HTTP 请求失败: ${res.status} ${res.statusText}。请确认 Electron 已以 --remote-debugging-port=${port} 启动。`);

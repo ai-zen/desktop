@@ -10,13 +10,16 @@ const ext = isWin ? ".cmd" : "";
 const concurrently = resolve(ROOT, "node_modules/.bin/concurrently" + ext);
 const electron = resolve(ROOT, "packages/main/node_modules/.bin/electron" + ext);
 
+// CDP 调试端口：默认 9222，可通过环境变量 CDP_PORT 覆盖（如 9222 被其他进程占用时）
+const cdpPort = process.env.CDP_PORT || "9222";
+
 // exec 直接传命令字符串给 shell，引号被 shell 正确解析
 const cmd = [
   `"${concurrently}" -k -n compile:main,render,electron -c cyan,magenta,yellow`,
   `"pnpm --filter @ai-zen/desktop-main dev"`,
   `"pnpm --filter @ai-zen/desktop-render dev"`,
   // nodemon --exec 参数整体用引号包裹
-  `"nodemon --watch packages/main/dist/main.mjs --exec \\"${electron} --remote-debugging-port=9222 packages/main/dist/main.mjs\\""`,
+  `"nodemon --watch packages/main/dist/main.mjs --exec \\"${electron} --remote-debugging-port=${cdpPort} packages/main/dist/main.mjs\\""`,
 ].join(" ");
 
 const child = exec(cmd, {
