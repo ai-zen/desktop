@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@ai-zen/agents-core": "^3.2.0",
-    "@ai-zen/agents-sdk": "^0.5.2",
+    "@ai-zen/agents-sdk": "^0.5.4",
     "@ai-zen/desktop-shared": "workspace:*",
     "ws": "^8.21.1"
   },

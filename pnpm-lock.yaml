@@ -21,8 +21,8 @@ importers:
         specifier: ^3.2.0
         version: 3.2.0
       '@ai-zen/agents-sdk':
-        specifier: ^0.5.2
-        version: 0.5.2(zod@4.4.3)
+        specifier: ^0.5.4
+        version: 0.5.4(zod@4.4.3)
       '@ai-zen/desktop-shared':
         specifier: workspace:*
         version: link:../shared
@@ -106,8 +106,8 @@ packages:
   '@ai-zen/agents-core@3.2.0':
     resolution: {integrity: sha512-ilL9fAVVeY3vmd4SykuWbyZSJ5oTEvrnLF3Fqrd88k/4ZnSWj2LikWiECk9LJ3TbQnXfIJ5ljW7sy8yaDCdgIQ==}
 
-  '@ai-zen/agents-sdk@0.5.2':
-    resolution: {integrity: sha512-pmyjuZ3MFZrNLLD1KQfM+6QbsjYrcHUqbe8pF7TObtG+JlpbP9Z2ZV+bPyTkYlkVMxM3RNfFYkFBCAlSr/p+rg==}
+  '@ai-zen/agents-sdk@0.5.4':
+    resolution: {integrity: sha512-MT+w8+JOVUk1bmWleOs0oo9c/5SKnaNSAHmNbPTSyjaHSOO8jVIjkX81n7DEWX/SN1mujEZ5n57X59+6Q7Llfg==}
 
   '@ai-zen/async-queue@1.4.0':
     resolution: {integrity: sha512-+LPm6OQl38WqMMzdSqOCWHQw9R5VIumnNEJOj9kTpCZzJAEXlQUCVXwdNzhriVy6kv6fRIEl2E/Gwuh4LdgzrQ==}
@@ -1617,7 +1617,7 @@ snapshots:
     transitivePeerDependencies:
       - encoding
 
-  '@ai-zen/agents-sdk@0.5.2(zod@4.4.3)':
+  '@ai-zen/agents-sdk@0.5.4(zod@4.4.3)':
     dependencies:
       '@ai-zen/agents-core': 3.2.0
       '@modelcontextprotocol/sdk': 1.29.0(zod@4.4.3)
