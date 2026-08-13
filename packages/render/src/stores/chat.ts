@@ -126,6 +126,19 @@ export const useChatStore = defineStore("chat", {
       }
     },
 
+    /** 中止当前会话的生成（停止按钮；main 保留已生成部分，done 事件负责收尾） */
+    async abort() {
+      const conversationId = this.activeConversationId;
+      if (!conversationId) return;
+      try {
+        await api.abortChatMessage(conversationId);
+      } catch (err) {
+        // 兜底：invoke 层异常（正常收尾走 done 事件）
+        const st = this.ensure(conversationId);
+        st.error = err instanceof Error ? err.message : String(err);
+      }
+    },
+
     // ---------- 流式事件（chat:push 订阅入口） ----------
 
     applyEvent(evt: ChatStreamEvent) {

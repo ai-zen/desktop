@@ -14,6 +14,11 @@ export function sendChatMessage(
   return invokeService("chat", "send", workspaceId, conversationId, content);
 }
 
+/** 中止生成（main 对运行中 agent 调 abort，保留已生成部分，事件流自然收尾） */
+export function abortChatMessage(conversationId: string): Promise<void> {
+  return invokeService("chat", "abort", conversationId);
+}
+
 /** 读取会话实时状态（有常驻 agent 则含流式进行中的消息） */
 export function getChatState(
   workspaceId: string,

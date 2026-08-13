@@ -74,9 +74,18 @@
         <div class="input-footer">
           <span class="hint">Enter 发送 · Shift+Enter 换行</span>
           <el-button
+            v-if="chatStore.streaming"
+            type="danger"
+            plain
+            :icon="VideoPause"
+            @click="handleStop"
+          >
+            停止
+          </el-button>
+          <el-button
+            v-else
             type="primary"
             :icon="Promotion"
-            :loading="chatStore.streaming"
             :disabled="!inputText.trim()"
             @click="handleSend"
           >
@@ -90,7 +99,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from "vue";
-import { ChatDotRound, Promotion } from "@element-plus/icons-vue";
+import { ChatDotRound, Promotion, VideoPause } from "@element-plus/icons-vue";
 import MessageBubble from "./MessageBubble.vue";
 import { useUiStore } from "../../stores/ui.js";
 import { useWorkspaceStore } from "../../stores/workspace.js";
@@ -253,6 +262,11 @@ async function handleSend() {
   }
   await chatStore.send(text);
   scrollToBottom();
+}
+
+/** 停止生成：main 对运行中 agent 调 abort，保留已生成部分，done 事件结束流式态 */
+async function handleStop() {
+  await chatStore.abort();
 }
 
 function onInputKeydown(e: KeyboardEvent) {

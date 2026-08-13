@@ -146,6 +146,8 @@ export class ChatService {
     agent.events.on("inner-loop-end", onLoopEnd);
 
     // 整组内循环结束：messages 为完整结果（正常/error/abort 均到达）→ 落库 + done + 自动命名
+    // 直接使用 agent 原始 messages 落库/推送：中断/出错消息（Aborted/Error）保留在消息中
+    // （UI 显示中断现场），下次发送时由 core formatHistory 过滤，协议仍合法、无孤儿工具消息。
     const onLoopsEnd = async (messages: AgentNS.Message[]) => {
       await this.persistSnapshot(workspaceId, conversationId, messages);
       this.opts.push({ conversationId, type: "done", messages });
@@ -183,6 +185,9 @@ export class ChatService {
 
   /**
    * 把消息快照写入 SQLite（每轮内循环结束 / 最终完成时调用）。
+   * 直接写入 agent 原始消息（含 Aborted/Error 状态），不做清洗 ——
+   * 中断现场（assistant + 工具结果 Aborted）完整保留，下次发送时由
+   * core formatHistory 过滤非 Completed 消息，协议仍合法、无孤儿工具消息。
    * 持久化失败不打断对话（后续轮次/最终 done 还会再落库）。
    */
   private async persistSnapshot(
@@ -256,6 +261,25 @@ export class ChatService {
 
     this.agents.set(conversationId, { agent, workspaceId });
     return agent;
+  }
+
+  /**
+   * 中止生成（render「停止」按钮调用，对应 IPC chat.abort）。
+   * 仅对运行中（注册表存在）的 agent 生效，防重复：
+   *   - 调 agent.abort() 中止流式（保留已生成部分，receiver 状态为 Aborted）
+   *   - 不主动释放注册表：abort 后 agent 会正常走完 runAgentSend ——
+   *     inner-loops-end 会落库（保留已生成内容）+ 推送 done（render 结束流式态）
+   *     + 自动命名，finally 里校验注册表仍为本 agent 后自然释放；
+   *     因此「中止后保留内容、UI 收尾」全由既有事件流完成，无需额外处理。
+   */
+  async abort(conversationId: string): Promise<void> {
+    const entry = this.agents.get(conversationId);
+    if (!entry) return;
+    try {
+      entry.agent.abort();
+    } catch {
+      /* ignore */
+    }
   }
 
   /** 释放会话的运行中 agent（删除会话时调用；中止进行中的任务并清出注册表） */
