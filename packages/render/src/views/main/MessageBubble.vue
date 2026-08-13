@@ -71,6 +71,13 @@
         </div>
       </template>
     </div>
+
+    <!-- 消息状态图标（气泡外，底边对齐：生成中转圈 / 已中止 / 错误） -->
+    <span v-if="statusMeta" class="status-badge" :class="`is-${statusMeta.type}`">
+      <el-icon :size="16" :class="{ 'is-loading': statusMeta.type === 'writing' }">
+        <component :is="statusMeta.icon" />
+      </el-icon>
+    </span>
   </div>
 </template>
 
@@ -84,6 +91,8 @@ import {
   User,
   ChatDotRound,
   WarningFilled,
+  Loading,
+  RemoveFilled,
 } from "@element-plus/icons-vue";
 
 const props = defineProps<{
@@ -116,6 +125,21 @@ const roleClass = computed(() => {
 });
 
 const toolCalls = computed(() => props.message.tool_calls ?? []);
+
+// ==================== 消息状态图标（非完成态才显示） ====================
+const statusMeta = computed(() => {
+  const s = props.message.status;
+  if (s === AgentNS.MessageStatus.Writing || s === AgentNS.MessageStatus.Pending) {
+    return { type: "writing", icon: Loading };
+  }
+  if (s === AgentNS.MessageStatus.Aborted) {
+    return { type: "aborted", icon: RemoveFilled };
+  }
+  if (s === AgentNS.MessageStatus.Error) {
+    return { type: "error", icon: WarningFilled };
+  }
+  return null;
+});
 
 function escapeHtml(s: string): string {
   return s
@@ -212,10 +236,42 @@ const errorText = computed(() => textContent.value || "发生错误");
 }
 
 .bubble {
+  position: relative;
   padding: 10px 16px;
   line-height: 1.6;
   font-size: 14px;
   min-width: 0;
+}
+
+// ==================== 消息状态图标（气泡外，底边对齐） ====================
+.status-badge {
+  align-self: flex-end;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  margin-left: 4px;
+  line-height: 1;
+  opacity: 0.55;
+
+  &.is-writing {
+    color: var(--el-color-primary);
+  }
+  &.is-aborted {
+    color: var(--el-text-color-secondary);
+  }
+  &.is-error {
+    color: var(--el-color-danger);
+  }
+
+  .el-icon.is-loading {
+    animation: status-rotate 1.2s linear infinite;
+  }
+}
+
+@keyframes status-rotate {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .content {
