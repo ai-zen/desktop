@@ -18,11 +18,11 @@ importers:
   packages/main:
     dependencies:
       '@ai-zen/agents-core':
-        specifier: ^3.2.0
-        version: 3.2.0
+        specifier: ^3.3.0
+        version: 3.3.0
       '@ai-zen/agents-sdk':
-        specifier: ^0.5.4
-        version: 0.5.4(zod@4.4.3)
+        specifier: ^0.5.6
+        version: 0.5.6(zod@4.4.3)
       '@ai-zen/desktop-shared':
         specifier: workspace:*
         version: link:../shared
@@ -49,8 +49,8 @@ importers:
   packages/render:
     dependencies:
       '@ai-zen/agents-core':
-        specifier: ^3.2.0
-        version: 3.2.0
+        specifier: ^3.3.0
+        version: 3.3.0
       '@ai-zen/desktop-shared':
         specifier: workspace:*
         version: link:../shared
@@ -98,16 +98,16 @@ importers:
   packages/shared:
     dependencies:
       '@ai-zen/agents-core':
-        specifier: ^3.2.0
-        version: 3.2.0
+        specifier: ^3.3.0
+        version: 3.3.0
 
 packages:
 
-  '@ai-zen/agents-core@3.2.0':
-    resolution: {integrity: sha512-ilL9fAVVeY3vmd4SykuWbyZSJ5oTEvrnLF3Fqrd88k/4ZnSWj2LikWiECk9LJ3TbQnXfIJ5ljW7sy8yaDCdgIQ==}
+  '@ai-zen/agents-core@3.3.0':
+    resolution: {integrity: sha512-HdagN6UrjaNDNPaA0/ZM/f3QSim6BpvU0+tfLYpi18tqliM82JI9CNTwueQTDBV6cKYosMmcAiEkQ3yInaQ6MQ==}
 
-  '@ai-zen/agents-sdk@0.5.4':
-    resolution: {integrity: sha512-MT+w8+JOVUk1bmWleOs0oo9c/5SKnaNSAHmNbPTSyjaHSOO8jVIjkX81n7DEWX/SN1mujEZ5n57X59+6Q7Llfg==}
+  '@ai-zen/agents-sdk@0.5.6':
+    resolution: {integrity: sha512-xl1r2qdmZql4/03hxhYERjc+9AfXR7A3LKNqLzGJP/n3eKC+ZiM7oIZdc9tkOvgeOr0rxpFo7uCsrMjuKZXrWg==}
 
   '@ai-zen/async-queue@1.4.0':
     resolution: {integrity: sha512-+LPm6OQl38WqMMzdSqOCWHQw9R5VIumnNEJOj9kTpCZzJAEXlQUCVXwdNzhriVy6kv6fRIEl2E/Gwuh4LdgzrQ==}
@@ -1608,7 +1608,7 @@ packages:
 
 snapshots:
 
-  '@ai-zen/agents-core@3.2.0':
+  '@ai-zen/agents-core@3.3.0':
     dependencies:
       '@ai-zen/async-queue': 1.4.0
       '@ai-zen/event-bus': 1.1.0
@@ -1617,9 +1617,9 @@ snapshots:
     transitivePeerDependencies:
       - encoding
 
-  '@ai-zen/agents-sdk@0.5.4(zod@4.4.3)':
+  '@ai-zen/agents-sdk@0.5.6(zod@4.4.3)':
     dependencies:
-      '@ai-zen/agents-core': 3.2.0
+      '@ai-zen/agents-core': 3.3.0
       '@modelcontextprotocol/sdk': 1.29.0(zod@4.4.3)
       dayjs: 1.11.21
     transitivePeerDependencies:
