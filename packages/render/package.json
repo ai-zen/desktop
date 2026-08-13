@@ -8,7 +8,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@ai-zen/agents-core": "^3.3.0",
+    "@ai-zen/agents-core": "^3.3.1",
     "@ai-zen/desktop-shared": "workspace:*",
     "@element-plus/icons-vue": "^2.3.2",
     "element-plus": "^2.14.3",
