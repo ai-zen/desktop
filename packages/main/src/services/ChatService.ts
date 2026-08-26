@@ -15,7 +15,7 @@
  */
 
 import { AgentNS } from "@ai-zen/agents-core";
-import { createAgent, createModel } from "@ai-zen/agents-sdk";
+import { AgentRepository, createModel, SdkAgent } from "@ai-zen/agents-sdk";
 import type { ChatStreamEvent, ConversationState } from "@ai-zen/desktop-shared";
 import type { Conversation } from "@ai-zen/desktop-shared";
 import type { ConversationRepository } from "../storage/ConversationRepository.js";
@@ -26,7 +26,7 @@ import type { ProviderPool } from "./ProviderPool.js";
  *  注意：用 [0-9] 而非 \d —— rolldown 会把正则字面量里的 \d 转义成 \\d（语义变成反斜杠+d）导致永远不匹配 */
 const DEFAULT_NAME_RE = /^对话_[0-9]{2}:[0-9]{2}$/;
 
-type Agent = Awaited<ReturnType<typeof createAgent>>;
+type Agent = SdkAgent;
 
 interface AgentEntry {
   agent: Agent;
@@ -243,12 +243,42 @@ export class ChatService {
     if (!workspace) throw new Error(`工作空间不存在: ${workspaceId}`);
 
     const provider = await this.opts.providers.get(workspace);
-    const agent = await createAgent(provider, conversation.agentId);
-    // 载入持久化历史（此后 agent.messages 即运行时真相）
-    if (conversation.messages.length > 0) {
-      agent.messages = conversation.messages;
-    }
-    agent.model = createModel(provider, conversation.modelId);
+    // 以会话级 modelId 构建模型三元组（client/model/modelConfig）。
+    // SDK 0.7.0+ createModel 返回该结构；模型名/参数在创建时一并绑定，不可事后只改 model。
+    const { client, model, modelConfig } = createModel(
+      provider,
+      conversation.modelId,
+    );
+
+    // 读取 Agent 定义（工具/权限唯一来源），并基于当前模型构建工具集，
+    // 保证工具可用性判断（如视觉模型启用 viewImage）与所用模型一致。
+    const definition = await new AgentRepository(provider.agentsDir).read(
+      conversation.agentId,
+    );
+    if (!definition) throw new Error(`Agent "${conversation.agentId}" 不存在`);
+    const tools = provider.buildTools(definition, {
+      exclude: {
+        subagents: definition.function?.name
+          ? [definition.function.name]
+          : undefined,
+      },
+    });
+
+    // 初始消息：优先载入会话持久化历史（运行时真相）；会话尚无历史则回退到定义预设。
+    const messages =
+      conversation.messages.length > 0
+        ? conversation.messages
+        : (definition.messages as AgentNS.Message[]);
+
+    const agent = new SdkAgent({
+      provider,
+      definition,
+      client,
+      model,
+      modelConfig,
+      messages,
+      tools,
+    });
 
     // 注册持久化插件：每轮内循环结束（工具调用结果已写入 messages、下一轮开始前）
     // 落库当前快照。必须用插件而非直接赋 onInnerLoopEnd —— SdkAgent.send 内部会
@@ -311,7 +341,7 @@ export class ChatService {
 
   /**
    * 首轮对话完成后自动命名：仅当会话名仍为默认 `对话_HH:mm` 时触发，
-   * 用对话级模型静默生成 4~12 字标题（createCompletion，不触发流式事件，
+   * 用对话级模型静默生成 4~12 字标题（chat.completions.create，不触发流式事件，
    * 也不走运行注册表 agent —— 避免污染会话消息状态）；
    * 生成失败/超时则降级为取首条用户消息前 16 字符。
    */
@@ -363,8 +393,10 @@ export class ChatService {
     modelId: string,
     userMessage: string,
   ): Promise<string> {
-    const model = createModel(provider, modelId);
-    const res = await model.createCompletion({
+    const { client, model, modelConfig } = createModel(provider, modelId);
+    const res = await client.chat.completions.create({
+      model,
+      ...(modelConfig ?? {}),
       tools: [],
       messages: [
         {
@@ -375,7 +407,7 @@ export class ChatService {
         { role: AgentNS.Role.User, content: userMessage },
       ],
     });
-    return this.cleanTitle(this.contentToText(res.choices?.[0]?.message?.content));
+    return this.cleanTitle(this.contentToText(res.choices?.[0]?.message?.content ?? undefined));
   }
 
   /** 从消息快照中取第一条纯文本 user 消息（跳过图片等非文本内容） */
