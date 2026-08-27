@@ -191,6 +191,16 @@ export const useChatStore = defineStore("chat", {
           this.refreshList(evt.conversationId);
           break;
 
+        // 任务迁移完成：全量替换消息。旧历史带 omit（已作废）标记，UI 展示但不进后续请求。
+        // 独立事件（不复用 done）—— GUI 变化与流式完成语义分离。
+        case "migrated":
+          st.messages = evt.messages;
+          st.streaming = false;
+          st.error = "";
+          convStore.setRunning(evt.conversationId, false);
+          this.refreshList(evt.conversationId);
+          break;
+
         case "error":
           st.error = evt.message;
           st.streaming = false;

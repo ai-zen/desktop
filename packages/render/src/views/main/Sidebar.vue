@@ -65,7 +65,7 @@
       </div>
     </div>
 
-    <!-- 底部：新建对话 -->
+    <!-- 底部：新建对话 + 设置 -->
     <div class="sidebar-footer">
       <el-button
         type="primary"
@@ -75,6 +75,9 @@
         @click="showNewChat = true"
       >
         新建对话
+      </el-button>
+      <el-button text :icon="Setting" class="settings-btn" @click="openSettings">
+        设置
       </el-button>
     </div>
 
@@ -188,13 +191,20 @@ import {
   ChatLineSquare,
   WarningFilled,
   Folder,
+  Setting,
 } from "@element-plus/icons-vue";
 import NewChatDialog from "./NewChatDialog.vue";
 import { useWorkspaceStore } from "../../stores/workspace.js";
 import { useConversationStore } from "../../stores/conversation.js";
+import { useUiStore } from "../../stores/ui.js";
 
 const workspaceStore = useWorkspaceStore();
 const conversationStore = useConversationStore();
+const uiStore = useUiStore();
+
+function openSettings() {
+  uiStore.setView("settings");
+}
 
 const activeWorkspaceId = computed(() => workspaceStore.activeWorkspaceId);
 
@@ -613,6 +623,12 @@ async function confirmDelete() {
 
 .new-chat-btn {
   width: 100%;
+}
+
+.settings-btn {
+  width: 100%;
+  margin-top: 8px;
+  color: var(--el-text-color-secondary);
 }
 
 .delete-warning {

@@ -1,5 +1,5 @@
 <template>
-  <div class="message" :class="[roleClass]">
+  <div class="message" :class="[roleClass, { 'is-deprecated': message.omit }]">
     <!-- 头像 -->
     <div class="avatar">
       <el-icon v-if="isUser" :size="18" color="var(--el-color-success)">
@@ -11,6 +11,9 @@
     </div>
 
     <div class="bubble">
+      <!-- 已作废标记（任务迁移后旧消息：UI 可见，但不进后续 agent 请求） -->
+      <span v-if="message.omit" class="deprecated-tag">已作废</span>
+
       <!-- 系统消息：居中灰条 -->
       <div v-if="isSystem" class="system-text">{{ textContent }}</div>
 
@@ -18,7 +21,7 @@
       <template v-else>
         <!-- 思考过程（折叠） -->
         <div v-if="message.reasoning_content" class="fold-section">
-          <button class="fold-toggle" @click="showThinking = !showThinking">
+          <button class="fold-toggle" @click="toggleThinking">
             <el-icon :size="12"><ArrowRight v-if="!showThinking" /><ArrowDown v-else /></el-icon>
             <span>思考过程</span>
           </button>
@@ -27,7 +30,7 @@
 
         <!-- 工具调用（折叠） -->
         <div v-if="toolCalls.length" class="fold-section">
-          <button class="fold-toggle" @click="showTools = !showTools">
+          <button class="fold-toggle" @click="toggleTools">
             <el-icon :size="12"><ArrowRight v-if="!showTools" /><ArrowDown v-else /></el-icon>
             <span>工具调用 ({{ toolCalls.length }})</span>
           </button>
@@ -41,7 +44,7 @@
 
         <!-- 工具结果（折叠） -->
         <div v-if="isTool" class="fold-section">
-          <button class="fold-toggle" @click="showToolResult = !showToolResult">
+          <button class="fold-toggle" @click="toggleToolResult">
             <el-icon :size="12"><ArrowRight v-if="!showToolResult" /><ArrowDown v-else /></el-icon>
             <span>工具结果</span>
           </button>
@@ -82,7 +85,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, watch } from "vue";
 import { AgentNS } from "@ai-zen/agents-core";
 import MarkdownContent from "@/components/MarkdownContent.vue";
 import {
@@ -103,9 +106,47 @@ const emit = defineEmits<{
 }>();
 
 // ==================== 折叠状态（组件内部状态，DOM 常驻天然保持） ====================
+// 自动折叠策略：流式生成中（status=Writing/Pending）自动展开对应区，完成后自动折叠。
+// 用户手动切换过的区（*Touched）不再被自动逻辑覆盖 —— 仅在「进行中 → 完成」转变时自动收拢/展开。
 const showThinking = ref(false);
 const showTools = ref(false);
 const showToolResult = ref(false);
+const thinkingTouched = ref(false);
+const toolsTouched = ref(false);
+const toolResultTouched = ref(false);
+
+function toggleThinking() {
+  showThinking.value = !showThinking.value;
+  thinkingTouched.value = true;
+}
+function toggleTools() {
+  showTools.value = !showTools.value;
+  toolsTouched.value = true;
+}
+function toggleToolResult() {
+  showToolResult.value = !showToolResult.value;
+  toolResultTouched.value = true;
+}
+
+// 消息状态变化驱动自动折叠：流式生成中展开、完成/中止/出错折叠（用户已手动操作过的区除外）
+watch(
+  () => props.message.status,
+  (status) => {
+    const active =
+      status === AgentNS.MessageStatus.Writing ||
+      status === AgentNS.MessageStatus.Pending;
+    if (active) {
+      if (!thinkingTouched.value) showThinking.value = true;
+      if (!toolsTouched.value) showTools.value = true;
+      if (!toolResultTouched.value) showToolResult.value = true;
+    } else {
+      if (!thinkingTouched.value) showThinking.value = false;
+      if (!toolsTouched.value) showTools.value = false;
+      if (!toolResultTouched.value) showToolResult.value = false;
+    }
+  },
+  { immediate: true },
+);
 
 const role = computed(() => props.message.role);
 const isUser = computed(() => role.value === AgentNS.Role.User);
@@ -223,6 +264,28 @@ const errorText = computed(() => textContent.value || "发生错误");
       padding: 0;
     }
   }
+}
+
+// ==================== 已作废消息（任务迁移前历史，可见但不进请求） ====================
+.message.is-deprecated {
+  opacity: 0.55;
+
+  .bubble {
+    border-style: dashed;
+  }
+}
+
+.deprecated-tag {
+  display: inline-flex;
+  align-items: center;
+  margin-bottom: 6px;
+  padding: 1px 8px;
+  border: 1px solid var(--el-border-color);
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--el-text-color-secondary);
+  background: var(--el-fill-color-light);
 }
 
 .avatar {

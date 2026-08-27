@@ -9,8 +9,8 @@
     "start": "electron --remote-debugging-port=9222 dist/main.mjs"
   },
   "dependencies": {
-    "@ai-zen/agents-core": "^4.0.0",
-    "@ai-zen/agents-sdk": "^0.8.0",
+    "@ai-zen/agents-core": "^4.1.0",
+    "@ai-zen/agents-sdk": "^0.9.1",
     "@ai-zen/desktop-shared": "workspace:*",
     "ws": "^8.21.1"
   },

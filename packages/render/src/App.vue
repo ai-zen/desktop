@@ -5,6 +5,7 @@
 
     <!-- 页面切换（uiStore.currentView） -->
     <GuideView v-if="uiStore.currentView === 'guide'" />
+    <SettingsView v-else-if="uiStore.currentView === 'settings'" />
     <MainView v-else />
   </div>
 </template>
@@ -14,6 +15,7 @@ import { onMounted, onUnmounted } from "vue";
 import TitleBar from "./components/TitleBar.vue";
 import GuideView from "./views/guide/index.vue";
 import MainView from "./views/main/index.vue";
+import SettingsView from "./views/settings/index.vue";
 import { onChatPush } from "./apis/chat.js";
 import { useUiStore } from "./stores/ui.js";
 import { useWorkspaceStore } from "./stores/workspace.js";

@@ -18,11 +18,11 @@ importers:
   packages/main:
     dependencies:
       '@ai-zen/agents-core':
-        specifier: ^4.0.0
-        version: 4.0.0(ws@8.21.1)(zod@4.4.3)
+        specifier: ^4.1.0
+        version: 4.1.0(ws@8.21.1)(zod@4.4.3)
       '@ai-zen/agents-sdk':
-        specifier: ^0.8.0
-        version: 0.8.0(ws@8.21.1)(zod@4.4.3)
+        specifier: ^0.9.1
+        version: 0.9.1(ws@8.21.1)(zod@4.4.3)
       '@ai-zen/desktop-shared':
         specifier: workspace:*
         version: link:../shared
@@ -49,8 +49,8 @@ importers:
   packages/render:
     dependencies:
       '@ai-zen/agents-core':
-        specifier: ^4.0.0
-        version: 4.0.0(ws@8.21.1)(zod@4.4.3)
+        specifier: ^4.1.0
+        version: 4.1.0(ws@8.21.1)(zod@4.4.3)
       '@ai-zen/desktop-shared':
         specifier: workspace:*
         version: link:../shared
@@ -98,16 +98,16 @@ importers:
   packages/shared:
     dependencies:
       '@ai-zen/agents-core':
-        specifier: ^4.0.0
-        version: 4.0.0(ws@8.21.1)(zod@4.4.3)
+        specifier: ^4.1.0
+        version: 4.1.0(ws@8.21.1)(zod@4.4.3)
 
 packages:
 
-  '@ai-zen/agents-core@4.0.0':
-    resolution: {integrity: sha512-OQCBXdvSnroiG6f63nSo3e6Nbxq+R1PEfx4W+lm5s4qgW2rn+1UkfkQvrU3KxrHG2iaKM6vYDSk206drY5jQTQ==}
+  '@ai-zen/agents-core@4.1.0':
+    resolution: {integrity: sha512-mTc+kIXcGbcUWzK3nOoqCpPsrxh6CUvFSpH3CovW0LJ7WCnoekVESuQyeYnfgk3kvFUxlPSDxas766b7ee50kg==}
 
-  '@ai-zen/agents-sdk@0.8.0':
-    resolution: {integrity: sha512-8S0bX7NbQuQ8NhT3uQBP0rntsFj8QdogmXDzXXZa7URW1MNPl8AhsR37MFggWKFegqA0ha/vMGhe/1OP0zpoSg==}
+  '@ai-zen/agents-sdk@0.9.1':
+    resolution: {integrity: sha512-7YM2gQVP2jWjIdhMIJHVWLaUuQoAwk/yIsPimuIiIJKC7j98q3APiwiVjGgVLoWFR1vonkTVjiPsYFRRiDxsnQ==}
 
   '@ai-zen/event-bus@1.1.0':
     resolution: {integrity: sha512-xjfQEmUMly++dOSrQMJkwrnBVl7bQHtiw8S09AW5jPuqnFV9OwBk0PsGFc/T+4eP4yWThBJo2X3cCdE5DkAr+Q==}
@@ -1598,7 +1598,7 @@ packages:
 
 snapshots:
 
-  '@ai-zen/agents-core@4.0.0(ws@8.21.1)(zod@4.4.3)':
+  '@ai-zen/agents-core@4.1.0(ws@8.21.1)(zod@4.4.3)':
     dependencies:
       '@ai-zen/event-bus': 1.1.0
       openai: 7.5.0(ws@8.21.1)(zod@4.4.3)
@@ -1609,9 +1609,9 @@ snapshots:
       - ws
       - zod
 
-  '@ai-zen/agents-sdk@0.8.0(ws@8.21.1)(zod@4.4.3)':
+  '@ai-zen/agents-sdk@0.9.1(ws@8.21.1)(zod@4.4.3)':
     dependencies:
-      '@ai-zen/agents-core': 4.0.0(ws@8.21.1)(zod@4.4.3)
+      '@ai-zen/agents-core': 4.1.0(ws@8.21.1)(zod@4.4.3)
       '@modelcontextprotocol/sdk': 1.30.0(zod@4.4.3)
       dayjs: 1.11.21
       openai: 7.5.0(ws@8.21.1)(zod@4.4.3)

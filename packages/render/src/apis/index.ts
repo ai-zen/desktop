@@ -12,3 +12,4 @@ export * from "./conversation.js";
 export * from "./chat.js";
 export * from "./agent.js";
 export * from "./model.js";
+export * from "./config.js";

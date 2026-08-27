@@ -15,7 +15,15 @@
  */
 
 import { AgentNS } from "@ai-zen/agents-core";
-import { AgentRepository, createModel, SdkAgent } from "@ai-zen/agents-sdk";
+import {
+  AgentRepository,
+  AutoMigratePlugin,
+  AutoRefreshToolsPlugin,
+  ContextGuardPlugin,
+  createModel,
+  SdkAgent,
+  TaskMigrationService,
+} from "@ai-zen/agents-sdk";
 import type { ChatStreamEvent, ConversationState } from "@ai-zen/desktop-shared";
 import type { Conversation } from "@ai-zen/desktop-shared";
 import type { ConversationRepository } from "../storage/ConversationRepository.js";
@@ -103,10 +111,15 @@ export class ChatService {
     agent: Agent,
     content: string,
   ): Promise<void> {
-    // 整组内循环开始：user + assistant 占位已就绪（事件参数 messages 即当前完整消息）
-    const onLoopsStart = (messages: AgentNS.Message[]) => {
-      const userMsg = messages.at(-2)!; // send 无条件追加 user + assistant 两条（带真实 id）
-      this.opts.push({ conversationId, type: "user", id: userMsg.id!, content });
+    // 整组内循环开始：SDK 事件参数为 SendContext（send 前快照，不含本次 user）。
+    // 运行时真相是 agent.messages（send 已追加 user，assistant 占位由 run 内循环开头追加），
+    // 故取 agent.messages 中最后一条 User 即本次输入。
+    const onLoopsStart = () => {
+      const userMsg = [...agent.messages].reverse().find(
+        (m) => m.role === AgentNS.Role.User,
+      );
+      if (!userMsg?.id) return;
+      this.opts.push({ conversationId, type: "user", id: userMsg.id, content });
       this.opts.push({ conversationId, type: "start" });
     };
 
@@ -145,10 +158,12 @@ export class ChatService {
 
     agent.events.on("inner-loop-end", onLoopEnd);
 
-    // 整组内循环结束：messages 为完整结果（正常/error/abort 均到达）→ 落库 + done + 自动命名
+    // 整组内循环结束：SDK 事件参数为 SendContext（send 前快照，非最终结果）；
+    // 运行时真相是 agent.messages（完整结果，正常/error/abort 均到达）。
     // 直接使用 agent 原始 messages 落库/推送：中断/出错消息（Aborted/Error）保留在消息中
     // （UI 显示中断现场），下次发送时由 core formatHistory 过滤，协议仍合法、无孤儿工具消息。
-    const onLoopsEnd = async (messages: AgentNS.Message[]) => {
+    const onLoopsEnd = async () => {
+      const messages = agent.messages;
       await this.persistSnapshot(workspaceId, conversationId, messages);
       this.opts.push({ conversationId, type: "done", messages });
       // 自动生成对话标题：异步执行，不阻塞 done（防重复由 naming Set + 默认名判断保证）
@@ -288,6 +303,48 @@ export class ChatService {
         await this.persistSnapshot(workspaceId, conversationId, agent.messages);
       },
     });
+
+    // 能力/上下文插件（参照 CLI conversation-runner）：
+    //   1) AutoRefreshToolsPlugin —— 每次 send 前刷新文件系统能力并重建工具；
+    //   2) ContextGuardPlugin —— 严重超限（> maxTokens×1.5）时在请求前抛错中断；
+    //   3) AutoMigratePlugin —— 正常超限（> maxTokens）时自动生成交接文档并迁移。
+    // maxTokens 取自该对话所用模型在 config.json 中的声明（modelId 匹配）
+    agent.use(new AutoRefreshToolsPlugin());
+    const modelMeta = provider.config.models.find(
+      (m) => m.id === conversation.modelId,
+    );
+    const maxTokens =
+      modelMeta?.maxContextTokens ??
+      (modelMeta?.maxContextChars
+        ? Math.floor(modelMeta.maxContextChars / 4)
+        : undefined);
+    if (maxTokens && maxTokens > 0) {
+      agent.use(new ContextGuardPlugin({ maxTokens }));
+      agent.use(
+        new AutoMigratePlugin({
+          // 迁移逻辑统一交由 SDK 的 TaskMigrationService（strategy: "omit"）：
+          // 保留历史可审计（标记 omit，不再进 agent 请求）+ 追加交接断点消息。
+          // 消息 id 由 core 的 Message 构造保证（Message.id 必填），无需再补。
+          service: new TaskMigrationService({
+            strategy: "omit",
+            onMigrated: async (mctx) => {
+              // 迁移后落库 + 推送独立 migrated 事件（render 全量替换并展示「已作废」）。
+              await this.persistSnapshot(
+                workspaceId,
+                conversationId,
+                mctx.agent.messages,
+              );
+              this.opts.push({
+                conversationId,
+                type: "migrated",
+                messages: mctx.agent.messages,
+              });
+            },
+          }),
+          maxTokens,
+        }),
+      );
+    }
 
     this.agents.set(conversationId, { agent, workspaceId });
     return agent;
@@ -448,3 +505,5 @@ export class ChatService {
     return t.length <= 16 ? t : `${t.slice(0, 16)}…`;
   }
 }
+
+

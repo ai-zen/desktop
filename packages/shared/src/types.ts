@@ -60,6 +60,28 @@ export interface ModelOption {
   name: string;
 }
 
+// ==================== 设置页（ConfigService） ====================
+
+/** 端点设置（设置页可编辑 API Key / 地址 / 名称） */
+export interface EndpointSettings {
+  id: string;
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+  description?: string;
+}
+
+export interface ConfigSettings {
+  /** 全部端点（含 API Key，桌面本地应用场景明文展示） */
+  endpoints: EndpointSettings[];
+  /** 默认模型（config.defaultModel） */
+  defaultModel: string;
+  /** 默认 Agent（config.defaultAgent） */
+  defaultAgent: string;
+  /** 数据目录（只读：AI_ZEN_DIR 路径） */
+  dataDir: string;
+}
+
 // ==================== 推送事件 DTO ====================
 
 /** chat:push 单通道推送（discriminated union）
@@ -74,6 +96,8 @@ export type ChatStreamEvent =
    *  render 按 id 就地 upsert：有则替换、无则追加末尾 —— 事件到达顺序即消息顺序 */
   | { conversationId: string; type: "message"; id: string; message: AgentNS.Message }
   | { conversationId: string; type: "done"; messages: AgentNS.Message[] }
+  /** 任务迁移完成后推送：全量替换消息。旧历史带 omit（已作废）标记，UI 展示但不进 agent 请求 */
+  | { conversationId: string; type: "migrated"; messages: AgentNS.Message[] }
   | { conversationId: string; type: "error"; message: string }
   /** 自动生成对话标题后推送（不阻塞 done，侧栏据此更新名称） */
   | { conversationId: string; type: "renamed"; name: string };

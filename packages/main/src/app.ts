@@ -24,6 +24,7 @@ import { WorkspaceService } from "./services/WorkspaceService.js";
 import { ConversationService } from "./services/ConversationService.js";
 import { AgentService } from "./services/AgentService.js";
 import { ModelService } from "./services/ModelService.js";
+import { ConfigService } from "./services/ConfigService.js";
 import { ChatService } from "./services/ChatService.js";
 import { ProviderPool } from "./services/ProviderPool.js";
 import { ServicesManager } from "./services/ServicesManager.js";
@@ -48,6 +49,7 @@ export class DesktopApp {
   // ==================== 服务 ====================
   private readonly agentService = new AgentService(this.agentRepository);
   private readonly modelService = new ModelService(this.configManager);
+  private readonly configService = new ConfigService(this.configManager, AI_ZEN_DIR);
   private readonly chatService: ChatService;
   private readonly workspaceService: WorkspaceService;
   private readonly conversationService: ConversationService;
@@ -86,6 +88,7 @@ export class DesktopApp {
       agent: this.agentService,
       model: this.modelService,
       chat: this.chatService,
+      config: this.configService,
     });
   }
 
