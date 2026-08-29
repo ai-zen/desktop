@@ -1,3 +1,8 @@
+---
+title: CDP 调试
+description: 通过 Chrome DevTools Protocol 调试 Desktop 渲染进程的方法与工具集使用
+---
+
 # CDP 远程调试指南
 
 Electron 启动时通过 `--remote-debugging-port=9222` 开启了 Chrome DevTools Protocol。

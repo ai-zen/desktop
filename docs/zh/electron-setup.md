@@ -1,3 +1,8 @@
+---
+title: 环境搭建
+description: Electron 二进制下载失败处理、path.txt 注意事项、CDP 调试端口与 pnpm 结构说明
+---
+
 # Electron 环境搭建备忘
 
 ## 首次安装 Electron

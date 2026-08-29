@@ -1,8 +1,20 @@
+---
+title: 架构设计
+description: AI-Zen Desktop 的分层架构、核心实体、设计决策与数据流（早期 v0.5 设计大纲，与当前实现存在差异）
+outline: deep
+---
+
 # Desktop 设计大纲（v0.5 定稿）
 
 > 状态：**架构 + 关键决策 + 用户场景 + render 分层已定稿**。
 > 开发策略：**UI 先行**——原型 = UI = 实际交互，main 按 UI 需求补齐。
 > 前置：SDK 0.5.0 已移除会话/草稿产品层，Desktop 自建产品层。
+
+> ⚠️ **注意**：本文为早期版本（v0.5）的**设计大纲**，反映当时架构设想，**与当前实现存在差异**。
+> 现行实现（以源码为准）已演进为：存储改为 SQLite（`node:sqlite` + worker_threads，见 `packages/main/src/storage/`）、
+> 主进程用面向对象单根 `DesktopApp` 组装（见 `packages/main/src/app.ts`，手写 DI / 构造注入）、
+> render 使用 markdown-it + highlight.js、IPC 走 `invokeService` 动态分发（见 `ServicesManager`）与 `chat:push` 事件回流。
+> 本文中的核心概念（Workspace / Conversation / agent 运行注册表 / `chat:push`）仍与当前实现一致。
 
 ---
 

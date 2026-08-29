@@ -1,0 +1,29 @@
+{
+  "name": "desktop",
+  "npm": "@ai-zen/desktop-workspace",
+  "description": {
+    "zh": "AI-Zen Desktop — 多 Workspace、多会话并存的 AI 工作台（Electron + Vue 3）",
+    "en": "AI-Zen Desktop — a multi-workspace, multi-conversation AI workbench (Electron + Vue 3)"
+  },
+  "docsRoot": "docs",
+  "locales": ["zh", "en"],
+  "defaultLocale": "zh",
+  "entry": {
+    "zh": "zh/index.md",
+    "en": "en/index.md"
+  },
+  "sections": {
+    "zh": [
+      { "title": "快速开始", "path": "zh/getting-started.md" },
+      { "title": "架构设计", "path": "zh/desktop-design.md" },
+      { "title": "环境搭建", "path": "zh/electron-setup.md" },
+      { "title": "CDP 调试", "path": "zh/cdp-debug.md" }
+    ],
+    "en": [
+      { "title": "Quick Start", "path": "en/getting-started.md" },
+      { "title": "Architecture Design", "path": "en/desktop-design.md" },
+      { "title": "Environment Setup", "path": "en/electron-setup.md" },
+      { "title": "CDP Debugging", "path": "en/cdp-debug.md" }
+    ]
+  }
+}
