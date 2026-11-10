@@ -365,7 +365,20 @@ export interface TestServer {
   dir: string;
   /** 用例里当工作目录用的那个目录（真的存在） */
   projectDir: string;
+  /**
+   * **最近一次**交给会话层装配的假 Agent（= 最后一段会话那个）。
+   *
+   * 只开一段会话的用例都用它；要同时驱动两段会话的用例读 {@link agents}（见
+   * `TestServerOptions.freshAgentPerSession`）。
+   */
   agent: FakeAgent;
+  /**
+   * 每次 `createAgent` 交给会话层的那台假件（按先后）。
+   *
+   * 缺省共用同一台（`agents[i]` 都是同一个对象）—— 只开一段会话时那就是全部；
+   * `freshAgentPerSession` 打开时每段会话一台，于是「谁在说话」这件事在服务端就不会混。
+   */
+  agents: FakeAgent[];
   daemon: Daemon;
   /** 门面：`invokeService` 的动态分发入口 */
   layer: ServerLayer;
@@ -450,6 +463,15 @@ export interface TestServerOptions {
    * 时间被人为推后 —— 于是「先推增量、快照后到且更短」这件事一定会发生，不用凑时序。
    */
   holdSubAgentSnapshot?: () => Promise<void>;
+  /**
+   * 每段会话各配一台假 Agent（缺省共用一台）。
+   *
+   * 什么时候需要它：同时驱动**两段会话**的用例（并发 / 互不串台）。共用一台的话，两段
+   * 会话在服务端就听着同一条 `chunk-parsed` —— 一条增量会被推成两条事件（各带一个
+   * `sessionId`），于是「客户端把两段会话搞混了」与「检查脚手架把一台 Agent 给了两段会话」
+   * 长得一模一样。真件里每段会话一个 Agent（`createAgent` 一次一个），所以这也更接近真件。
+   */
+  freshAgentPerSession?: boolean;
 }
 
 /**
@@ -473,7 +495,10 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
     workspacesRoot: join(dir, "workspaces"),
   });
 
-  const agent = new FakeAgent();
+  /** 缺省那台「所有会话共用」的假 Agent（`freshAgentPerSession` 时不用它） */
+  const sharedAgent = new FakeAgent();
+  /** 每次装配交出去的那台（按先后；缺省全是 `sharedAgent`） */
+  const agents: FakeAgent[] = [];
   let seq = 0;
   /** 会话层的事件出口（注入进去，用例才能发全局通知，见 `TestServer.hub`） */
   const hub = new EventHub();
@@ -491,8 +516,10 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
     // 假件不跟着入参走，「有会话级覆盖」就永远测不出覆盖值
     createAgent: async (input) => {
       agentInputs.push(input);
+      const agent = options.freshAgentPerSession ? new FakeAgent() : sharedAgent;
       agent.definition.modelId = input.modelId ?? MODEL_ID;
       agent.modelLevel = input.modelId ? "session" : "agent";
+      agents.push(agent);
       return agent;
     },
     nextSessionId: () => `chat_${++seq}`,
@@ -620,7 +647,12 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
   return {
     dir,
     projectDir,
-    agent,
+    get agent() {
+      // 还没装配过任何会话时给那台「共用」的：用例常常先往它身上塞预设消息
+      // （`server.agent.messages = [...]`）再建会话，而那台就是接下来要交出去的那台
+      return agents[agents.length - 1] ?? sharedAgent;
+    },
+    agents,
     get daemon() {
       return daemon;
     },

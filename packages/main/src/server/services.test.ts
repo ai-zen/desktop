@@ -167,8 +167,9 @@ describe("conversation", () => {
       // 的生效值（Agent 定义那一档）。只读覆盖值的话下拉框会空着（改造前的回归）
       modelId: MODEL_ID,
       messageCount: 1,
-      // 还没起名：兜底名与旧实现的默认命名同形
-      name: expect.stringMatching(/^对话_[0-9]{2}:[0-9]{2}$/),
+      // 还没起名：兜底名是一个**常量**（不掺时间戳）。按 `updatedAt` 拼名字的话，同一段
+      // 会话每改一次名、每发一轮都会换个名字 —— 一个随事实变化的名字就是第二个状态
+      name: "未命名对话",
       running: false,
     });
     expect(list[0]!.updatedAt).toEqual(expect.any(String));
@@ -221,7 +222,7 @@ describe("conversation", () => {
     expect(list[0]!.modelId).toBe(OVERRIDE_MODEL_ID);
   });
 
-  it("list：服务端省略 effectiveModelId（定义已删）时，modelId 退回覆盖值 / 空串而不抛错", async () => {
+  it("list：服务端省略 effectiveModelId（定义已删）时 modelId 是空串，不退回会话级覆盖值", async () => {
     addModelToConfig(OVERRIDE_MODEL_ID);
     const workspace = await createWorkspace();
     // 两段会话都指向 default：一段有会话级覆盖，一段没有
@@ -264,10 +265,12 @@ describe("conversation", () => {
       expect("effectiveModelLevel" in entry).toBe(false);
     }
 
-    // 客户端：退回会话级覆盖（用户自己选过的那一个）/ 没覆盖则空串；两条都不能抛
+    // 客户端：字段被省略时**就是没有**生效模型 —— 空串（下拉框显示成没选）。不退回会话级
+    // 覆盖值：那个值是「用户给这段会话设过的覆盖」，而它此刻指着的定义已经不在了，拿它
+    // 冒充「现在在用的模型」只会让 UI 更有底气地撜谎（协议写得很直：拿不到就省略，不伪造）
     const list = await invoke<ConversationSummary[]>("conversation", "list", workspace.id);
     const byId = new Map(list.map((item) => [item.id, item]));
-    expect(byId.get(overridden.id)!.modelId).toBe(OVERRIDE_MODEL_ID);
+    expect(byId.get(overridden.id)!.modelId).toBe("");
     expect(byId.get(plain.id)!.modelId).toBe("");
   });
 
@@ -353,7 +356,7 @@ describe("conversation", () => {
     expect(await invoke<Conversation | null>("conversation", "read", workspace.id, "chat_nope")).toBeNull();
   });
 
-  it("read：name 是服务端的 title（不是「对话_HH:mm」）", async () => {
+  it("read：name 是服务端的 title（不是「未命名对话」）", async () => {
     const workspace = await createWorkspace();
     const conversation = await invoke<Conversation>(
       "conversation",

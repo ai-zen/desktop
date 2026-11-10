@@ -11,7 +11,11 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { ChatStreamEvent, Conversation } from "@ai-zen/desktop-shared";
+import type {
+  ChatStreamEvent,
+  Conversation,
+  ConversationState,
+} from "@ai-zen/desktop-shared";
 import type { AgentNS } from "@ai-zen/agents-core";
 import { SERVER_EVENTS, SESSION_EVENTS } from "@ai-zen/agents-client";
 import type { HandoffMode, SessionSaveAsResult } from "@ai-zen/agents-client";
@@ -58,7 +62,12 @@ afterEach(async () => {
 });
 
 async function send(content: string): Promise<void> {
-  await server.layer.manager.invokeService("chat", "send", workspaceId, conversationId, content);
+  await invoke<void>("chat", "send", workspaceId, conversationId, content);
+}
+
+/** render 真实走的那条路：`window.electronAPI.invokeService(service, method, ...args)` */
+async function invoke<T>(service: string, method: string, ...args: unknown[]): Promise<T> {
+  return (await server.layer.manager.invokeService(service, method, ...args)) as T;
 }
 
 function eventsOf(type: ChatStreamEvent["type"]): ChatStreamEvent[] {
@@ -67,6 +76,12 @@ function eventsOf(type: ChatStreamEvent["type"]): ChatStreamEvent[] {
 
 /** `message` 事件（类型收窄：下面的断言要直接读 `message` / `id`） */
 type MessageEvent = Extract<ChatStreamEvent, { type: "message" }>;
+
+/** `user` 事件（类型收窄：下面的断言要直接读 `content`） */
+type UserEvent = Extract<ChatStreamEvent, { type: "user" }>;
+
+/** `done` 事件（类型收窄：下面的断言要直接读 `messages`） */
+type DoneEvent = Extract<ChatStreamEvent, { type: "done" }>;
 
 /** **带工具调用**的那几条 `message` 事件（正文增量推的那几条没有 `tool_calls`） */
 function toolCallEvents(): MessageEvent[] {
@@ -130,7 +145,6 @@ type AgentsEvent = Extract<ChatStreamEvent, { type: "agents" }>;
 function agentsEvents(): AgentsEvent[] {
   return server.pushed.filter((event): event is AgentsEvent => event.type === "agents");
 }
-
 /** 屏幕上那一份栏目（最后一条 `agents` 事件；还没有事件时是 `undefined`） */
 function latestAgents(): AgentsEvent["agents"] | undefined {
   return agentsEvents().at(-1)?.agents;
@@ -208,6 +222,70 @@ describe("增量：只有 text / reasoning，拼进一条占位 assistant 消息
     expect(first.type === "message" && first.message.content).toBe("你");
     expect(second.type === "message" && second.message.content).toBe("你好");
     expect(second.type === "message" && second.message.reasoning_content).toBe("想一想");
+  });
+});
+
+/**
+ * 一条连接、多段会话并发 —— 桌面端与 TUI 最大的不同（`stores/chat.ts` 的 `byConversation`：
+ * 切走的会话继续收事件）。main 这一侧是「一段会话一台状态机」：串台在这里就是「主回答里
+ * 凭空出现另一段会话的正文」，而它只在并发时才显形。
+ */
+describe("并发：一条连接、多段会话", () => {
+  it("两段会话各自流式、互不串台（各自一条 user / 一条正文 / 一条 done）", async () => {
+    // 每段会话一台假 Agent：共用一台的话，「两段会话混了」与「脚手架把一台 Agent 给了两段
+    // 会话」长得一模一样，测出来的就不是客户端的事
+    await openServer({ freshAgentPerSession: true });
+
+    const conversationB = await invoke<Conversation>(
+      "conversation",
+      "create",
+      workspaceId,
+      "default",
+    );
+    // 两段会话各装配了一台（顺序 = `conversation.create` 的先后）
+    const [agentA, agentB] = server.agents;
+    if (!agentA || !agentB) throw new Error("两段会话应当各装配一台 Agent");
+
+    await send("先说 A");
+    await invoke<void>("chat", "send", workspaceId, conversationB.id, "先说 B");
+    // 两段会话同时流（后台会话照收事件，不是「只有当前那段能长」）
+    agentA.emitDelta("答A");
+    agentB.emitDelta("答B");
+
+    const messages = await waitFor(
+      () => (eventsOf("message").length >= 2 ? (eventsOf("message") as MessageEvent[]) : undefined),
+      "两段会话各自的正文",
+    );
+    const bodyOf = (id: string): string =>
+      String(messages.find((event) => event.conversationId === id)!.message.content);
+    // 谁的字落在谁的会话上：串台的表现是 A 的正文贴到 B 上（或者一条正文两条会话各收一份）
+    expect(bodyOf(conversationId)).toBe("答A");
+    expect(bodyOf(conversationB.id)).toBe("答B");
+    expect(messages.every((event) => event.message.content === "答A" || event.message.content === "答B"))
+      .toBe(true);
+
+    // user 也各归各的（正文由 main 在 send 时登记，登记表按会话分键）
+    const users = await waitFor(
+      () =>
+        eventsOf("user").length === 2 ? (eventsOf("user") as UserEvent[]) : undefined,
+      "两段会话各自的 user",
+    );
+    const userOf = (id: string): string =>
+      users.find((event) => event.conversationId === id)!.content;
+    expect(userOf(conversationId)).toBe("先说 A");
+    expect(userOf(conversationB.id)).toBe("先说 B");
+
+    // 各自收尾：done 里只有自己那段会话的消息（快照也按会话取）
+    agentA.finish();
+    agentB.finish();
+    const dones = await waitFor(
+      () => (eventsOf("done").length === 2 ? (eventsOf("done") as DoneEvent[]) : undefined),
+      "两段会话各一条 done",
+    );
+    const doneOf = (id: string): AgentNS.Message[] =>
+      dones.find((event) => event.conversationId === id)!.messages;
+    expect(doneOf(conversationId).map((message) => message.content)).toEqual(["先说 A", "答A"]);
+    expect(doneOf(conversationB.id).map((message) => message.content)).toEqual(["先说 B", "答B"]);
   });
 });
 
@@ -447,6 +525,72 @@ describe("收尾：session.turnEnd 不带消息，必须补一次快照", () => 
     // 半截内容仍然留在 done 里（中断现场要能看到）
     expect(done.messages[1]).toMatchObject({ content: "半截" });
     expect(server.pushed.indexOf(done)).toBeLessThan(server.pushed.indexOf(error));
+  });
+});
+
+/**
+ * 服务端把轮次计数**从 0 重来**（进程重启、会话被回收后重新装回，都是同一条）。
+ *
+ * 这一条锁的是 main 那份「一轮的通道侧记账」的边界。`turnId` 是**会话内**的编号：服务端每轮
+ * +1，而计数从 0 起（`LiveSession` 初值 0；`session.attach` 把存档装回来的会话也是 0；一次
+ * `session.close` 之后再装回同样如此 —— 真进程重启的效果与这条路径一字不差）。于是「上一段
+ * 里停在第 1 轮」与「这一段的第一轮」是同一个数字，而 main 的槽位按 `turnId` 换。
+ *
+ * 不校正的话新的一轮会**复用旧槽位**：`user` / `start` 一个都不推（界面不进流式态、用户那
+ * 句话不上屏），槽位里那半句正文还会接在新答案前面（状态机那份拼接态被合并规则当成「本地
+ * 更全」留下来）。包里 `SessionChannel` 收尾时用 `Math.max(snapshot.turnId, pending.turnId)`
+ * 防的是同一件事的另一面，这里同样是「以服务端快照说的大数为准」。
+ */
+describe("轮次计数从 0 重来：新的一轮不复用旧槽位", () => {
+  it("会话被放掉再装回来（turnId 回到 0）：user / start 照推，正文不接旧半句", async () => {
+    await send("第一轮");
+    server.agent.emitDelta("半截");
+    await waitFor(() => eventsOf("message")[0], "第一轮那半句上屏");
+
+    // 把这一轮写到盘上（它还没收尾）：接下来要把会话从服务端内存里放掉再点名装回来，而
+    // 「装回来」要的正是盘上这份存档
+    await server.call("session.save", { sessionId: conversationId });
+
+    // 会话从内存里退场 → 装回来：新的 `LiveSession` 的 `turnId` 从 0 起（真进程重启时
+    // 内存里的一切同样消失），所以下一轮的编号又是 1 —— 与脏槽位里那个 1 撞车
+    await invoke<void>("chat", "release", conversationId);
+    const state = await invoke<ConversationState>(
+      "chat",
+      "getState",
+      workspaceId,
+      conversationId,
+    );
+    // 装回来的是一个空闲会话（这一轮不在飞）；消息来自存档
+    expect(state.streaming).toBe(false);
+    expect(state.messages.map((message) => message.content)).toEqual(["第一轮", "半截"]);
+
+    const usersBefore = eventsOf("user").length;
+    const startsBefore = eventsOf("start").length;
+    await send("重来一轮");
+    server.agent.emitDelta("新答案");
+
+    // 这一轮的 user / start 必须重新派发：复用旧槽位时两者都会缺席（`started` 已经是 true）
+    const user = await waitFor(
+      () => (eventsOf("user") as UserEvent[]).slice(usersBefore).at(-1),
+      "重来这一轮的 user",
+      // 比 vitest 的用例时限（5s）短：红的时候要报「在等什么」，而不是一句
+      // `Test timed out in 5000ms`
+      3_000,
+    );
+    expect(user).toMatchObject({ conversationId, content: "重来一轮" });
+    await waitFor(() => eventsOf("start").length > startsBefore, "重来这一轮的 start", 3_000);
+
+    // 正文不接旧半句：状态机里那份拼接态属于上一个 `LiveSession`，而合并规则会把它当成
+    // 「本地更全」留下来 —— 屏幕上于是出现「半截新答案」
+    const before = eventsOf("message").length;
+    const latest = await waitFor(() => {
+      const messages = eventsOf("message") as MessageEvent[];
+      if (messages.length <= before) return undefined;
+      return messages
+        .filter((event) => event.message.id?.startsWith(`${conversationId}:assistant:`))
+        .at(-1);
+    }, "新答案上屏", 3_000);
+    expect(latest.message.content).toBe("新答案");
   });
 });
 
@@ -739,7 +883,6 @@ describe("子 Agent：另开一条 agents 通道（整份替换）", () => {
     // core 在 `finally` 里还会广播一次 `sub-agent-end`（出错的那一次也走这条路）。服务端今天
     // 已经用「只把仍在 running 的置为 done」挡了一层，但协议把 `failed` 写成**终态**，客户端
     // 这一层自己也要挡住 —— 所以这条 done 直接从事件出口发出去，验的就是客户端。
-    const before = agentsEvents().length;
     server.hub.publish({
       event: SESSION_EVENTS.subAgentEnded,
       sessionId: conversationId,
@@ -748,12 +891,17 @@ describe("子 Agent：另开一条 agents 通道（整份替换）", () => {
       status: "done",
     });
 
+    // 再用「下一个子 Agent 开工」这条**真**事件把栏目重推一次：判据是那次推送里的 sub-1。
+    // （不能等「那条 done 自己引起一次推送」——状态机把它吞掉了，吞掉正是对的行为：那一帧
+    // 没有改变任何事实，再推一遍就是把一份完全相同的栏目重发一次）
+    server.agent.startSubAgent();
     const after = await waitFor(
-      () => (agentsEvents().length > before ? agentsEvents().at(-1) : undefined),
-      "那条 done 引起的推送",
+      () => (latestAgents()?.length === 2 ? latestAgents() : undefined),
+      "第二个子 Agent 开工之后的那份栏目",
     );
     // 无脑覆盖会把 ✖ 擦成 ✓：用户会以为一个真的挂了的子任务成功了
-    expect(after?.agents[0]).toMatchObject({ id: "sub-1", status: "failed" });
+    expect(after?.[0]).toMatchObject({ id: "sub-1", status: "failed" });
+    expect(after?.[1]).toMatchObject({ id: "sub-2", index: 2, status: "running" });
   });
 
   it("session.turnEnd 清空栏目：推一条空数组（子 Agent 只活当前这一轮）", async () => {

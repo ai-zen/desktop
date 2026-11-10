@@ -151,8 +151,10 @@ const scroller = () => messagesRef.value;
 const activeConversationId = computed(() => conversationStore.activeConversationId);
 
 const currentModelId = computed(() => {
-  // 当前会话的 modelId（summary 上有）；取不到时回退默认
-  return conversationStore.activeConversation?.modelId ?? uiStore.models[0]?.id ?? "";
+  // 当前会话的 modelId（summary 上有）。取不到就空着 —— 模型解析是服务端的三级链
+  // （会话级覆盖 > Agent 定义 > 全局默认），客户端没有第四档：拿「配置里第一个模型」
+  // 顶上去，等于把「这段会话在用什么」换成一个没人验证过的猜测
+  return conversationStore.activeConversation?.modelId ?? "";
 });
 
 /**

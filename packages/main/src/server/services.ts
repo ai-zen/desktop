@@ -68,16 +68,17 @@ import type { ChatEventBridge } from "./events.js";
 /**
  * 会话没起过名时的兜底名字。
  *
- * 服务端把「没有 title」如实回成 `undefined`（那确实还没名字），而侧栏总得显示点什么。
- * 用的是旧实现里新建会话的默认格式（`对话_HH:mm`）：用户认得这个形态，且同一段会话每次
- * 列出来的名字都相同（按 `updatedAt` 算，不是"现在几点"）。
+ * 服务端把「没有 title」如实回成 `undefined`（那确实还没名字），而侧栏总得显示点什么 ——
+ * 但那个「什么」必须是一个**常量**：同一段没名字的会话，在侧栏、在标题栏、刷新前后都必须
+ * 是同一个名字。
+ *
+ * 这里曾经按 `updatedAt` 拼成 `对话_HH:mm`，注释还写着「每次列出来的名字都相同」——
+ * 两句话互相矛盾：`updatedAt` 是「最后一次活动」的时间，每发一轮、每改一次名都会刷新，
+ * 于是同一段会话的名字会跟着改（改个名，显示的名字反而从「我的问题」变回「对话_09:41」）。
+ * 一个会跟着事实变化的名字是**第二个状态**，而它要表达的那个事实（还没有名字）本来只需要
+ * 一个词。所以给一个常量，并且不再为它编时间戳。
  */
-function fallbackConversationName(iso: string): string {
-  const date = new Date(iso);
-  const hh = String(date.getHours()).padStart(2, "0");
-  const mm = String(date.getMinutes()).padStart(2, "0");
-  return `对话_${hh}:${mm}`;
-}
+const UNNAMED_CONVERSATION = "未命名对话";
 
 // ==================================================================
 // workspace
@@ -183,15 +184,16 @@ export class ServerConversationService {
       // render 的模型下拉框读这一位当「当前模型」显示（`ChatPanel.vue` 的 `currentModelId`），
       // 所以它必须答「这段会话实际在用哪个模型」，而不是「这段会话有没有自己的覆盖」：
       // 协议里 `modelId` 是后者（缺省 = 跟着 Agent 定义 / 全局兜底走），只读它的话绝大多数
-      // 会话的下拉框会空着 —— 改造前永远有值，这是行为回归。生效值由服务端给
-      // （`effectiveModelId`，三级解析的唯一实现是 SDK 的 `resolveModel`）。
+      // 会话的下拉框会空着。生效值由服务端给（`effectiveModelId`，三级解析的唯一实现是
+      // SDK 的 `resolveModel`）。
       //
-      // 为什么还留着 `?? entry.modelId`：解析不出来时（那段会话指着已删的 Agent 定义、或
-      // 三级都空）服务端**省略**该字段，此刻退回覆盖值至少是「用户自己选过的那一个」，比
-      // 空串多一分信息。**绝不**在客户端按「覆盖 + 定义 + 默认」再推一遍 —— 那是优先级规则
-      // 的第二份实现，正是这条协议字段要消灭的东西。
-      modelId: entry.effectiveModelId ?? entry.modelId ?? "",
-      name: entry.title ?? fallbackConversationName(entry.updatedAt),
+      // 解析不出来时（那段会话指着已删的 Agent 定义、或三级都空）服务端**省略**该字段 ——
+      // 按协议，那就省略：空串的意思是「现在没有生效模型」，`ModelSelect` 会显示成没选。
+      // **不退回** `entry.modelId`：那是「用户给这段会话设过的覆盖」，不是它现在在用的模型
+      // （覆盖值指向的模型可能已经不在配置里）。猜一个只会让 UI 更有底气地撒谎；也不在
+      // 客户端按「覆盖 + 定义 + 默认」再推一遍 —— 那是优先级规则的第二份实现。
+      modelId: entry.effectiveModelId ?? "",
+      name: entry.title ?? UNNAMED_CONVERSATION,
       messageCount: entry.messageCount,
       updatedAt: entry.updatedAt,
       running: entry.live && entry.phase !== null,
@@ -220,7 +222,7 @@ export class ServerConversationService {
       workspaceId,
       agentId: created.agentId,
       modelId: snapshot.modelId,
-      name: fallbackConversationName(now),
+      name: UNNAMED_CONVERSATION,
       messages: snapshot.messages,
       // 协议里没有创建/更新时间（`SessionRecord` 只有 `updatedAt`，且只在写档时出现），
       // 刚建出来的这一段，"现在"就是它唯一诚实的两个时间
@@ -272,7 +274,7 @@ export class ServerConversationService {
       workspaceId,
       agentId: snapshot.agentId,
       modelId: snapshot.modelId,
-      name: summary?.name ?? fallbackConversationName(updatedAt),
+      name: summary?.name ?? UNNAMED_CONVERSATION,
       messages: snapshot.messages,
       // 协议没有创建时间（`SessionRecord` 只有清单侧的 `updatedAt`，且它在写入时才刷新）：
       // 这一段**取的是最后一次更新时间，不要当创建时间用**。宁可如实说清，也不编一个
@@ -491,6 +493,11 @@ export class ServerChatService {
       SESSION_METHODS.snapshot,
       { sessionId: conversationId },
     );
+    // 这份快照同时也交给事件层：它是「render 点开这段会话」这个动作的**新基线**，而事件层
+    // 那边有一段长命的状态机（以及一份在飞的轮次记账）。服务端的 `turnId` 会随进程重启 /
+    // 会话被回收后重新装回而**从 0 重来**，只有这份快照能告诉事件层「你手上那一轮是残影」
+    // （见 `ChatEventBridge.noteSnapshot`）。
+    this.options.events.noteSnapshot(conversationId, snapshot);
     return {
       messages: snapshot.messages,
       // 「在跑」的唯一判据是阶段：阶段为 null 就是空闲
