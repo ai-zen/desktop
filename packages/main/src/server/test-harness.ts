@@ -140,6 +140,48 @@ export class FakeAgent implements AgentLike {
     });
   }
 
+  /**
+   * 推一片工具调用（真件的形状，见 core 的 `Agent.parseStreamData`）。
+   *
+   * 与 {@link emitDelta} 同一个套路：**先改 receiver，再 fire 同一片 delta**。两处细节照抄
+   * core，否则测出来的就是想象里的服务端：
+   *
+   *   - 服务端读的是**第一个参数**（`receiver.tool_calls[index]`），不是 chunk —— 组装态在
+   *     receiver 上，chunk 只是这一片原始数据；
+   *   - 参数是**累积**的：首片带 `index` / `id` / `name`，之后只带参数片段，core 往
+   *     `function.arguments` 后面接。所以这里也接，而不是覆盖。
+   */
+  emitToolCall(chunk: { index?: number; id?: string; name?: string; arguments?: string }): void {
+    const index = chunk.index ?? 0;
+    const receiver = this.streamingMessage();
+    receiver.tool_calls ??= [];
+    receiver.tool_calls[index] ??= { index, function: { name: "", arguments: "" } };
+    const call = receiver.tool_calls[index]!;
+    if (chunk.id) call.id = chunk.id;
+    if (chunk.name) call.function!.name = chunk.name;
+    if (chunk.arguments) {
+      call.function!.arguments = `${call.function?.arguments ?? ""}${chunk.arguments}`;
+    }
+    this.fire("chunk-parsed", receiver, {
+      choices: [
+        {
+          delta: {
+            tool_calls: [
+              {
+                index,
+                ...(chunk.id ? { id: chunk.id } : {}),
+                function: {
+                  ...(chunk.name ? { name: chunk.name } : {}),
+                  ...(chunk.arguments ? { arguments: chunk.arguments } : {}),
+                },
+              },
+            ],
+          },
+        },
+      ],
+    });
+  }
+
   /** 往消息里塞一条工具结果（只有服务端才知道的东西，用例用它验「收尾补快照」） */
   pushToolResult(content: string): AgentNS.Message {
     const message: AgentNS.Message = {

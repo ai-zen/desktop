@@ -14,7 +14,9 @@
  *    每个 `turnId` 只派发一次 `user` + `start`；
  * 2. **`message.delta` 只有 `text` / `reasoning`** —— 拼进一条**占位** assistant 消息，
  *    消息 id 是客户端生成的（服务端不给 id），`turn.end` 之后由快照全量替换成真实 id；
- *    工具调用的参数/结果在这一阶段**看不到**（协议里没有），只能等收尾那次快照；
+ *    工具调用的**组装态**走另一条事件 `session.toolCalls`（见 {@link ChatEventBridge.onToolCalls}），
+ *    它那份扁平载荷要在这里回收成 SDK 的嵌套形（见 {@link toSdkToolCalls}）。工具**结果**
+ *    仍然只有收尾那次快照里有 —— 协议没有「结果增量」这条事件；
  * 3. **`turn.end` 只带 `ok` / `error` 不带消息** —— 收尾补一次 `session.snapshot`，
  *    用全量替换（`done`）把工具结果与消息 status 一次补齐；
  * 4. **`session.phase` 的文案没处放** —— `ChatStreamEvent` 里没有 stage 字段，所以阶段
@@ -42,6 +44,8 @@ import {
   type SessionQuestionEvent,
   type SessionSnapshotResult,
   type SessionTitleChangedEvent,
+  type SessionToolCallsEvent,
+  type ToolCallState,
   type TurnEndEvent,
 } from "@ai-zen/agents-client";
 // 只要类型：`import type` 在产物里被整体擦除，main 因此不必为了一个 role 字符串把
@@ -68,6 +72,13 @@ interface TurnSlot {
   messageId: string | null;
   text: string;
   reasoning: string;
+  /**
+   * 本轮工具调用的**组装态**（`session.toolCalls` 每次给全集，所以这里是整体替换）。
+   *
+   * 存的是已经回收成 core 形状的 `AgentNS.ToolCall`：翻译只做一次（进槽位时就做），
+   * 之后「正文 + 工具调用」拼成一条消息时不必再转一遍。
+   */
+  toolCalls: AgentNS.ToolCall[];
 }
 
 export interface ChatEventBridgeOptions {
@@ -102,6 +113,7 @@ export class ChatEventBridge {
     this.offs.push(
       client.on(SESSION_EVENTS.phase, (event) => this.onPhase(event)),
       client.on(SESSION_EVENTS.delta, (event) => this.onDelta(event)),
+      client.on(SESSION_EVENTS.toolCalls, (event) => this.onToolCalls(event)),
       client.on(SESSION_EVENTS.turnEnd, (event) => this.onTurnEnd(event)),
       client.on(SESSION_EVENTS.idChanged, (event) => this.onIdChanged(event)),
       client.on(SESSION_EVENTS.titleChanged, (event) => this.onTitleChanged(event)),
@@ -178,16 +190,24 @@ export class ChatEventBridge {
     const slot = this.slotOf(key, event.turnId);
     slot.text += event.text;
     slot.reasoning += event.reasoning;
-    slot.messageId ??= `${key}:assistant:${slot.turnId}`;
-    const messageId = slot.messageId;
+    this.pushAssistant(key, slot);
+  }
 
-    const message: AgentNS.Message = {
-      id: messageId,
-      role: ASSISTANT_ROLE,
-      content: slot.text,
-      ...(slot.reasoning ? { reasoning_content: slot.reasoning } : {}),
-    };
-    this.options.push({ conversationId: key, type: "message", id: messageId, message });
+  /**
+   * 本轮工具调用的组装态 → 那条**同一条**占位 assistant 消息（就地更新）。
+   *
+   * 事件给的是**全集**（服务端按 `index` 拼好、参数没变就不发），所以这里整体替换掉槽位里
+   * 那份列表，而不是往后面接：同一个调用第二次到达时参数更长、`id` 也许这时才出现，但消息
+   * id 不变 —— render 按 id 就地 upsert，画面上是同一条消息里的卡片在长，不是每片多一张。
+   *
+   * 参数原样留着、**不在这里 `JSON.parse`**：流式当中它本来就是半截 JSON（`{"path":"a`），
+   * 解析必抛；render 也按文本原样显示（`MessageBubble.vue` 的 `<pre class=…>`）。
+   */
+  private onToolCalls(event: SessionToolCallsEvent): void {
+    const key = this.keyOf(event.sessionId);
+    const slot = this.slotOf(key, event.turnId);
+    slot.toolCalls = toSdkToolCalls(event.toolCalls);
+    this.pushAssistant(key, slot);
   }
 
   private onTurnEnd(event: TurnEndEvent): void {
@@ -316,6 +336,37 @@ export class ChatEventBridge {
   // 内部
   // ==================================================================
 
+  /**
+   * 推这条占位 assistant 消息（**整条替换**语义）。
+   *
+   * ## 每次都推全量
+   *
+   * `type: "message"` 在 render 那边是按 id 整条替换（`stores/chat.ts` 的 upsert），推出去
+   * 的 `message` 就是这条消息**此刻**的全部内容。所以正文、推理、工具调用一个都不能漏：
+   * 漏了正文，等于把已经显示出来的字抹掉（工具调用常常晚于正文到达）；漏了工具调用，等于
+   * 把已经画好的卡片抹掉（正文还在继续流）。两条路都从这个函数出去，就没有第二处能漏字段。
+   *
+   * ## 占位 id 为什么在这里生成
+   *
+   * 服务端不给消息 id（见文件头的缺口②），而 `message.delta` 与 `session.toolCalls` **任何
+   * 一条都可能先到**：模型可以先决定调工具，正文要等工具跑完的下一段流才有。把生成收在这
+   * 一个函数里，两条路就必然落在**同一条**消息上 —— render 才是原地替换，而不是工具卡片
+   * 一行、正文一行。
+   */
+  private pushAssistant(key: string, slot: TurnSlot): void {
+    slot.messageId ??= `${key}:assistant:${slot.turnId}`;
+    const messageId = slot.messageId;
+
+    const message: AgentNS.Message = {
+      id: messageId,
+      role: ASSISTANT_ROLE,
+      content: slot.text,
+      ...(slot.reasoning ? { reasoning_content: slot.reasoning } : {}),
+      ...(slot.toolCalls.length ? { tool_calls: slot.toolCalls } : {}),
+    };
+    this.options.push({ conversationId: key, type: "message", id: messageId, message });
+  }
+
   /** render 认识的那个 id（换过 id 的会话收敛回旧 key） */
   private keyOf(sessionId: string): string {
     return this.aliases.get(sessionId) ?? sessionId;
@@ -325,7 +376,14 @@ export class ChatEventBridge {
   private slotOf(key: string, turnId: number): TurnSlot {
     const existing = this.turns.get(key);
     if (existing && existing.turnId === turnId) return existing;
-    const slot: TurnSlot = { turnId, started: false, messageId: null, text: "", reasoning: "" };
+    const slot: TurnSlot = {
+      turnId,
+      started: false,
+      messageId: null,
+      text: "",
+      reasoning: "",
+      toolCalls: [],
+    };
     this.turns.set(key, slot);
     return slot;
   }
@@ -333,4 +391,34 @@ export class ChatEventBridge {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * 协议里的**扁平**工具调用 → core 的（**嵌套**）`Message.tool_calls` 形状。
+ *
+ * ## 为什么协议是扁平的
+ *
+ * `session.toolCalls` 的载荷（`ToolCallState`）只有 `index` / `name` / `id` / `arguments`
+ * 四个字段：服务端要回答的是「模型此刻拼到哪了」，它不做 SDK 类型的分发。协议一旦照抄嵌套
+ * 形（`function.name` / `function.arguments`），等于把某个模型库版本的内部结构写进跨端
+ * 契约 —— 那边哪天换形状，服务端与所有客户端要一起改。
+ *
+ * ## 为什么在客户端这一层回收成 SDK 形状
+ *
+ * 往下只有一个消费者，而它认的是 core 的 `AgentNS.Message`：`MessageBubble.vue` 读的正是
+ * `tc.function?.name` / `tc.function?.arguments`（收尾之后快照里给的就是这个形状，流式期间
+ * 与收尾后必须同形，否则同一张卡片会在收尾那一刻变脸）。所以形状对齐只能在**这里**做，而且
+ * 只该有这一处 —— 在 render 里再写一遍，就是「协议 → SDK」的翻译复制到两个包里，漂起来的
+ * 症状正是「流式时卡片空白、收尾后突然有内容」。
+ */
+function toSdkToolCalls(calls: readonly ToolCallState[]): AgentNS.ToolCall[] {
+  return calls.map((call) => ({
+    index: call.index,
+    // `id` 要在场才有：core 收到第一个带 id 的 chunk 之后才认得出这个调用，之前那几片本来
+    // 就没有 id（别补成空串 —— render 靠它和工具结果配对）
+    ...(call.id ? { id: call.id } : {}),
+    type: "function",
+    // 参数原样搬（半截 JSON 也照搬）：这一层不解析、不修补
+    function: { name: call.name, arguments: call.arguments },
+  }));
 }

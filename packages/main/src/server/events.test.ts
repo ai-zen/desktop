@@ -10,6 +10,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ChatStreamEvent, Conversation } from "@ai-zen/desktop-shared";
+import type { AgentNS } from "@ai-zen/agents-core";
 import type { HandoffMode, SessionSaveAsResult } from "@ai-zen/agents-client";
 import { startTestServer, waitFor, AUTO_TITLE, type TestServer, type TestServerOptions } from "./test-harness.js";
 
@@ -51,6 +52,32 @@ async function send(content: string): Promise<void> {
 
 function eventsOf(type: ChatStreamEvent["type"]): ChatStreamEvent[] {
   return server.pushed.filter((event) => event.type === type);
+}
+
+/** `message` 事件（类型收窄：下面的断言要直接读 `message` / `id`） */
+type MessageEvent = Extract<ChatStreamEvent, { type: "message" }>;
+
+/** **带工具调用**的那几条 `message` 事件（正文增量推的那几条没有 `tool_calls`） */
+function toolCallEvents(): MessageEvent[] {
+  return server.pushed.filter(
+    (event): event is MessageEvent =>
+      event.type === "message" && Boolean(event.message.tool_calls?.length),
+  );
+}
+
+/**
+ * 按 **render 的 upsert 语义**把 `message` 事件合并成消息表（`stores/chat.ts` 的
+ * `case "message"`：同一个 id 覆盖、新 id 追加）。
+ *
+ * 这是「原地更新 vs 多出一行」唯一有意义的判据：事件条数不说明问题（一片一次，本来就多条），
+ * 按 id 合并后占几个位置才说明问题。
+ */
+function upsertLikeRender(): Map<string, AgentNS.Message> {
+  const byId = new Map<string, AgentNS.Message>();
+  for (const event of server.pushed) {
+    if (event.type === "message") byId.set(event.id, event.message);
+  }
+  return byId;
 }
 
 /**
@@ -121,6 +148,101 @@ describe("增量：只有 text / reasoning，拼进一条占位 assistant 消息
     expect(first.type === "message" && first.message.content).toBe("你");
     expect(second.type === "message" && second.message.content).toBe("你好");
     expect(second.type === "message" && second.message.reasoning_content).toBe("想一想");
+  });
+});
+
+describe("工具调用：流式期间就画出来（session.toolCalls）", () => {
+  it("推一片工具调用就收到 message，形状是 core 的嵌套形，随后的正文仍落在同一条消息上", async () => {
+    await send("读一下文件");
+    // 真件里模型可以先决定调工具、正文要等工具跑完的下一段流才有 —— 这一片没有任何正文
+    server.agent.emitToolCall({ index: 0, id: "call_1", name: "read", arguments: '{"path":' });
+
+    const streamed = await waitFor(() => toolCallEvents()[0], "流式期间的工具调用");
+    const call = streamed.message.tool_calls?.[0];
+    expect(call?.function?.name).toBe("read");
+    // 半截 JSON 原样透传：这一层不解析、不修补
+    expect(call?.function?.arguments).toBe('{"path":');
+    expect(call).toMatchObject({ index: 0, id: "call_1", type: "function" });
+    // 扁平字段不能漏到 render：那边读的是 `tc.function?.name` / `tc.function?.arguments`
+    expect(call).not.toHaveProperty("name");
+    expect(call).not.toHaveProperty("arguments");
+
+    // 工具调用**先于正文**到达：占位 id 的生成规则只有一处，所以随后那片正文说的仍是同一条消息
+    server.agent.emitDelta("查到了");
+    const withText = await waitFor(
+      () => toolCallEvents().find((event) => Boolean(event.message.content)),
+      "带正文的后续更新",
+    );
+    expect(withText.id).toBe(streamed.id);
+    expect(withText.message.content).toBe("查到了");
+    // 正文与工具调用是**并存**的两个字段，不是二选一
+    expect(withText.message.tool_calls?.[0]?.function?.name).toBe("read");
+  });
+
+  it("参数变长的那一片仍是同一个 id、给的是完整参数，按 render 的 upsert 合并后只有一条", async () => {
+    await send("读一下文件");
+    server.agent.emitToolCall({ index: 0, id: "call_1", name: "read", arguments: '{"path":' });
+    const first = await waitFor(() => toolCallEvents()[0], "第一片工具调用");
+
+    // 第二片只带参数片段：core 把它接到 receiver 上，服务端上报的是**拼到此刻**的整串
+    server.agent.emitToolCall({ index: 0, arguments: '"a.ts"}' });
+    const second = await waitFor(() => toolCallEvents()[1], "第二片工具调用");
+
+    expect(second.id).toBe(first.id);
+    expect(second.message.tool_calls?.[0]?.function?.arguments).toBe('{"path":"a.ts"}');
+
+    // render 的 upsert：同一个 id 只占一个位置 —— 这两条事件在界面上是「一张卡片长大了」
+    const merged = upsertLikeRender();
+    expect(merged.size).toBe(1);
+    expect(merged.get(first.id)?.tool_calls?.[0]?.function?.arguments).toBe('{"path":"a.ts"}');
+  });
+
+  it("正文已经在流：后到的工具调用不抹掉正文（整条替换语义要带全字段）", async () => {
+    await send("你好");
+    server.agent.emitDelta("我查一下");
+    const bodyOnly = await waitFor(() => {
+      const event = eventsOf("message")[0];
+      return event?.type === "message" ? event : undefined;
+    }, "正文增量");
+
+    server.agent.emitToolCall({ index: 0, id: "call_1", name: "read", arguments: "{}" });
+    const withTools = await waitFor(() => toolCallEvents()[0], "工具调用");
+
+    expect(withTools.id).toBe(bodyOnly.id);
+    // `type: "message"` 是整条替换：推到 render 的那份必须把已累积的正文一起带上，
+    // 否则已经显示出来的字会被一次工具调用上报抹掉
+    expect(withTools.message.content).toBe("我查一下");
+    expect(withTools.message.tool_calls?.[0]?.function?.name).toBe("read");
+  });
+
+  it("收尾仍以快照为准：done 换成服务端那份（真实 id + 工具结果）", async () => {
+    await send("读一下文件");
+    server.agent.emitToolCall({
+      index: 0,
+      id: "call_1",
+      name: "read",
+      arguments: '{"path":"a.ts"}',
+    });
+    const streamed = await waitFor(() => toolCallEvents()[0], "流式期间的工具调用");
+    server.agent.emitDelta("看完了");
+    // 工具结果只有服务端知道（协议没有「结果增量」这条事件）
+    server.agent.pushToolResult("文件内容");
+    server.agent.finish();
+
+    const done = await waitFor(() => eventsOf("done")[0], "done 事件");
+    if (done.type !== "done") throw new Error("unreachable");
+
+    expect(done.messages.map((message) => message.role)).toEqual(["user", "assistant", "tool"]);
+    // 占位消息被服务端真实 id 换掉（同一位置、同一份工具调用参数）
+    expect(done.messages[1]!.id).not.toBe(streamed.id);
+    expect(done.messages[1]!.tool_calls?.[0]).toMatchObject({
+      id: "call_1",
+      function: { name: "read", arguments: '{"path":"a.ts"}' },
+    });
+    expect(done.messages[1]!.content).toBe("看完了");
+    // 工具**结果**仍然只有快照里有：它不会从流式那条占位消息里出现
+    expect(streamed.message.tool_call_id).toBeUndefined();
+    expect(done.messages[2]).toMatchObject({ content: "文件内容", tool_call_id: "call_1" });
   });
 });
 
