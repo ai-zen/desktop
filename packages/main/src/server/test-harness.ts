@@ -11,7 +11,7 @@
  *
  * ## 假件的形状必须照抄真件
  *
- * `chunk-parsed` 是**两参**（`receiver, chunk`）、第二个才是 OpenAI 风格的 delta chunk；
+ * 正文走 `chunk`（原始片：客户端自己用 core 的 `applyChunk` 折成消息）；
  * 用户消息由 `send()` 自己追加、assistant 消息由流式解析追加 —— 服务端一行都不替 Agent
  * 做这些。假件少做一步，测出来的就是想象里的服务端。
  */
@@ -72,7 +72,7 @@ const COMPLETED_STATUS = "completed" as AgentNS.MessageStatus;
  *
  * `on` / `off` 是 core 的 `Agent.events` 真有的两个方法（服务端只挂这两个）；`fire` 是假件
  * 才有的那一半 —— 真件里由 core 在恰当时刻广播，这里由用例决定「什么时候推哪一片」。
- * 子 Agent 的那条流（`chunk-parsed` / `error`）与主 Agent 走同一个形状：服务端给子 Agent
+ * 子 Agent 的那条流（`chunk` / `error`）与主 Agent 走同一个形状：服务端给子 Agent
  * 挂的就是这两个监听（`agents` 仓 `EventBridge` 的 `onSubStart`）。
  */
 class EventBus {
@@ -97,7 +97,7 @@ class EventBus {
  * 假子 Agent：一个子 Agent 能提供的最小面（`messages` + `events`）。
  *
  * 形状照抄真件的 `SubAgentLike`（服务端从 `sub-agent-start` 的载荷里只取这两样）：
- * 服务端给它挂 `chunk-parsed` / `error` 两个监听，并在 `session.subAgent.snapshot` 里把它
+ * 服务端给它挂 `chunk` / `error` 两个监听，并在 `session.subAgent.snapshot` 里把它
  * **自己的** `messages` 原样交出去。所以这里要的正是「一个消息表 + 一条事件流」。
  */
 export class FakeSubAgent extends EventBus {
@@ -105,14 +105,13 @@ export class FakeSubAgent extends EventBus {
   private messageSeq = 0;
 
   /**
-   * 推一片增量（与主 Agent 的 `emitDelta` 同形：`chunk-parsed` 两参，第一个是那条正在拼的
-   * assistant 消息，第二个才是 OpenAI 风格的 delta chunk）。
+   * 推一片增量（与主 Agent 的 `emitDelta` 同形：一片原始 chunk，客户端自己折）。
    */
   emitDelta(text: string, reasoning = ""): void {
     const receiver = this.streamingMessage();
     receiver.content = `${receiver.content ?? ""}${text}`;
     if (reasoning) receiver.reasoning_content = `${receiver.reasoning_content ?? ""}${reasoning}`;
-    this.fire("chunk-parsed", receiver, {
+    this.fire("chunk", {
       choices: [
         {
           delta: {
@@ -158,7 +157,7 @@ export class FakeSubAgent extends EventBus {
  * 假 Agent：能跑一轮的最小面。
  *
  * 用例通过 {@link emitDelta} / {@link finish} 驱动「这一轮」的进展 —— 这正是真件里 SDK
- * 事件的那几个时刻（`open` / `chunk-parsed` / `finally`）。
+ * 事件的那几个时刻（`open` / `chunk` / `finally`）。
  */
 export class FakeAgent extends EventBus implements AgentLike {
   messages: AgentNS.Message[] = [];
@@ -205,12 +204,12 @@ export class FakeAgent extends EventBus implements AgentLike {
 
   use(_plugin: unknown): void {}
 
-  /** 推一片增量（真件的形状：`chunk-parsed` 两参，第二个才是 delta chunk） */
+  /** 推一片增量（真件的形状：一片原始 chunk，客户端自己折） */
   emitDelta(text: string, reasoning = ""): void {
     const receiver = this.streamingMessage();
     receiver.content = `${receiver.content ?? ""}${text}`;
     if (reasoning) receiver.reasoning_content = `${receiver.reasoning_content ?? ""}${reasoning}`;
-    this.fire("chunk-parsed", receiver, {
+    this.fire("chunk", {
       choices: [
         {
           delta: {
@@ -244,13 +243,16 @@ export class FakeAgent extends EventBus implements AgentLike {
     if (chunk.arguments) {
       call.function!.arguments = `${call.function?.arguments ?? ""}${chunk.arguments}`;
     }
-    this.fire("chunk-parsed", receiver, {
+    this.fire("chunk", {
       choices: [
         {
           delta: {
             tool_calls: [
               {
                 index,
+                // 真片带 `type: "function"`（OpenAI 风格的首片就是这样），折叠方原样保留；
+                // 少了它，卡片上那条调用就没有类型可判
+                type: "function",
                 ...(chunk.id ? { id: chunk.id } : {}),
                 function: {
                   ...(chunk.name ? { name: chunk.name } : {}),
@@ -284,13 +286,14 @@ export class FakeAgent extends EventBus implements AgentLike {
   }
 
   /**
-   * 一个工具跑完了：把 core 那一刻的 `tool-call-end` 发出去（服务端据此推工具结果）。
+   * 一个工具跑完了：把 core 那一刻的两条事件（`message` → `tool-call-end`）发出去
+   * （服务端据此推工具结果：`message` 带货，`tool-call-end` 报时刻）。
    *
    * 形状照抄真件的 `markResult`（`packages/core/src/Agent.ts`，载荷类型
    * `ToolCallEndContext`，同文件导出）：**三个字段** `{ agent, toolCall, result }`，而且
    * `result.status` 在 fire **之前**就已经翻成终态。两处都不能省：
    *
-   *   - 服务端推 `tool-call-end` 的判据是「这条消息定型了吗」
+   *   - 服务端转 `tool-call-end` 的判据是「这条消息定型了吗」
    *     （`FINISHED_STATUSES`），先 fire 后翻状态就等于让用例造一个真件里不存在的时序；
    *   - `result` 就是刚定型的那条消息**本身**，服务端推上线时直接搬它（不重新包装）。
    *     用例传的就是 {@link pushToolResult} 返回的那个对象 —— 它已经进了 `messages`，
@@ -302,6 +305,10 @@ export class FakeAgent extends EventBus implements AgentLike {
    */
   endToolCall(message: AgentNS.Message, status: AgentNS.MessageStatus = COMPLETED_STATUS): void {
     message.status = status;
+    // core `markResult` 先按新状态重发同一条消息，再报「这个工具跑完了」这个时刻。
+    // 少发 `message` 就等于让用例造一个真件里不存在的时序：服务端那条通道永远收不到东西
+    // （工具卡片也就永远停在「在跑」）。
+    this.fire("message", message);
     this.fire("tool-call-end", {
       agent: this,
       toolCall: {
@@ -467,7 +474,7 @@ export interface TestServerOptions {
    * 每段会话各配一台假 Agent（缺省共用一台）。
    *
    * 什么时候需要它：同时驱动**两段会话**的用例（并发 / 互不串台）。共用一台的话，两段
-   * 会话在服务端就听着同一条 `chunk-parsed` —— 一条增量会被推成两条事件（各带一个
+   * 会话在服务端就听着同一条 `chunk` —— 一片增量会被推成两条事件（各带一个
    * `sessionId`），于是「客户端把两段会话搞混了」与「检查脚手架把一台 Agent 给了两段会话」
    * 长得一模一样。真件里每段会话一个 Agent（`createAgent` 一次一个），所以这也更接近真件。
    */

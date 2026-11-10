@@ -64,7 +64,7 @@ import {
   SESSION_EVENTS,
   SESSION_METHODS,
   SessionStream,
-  type AgentChunkParsedEvent,
+  type AgentChunkEvent,
   type AgentSubAgentEndEvent,
   type AgentSubAgentStartEvent,
   type AgentToolCallEndEvent,
@@ -79,7 +79,6 @@ import {
   type SessionSnapshotResult,
   type SessionStreamState,
   type SessionTitleChangedEvent,
-  type SessionToolCallsEvent,
   type SessionTurnEndEvent,
   type SubAgentSnapshotResult,
 } from "@ai-zen/agents-client";
@@ -201,8 +200,7 @@ export class ChatEventBridge {
     this.bound = client;
     this.subscriptions.push(
       client.on(SESSION_EVENTS.phase, (event) => this.onPhase(event)),
-      client.on(AGENT_EVENTS.chunkParsed, (event) => this.onDelta(event)),
-      client.on(SESSION_EVENTS.toolCalls, (event) => this.onToolCalls(event)),
+      client.on(AGENT_EVENTS.chunk, (event) => this.onChunk(event)),
       client.on(AGENT_EVENTS.toolCallEnd, (event) => this.onMessageAppended(event)),
       client.on(AGENT_EVENTS.subAgentStart, (event) => this.onSubAgentStarted(event)),
       client.on(AGENT_EVENTS.subAgentEnd, (event) => this.onSubAgentEnded(event)),
@@ -305,47 +303,26 @@ export class ChatEventBridge {
   }
 
   /**
-   * 增量 → 那条正在流式的 assistant 消息（正文 / 推理由状态机拼）。
+   * 一片**原始 chunk** → 状态机用 core 的 `applyChunk` 折进那条正在拼的 assistant 消息
+   * （正文、推理、工具调用的组装、流末用量与结束原因都在这一片里）。
    *
    * 带 `subAgentId` 的那一支不是「主对话的增量」，而是**另一个对话**（子 Agent）的：交给
    * 状态机分流（它自己按 `subAgentId` 各存一份拼接态），本层只把栏目整份推出去。混在一起
    * 的后果不是「多一行」，而是主回答里凭空长出一段子 Agent 的正文。
    *
    * 「状态没变就别推」用**引用比较**：`SessionStream` 的状态是不可变的（每次变更换一个新
-   * 对象），没变就是同一个对象。只带用量的流末 chunk（正文与推理都空）因此不会在转录里多
-   * 出一条空消息。
+   * 对象），没变就是同一个对象。
    */
-  private onDelta(event: AgentChunkParsedEvent): void {
+  private onChunk(event: AgentChunkEvent): void {
     const key = this.keyOf(event.sessionId);
     const stream = this.streamOf(key);
     const before = stream.state;
     if (event.subAgentId) {
-      stream.subAgentDelta({
-        subAgentId: event.subAgentId,
-        text: event.text,
-        reasoning: event.reasoning,
-      });
+      stream.subAgentChunk(event.subAgentId, event.chunk);
       if (stream.state !== before) this.pushAgents(key, stream.state);
       return;
     }
-    stream.applyDelta({ text: event.text, reasoning: event.reasoning });
-    if (stream.state !== before) this.pushStreamed(key, stream.state, event.turnId);
-  }
-
-  /**
-   * 本轮工具调用的**组装态**（整份替换语义）→ 同一条占位 assistant 消息。
-   *
-   * 扁平载荷（`index` / `name` / `id` / `arguments`）回收成 core 的嵌套形（`function.name`
-   * / `function.arguments`）是状态机做的（`applyToolCalls` → 它自己的 `toToolCall`）：协议
-   * 刻意扁平（不把某个模型库的内部结构写进跨端契约），而 render 读的是嵌套形
-   * （`MessageBubble.vue` 的 `tc.function?.name`）。本层不再写第二份转换 —— 收尾快照里给的
-   * 就是这个形状，流式期间与收尾之后必须同形，否则同一张卡片会在收尾那一刻变脸。
-   */
-  private onToolCalls(event: SessionToolCallsEvent): void {
-    const key = this.keyOf(event.sessionId);
-    const stream = this.streamOf(key);
-    const before = stream.state;
-    stream.applyToolCalls(event.toolCalls);
+    stream.applyChunk(event.chunk);
     if (stream.state !== before) this.pushStreamed(key, stream.state, event.turnId);
   }
 
