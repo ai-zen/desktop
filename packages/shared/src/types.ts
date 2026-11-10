@@ -130,7 +130,7 @@ export type ChatStreamEvent =
   /** 自动生成对话标题后推送（不阻塞 done，侧栏据此更新名称） */
   | { conversationId: string; type: "renamed"; name: string }
   /**
-   * 服务端推来的一条**通知**（`session.notice` / `global.notice`）：给用户看的一句话，瞬时的。
+   * 服务端推来的一条**通知**（`session.notice` / `server.notice`）：给用户看的一句话，瞬时的。
    *
    * ## 为什么不是 `type: "error"`
    *
@@ -148,7 +148,7 @@ export type ChatStreamEvent =
    *
    * ## 为什么 `conversationId` 是可选的
    *
-   * `global.notice` **不属于任何会话**（存档目录不可用、MCP 连不上是服务本身的事）。
+   * `server.notice` **不属于任何会话**（存档目录不可用、MCP 连不上是服务本身的事）。
    * 空串不是它的替身：空串的意思是「有一个会话，它的 key 是空字符串」，与「没有会话」是
    * 两件事 —— render 按 key 取状态槽位，空串会凭空开出一个谁都不认识的假槽位。
    */
@@ -169,7 +169,7 @@ export type ChatStreamEvent =
    *
    * ## 空数组 = 这一轮的子 Agent 都没了
    *
-   * 子 Agent 只活在当前一轮（`turn.end` 之后服务端把它们连同展示序号一起清掉，客户端同一
+   * 子 Agent 只活在当前一轮（`session.turnEnd` 之后服务端把它们连同展示序号一起清掉，客户端同一
    * 口径）。所以 `agents: []` 的意思是「把栏目收回去」，不是「这段会话没有子 Agent 这个
    * 概念」。render 收到空数组就清空栏目、退回主对话 —— 不能让一个标签停在一段已经过去的
    * 对话上。换会话 id（迁移 / 另存为）同样清空。

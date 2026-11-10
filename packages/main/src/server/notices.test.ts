@@ -1,6 +1,9 @@
 /**
  * 词典用例：13 个通知 code 都得有一句中文，而且参数得**真的**代进句子里。
  *
+ * 码表分两张（`SESSION_NOTICE_CODES` 11 条 + `SERVER_NOTICE_CODES` 2 条），词典却是**一份**
+ * —— 所以这里把两张表的取值并起来过一遍，一张表漏了哪条它都会红。
+ *
  * ## 为什么这一层要单独测（不只靠 `events.test.ts` 的真链路）
  *
  * 真链路一次只造得出一条通知（服务端今天只在这些时刻发，`askHandoffMode` 能稳定造出的
@@ -13,11 +16,11 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { GLOBAL_NOTICE_CODES, SESSION_NOTICE_CODES } from "@ai-zen/agents-client";
+import { SERVER_NOTICE_CODES, SESSION_NOTICE_CODES } from "@ai-zen/agents-client";
 import { noticeText } from "./notices.js";
 
-/** 协议里全部 13 个 code（11 个对话内 + 2 个全局） */
-const ALL_CODES = [...Object.values(SESSION_NOTICE_CODES), ...Object.values(GLOBAL_NOTICE_CODES)];
+/** 协议里全部 13 个 code（11 个对话内 + 2 个服务端） */
+const ALL_CODES = [...Object.values(SESSION_NOTICE_CODES), ...Object.values(SERVER_NOTICE_CODES)];
 
 describe("词典：每个 code 都有文案", () => {
   it("13 个 code 逐个出非空文案，且不落到「未知通知」兜底", () => {

@@ -12,21 +12,22 @@
  *
  * 1. **没有「开始」事件** —— 从 `session.phase` 出现非 `null` 推出「这一轮开始了」，
  *    每个 `turnId` 只派发一次 `user` + `start`；
- * 2. **`message.delta` 只有 `text` / `reasoning`** —— 拼进一条**占位** assistant 消息，
- *    消息 id 是客户端生成的（服务端不给 id），`turn.end` 之后由快照全量替换成真实 id；
+ * 2. **`session.delta` 只有 `text` / `reasoning`** —— 拼进一条**占位** assistant 消息，
+ *    消息 id 是客户端生成的（服务端不给 id），`session.turnEnd` 之后由快照全量替换成真实 id；
  *    工具调用的**组装态**走另一条事件 `session.toolCalls`（见 {@link ChatEventBridge.onToolCalls}），
  *    它那份扁平载荷要在这里回收成 SDK 的嵌套形（见 {@link toSdkToolCalls}）；
- * 3. **`session.messageAppended` 的 `message` 是 `unknown`** —— 它是服务端手里那条**已经
- *    定型**的完整消息（今天是工具结果），客户端只把它回收成 `AgentNS.Message` 再原样搬给
- *    render，**不拼装、不补字段、不编 id**（见 {@link ChatEventBridge.onMessageAppended}）；
- * 4. **`turn.end` 只带 `ok` / `error` 不带消息** —— 收尾补一次 `session.snapshot`，
+ * 3. **`session.messageAppended` 的 `message` 就是核心那条消息**（协议在 `agents@e9e15c5`
+ *    之后把它从 `unknown` 换成了具名类型 `Message`）—— 它是服务端手里那条**已经定型**的
+ *    完整消息（今天是工具结果），客户端原样搬给 render，**不拼装、不补字段、不编 id**、
+ *    也不必再断言（见 {@link ChatEventBridge.onMessageAppended}）；
+ * 4. **`session.turnEnd` 只带 `ok` / `error` 不带消息** —— 收尾补一次 `session.snapshot`，
  *    用全量替换（`done`）把消息 status（`completed` / `aborted` / `error`）与服务端对历史的
  *    清洗一次补齐。第 3 条已经把工具结果提前送到屏幕上，但**收尾仍以快照为准**：一条被取消
  *    的轮次里没定型的工具结果，只有快照里才有；
  * 5. **`session.phase` 的文案没处放** —— `ChatStreamEvent` 里没有 stage 字段，所以阶段
  *    只用来判「有没有在跑」（派发 `start`、给侧栏的 `running` 提供口径），文案不进 render。
  *
- * ## 通知（`session.notice` / `global.notice`）：翻成人话再推
+ * ## 通知（`session.notice` / `server.notice`）：翻成人话再推
  *
  * 这两条原来在这里被丢掉，理由是「render 没有通知栏」。后果不是「少一条提示」，而是
  * **用户看不到为什么什么都没发生**：自动迁移被跳过、存档没写成功（他以为存了）、子 Agent
@@ -36,7 +37,7 @@
  *
  * ## 子 Agent 的视图：另开一条 `agents` 通道（整份替换）
  *
- * 子 Agent 的增量（`message.delta` 带 `subAgentId`）**不进主对话**：那是另一层对话，拼进
+ * 子 Agent 的增量（`session.delta` 带 `subAgentId`）**不进主对话**：那是另一层对话，拼进
  * 主回答等于凭空多出一段文字。但它也不能被丢掉 —— 用户要能切到某个子 Agent 看它自己的
  * 完整对话（TUI 已经这么做：消息列表下方一条「主对话 / 子AGENT1 / 子AGENT2」栏目）。所以
  * 这里给每条会话维护一份「本轮子 Agent 视图」，每次变化推一条 `type: "agents"`，载荷是
@@ -48,7 +49,7 @@
  *   - **对齐**：`started` 一到就拉一次 `session.subAgent.snapshot`（它可能已经跑了一会儿、
  *     已经有内容了），合并只能走共享包的 `mergeStreamedSnapshot` —— 快照的往返可能比第一
  *     批增量还慢，直接赋值会让屏幕上已经流出来的正文凭空短一截；
- *   - **回收**：`turn.end` / `session.idChanged` 清空（子 Agent 只活当前这一轮，与 TUI 同
+ *   - **回收**：`session.turnEnd` / `session.idChanged` 清空（子 Agent 只活当前这一轮，与 TUI 同
  *     一口径），清空本身也推一条 `agents: []`，render 据此把栏目收回去。
  *
  * ## `session.question`：不问用户也必须有人答
@@ -58,35 +59,37 @@
  */
 
 import {
-  EVENT_METHODS,
+  SERVER_EVENTS,
   SESSION_EVENTS,
   SESSION_METHODS,
   // 「本地流式增量 vs 服务端快照」的合并规则：共享包里的唯一实现，本仓不许再写一份
   // （两个前端在同一个时序压力下做同一件事，抄两份就会在「宁可重复也不吞字」上分叉）
   mergeStreamedSnapshot,
-  type GlobalNoticeEvent,
-  type MessageDeltaEvent,
-  type StreamedAssistant,
-  type SubAgentEndedEvent,
-  type SubAgentSnapshotResult,
-  type SubAgentStartedEvent,
+  type ServerClient,
+  type ServerConnection,
+  type ServerNoticeEvent,
   type SessionAnswerResult,
+  type SessionDeltaEvent,
   type SessionIdChangedEvent,
   type SessionMessageAppendedEvent,
   type SessionNoticeEvent,
   type SessionPhaseEvent,
   type SessionQuestionEvent,
   type SessionSnapshotResult,
+  type SessionSubAgentEndedEvent,
+  type SessionSubAgentStartedEvent,
   type SessionTitleChangedEvent,
   type SessionToolCallsEvent,
+  type SessionTurnEndEvent,
+  type StreamedAssistant,
+  type SubAgentSnapshotResult,
   type ToolCallState,
-  type TurnEndEvent,
 } from "@ai-zen/agents-client";
 // 只要类型：`import type` 在产物里被整体擦除，main 因此不必为了一个 role 字符串把
 // agents-core（连带 openai）拉进运行期 —— 握手/事件这条路上一个模型库也不该被加载
 import type { AgentNS } from "@ai-zen/agents-core";
 import type { ChatStreamEvent, SubAgentView } from "@ai-zen/desktop-shared";
-import type { ServerConnection } from "./connection.js";
+import type { ProtocolCall } from "./call.js";
 import { noticeText } from "./notices.js";
 
 /**
@@ -98,7 +101,7 @@ import { noticeText } from "./notices.js";
  */
 const ASSISTANT_ROLE = "assistant" as AgentNS.Role;
 
-/** 一条会话「当前这一轮」的本地拼装状态（`turn.end` 之后丢弃） */
+/** 一条会话「当前这一轮」的本地拼装状态（`session.turnEnd` 之后丢弃） */
 interface TurnSlot {
   turnId: number;
   /** 是否已经派发过 `user` + `start`（没有「开始」事件，只能由阶段变化推一次） */
@@ -117,7 +120,7 @@ interface TurnSlot {
 }
 
 /**
- * 一条会话「当前这一轮」的子 Agent 栏目（`turn.end` / `session.idChanged` 之后整份丢弃）。
+ * 一条会话「当前这一轮」的子 Agent 栏目（`session.turnEnd` / `session.idChanged` 之后整份丢弃）。
  *
  * 为什么要两份状态（视图 + 流式拼接）：`SubAgentView.messages` 是**推给 render 的那一份**
  * （流式期间由增量拼、快照到了就整份换成合并后的结果），而 `streams` 是「本地已经拼出来
@@ -132,7 +135,18 @@ interface SubAgentSlot {
 }
 
 export interface ChatEventBridgeOptions {
+  /**
+   * 那一条常驻连接：本层只用它做**订阅**这一侧的事 ——
+   * `client()`（拿当前活着的连接挂监听）、`watch()`（让这条连接开始收事件）、
+   * `onOpen()`（连接换了一条就重挂监听）。
+   *
+   * 它**不是**发请求的入口（那是 {@link ChatEventBridgeOptions.call}）：包里那个
+   * `ServerConnection` 刻意不管「怎么发一个请求」，两件事分开之后，没有任何一个字段能
+   * 缓存住一条会过期的 client。
+   */
   connection: ServerConnection;
+  /** 发一次协议调用（收尾要的快照、提问的回答、子 Agent 的快照都走它） */
+  call: ProtocolCall;
   /** 推给 render（桌面端是 `webContents.send("chat:push")`；用例里是一个收集函数） */
   push: (event: ChatStreamEvent) => void;
 }
@@ -141,7 +155,7 @@ export class ChatEventBridge {
   /** sessionId → 这一轮的拼装状态（键是**render 认识的 id**，见 {@link keyOf}） */
   private readonly turns = new Map<string, TurnSlot>();
   /**
-   * 本次发送的正文：服务端事件里没有「用户说了什么」（`message.delta` 只有模型增量），
+   * 本次发送的正文：服务端事件里没有「用户说了什么」（`session.delta` 只有模型增量），
    * 而 render 的 `user` 事件要正文才能上屏。发送时登记，派发 `start` 时消费掉。
    */
   private readonly sends = new Map<string, string>();
@@ -151,12 +165,23 @@ export class ChatEventBridge {
    * 本轮的子 Agent 栏目（键同样是 render 认识的 key，见 {@link keyOf}）。
    *
    * 与 `turns` 分开存而不是塞进 `TurnSlot`：两者的生命周期判断点不同 —— 轮次槽位按
-   * `turnId` 换，栏目只按 `turn.end` / `idChanged` 清（子 Agent 的事件里也带 `turnId`，
+   * `turnId` 换，栏目只按 `session.turnEnd` / `idChanged` 清（子 Agent 的事件里也带 `turnId`，
    * 但用它与主会话的槽位绑在一起，会让「子 Agent 比主会话先到」这类正常时序多出一个
    * 隐式依赖，收益为零）。
    */
   private readonly agents = new Map<string, SubAgentSlot>();
-  private readonly offs: Array<() => void> = [];
+  /**
+   * 当前这一组订阅（挂在 `bound` 那条连接上）。
+   *
+   * 它必须能被**整组换掉**：监听挂在具体的 `ServerClient` 上，而连接会换（daemon 重启 →
+   * 包里那个 `ServerConnection` 重建一条）。旧连接上的订阅在断开那一刻就已经失效（socket
+   * 客户端会 `listeners.clear()`），留着既没用，又会让这个数组每重连一次长一截。
+   */
+  private subscriptions: Array<() => void> = [];
+  /** 上面那一组订阅挂在哪条连接上（`null` = 还没挂过） */
+  private bound: ServerClient | null = null;
+  /** 对「一条新连接就绪」的订阅（`dispose` 时摘掉） */
+  private unsubscribeOpen: (() => void) | null = null;
 
   constructor(private readonly options: ChatEventBridgeOptions) {}
 
@@ -166,10 +191,45 @@ export class ChatEventBridge {
    * 必须在任何 `chat.send` 之前完成：服务端在 `send` 的**回执之前**就会推第一条阶段
    * 事件，订阅晚一步就会漏掉「这一轮开始了」—— 界面于是只看到正文在长、却一直不进
    * 流式态（旧实现里那条 `inner-loops-start` 是同步发的，没有这个窗口）。
+   *
+   * ## 订阅跟着连接走（`onOpen`）
+   *
+   * 连接会换（daemon 重启、socket 断了由包里的 `ServerConnection` 重建），而监听挂在**具体
+   * 那条** `ServerClient` 上 —— 断开那一刻 socket 客户端会把监听表清空。所以「连接换了一条」
+   * 必须触发一次重挂：不重挂的话，新连接能发请求、却**一个事件也收不到**，症状是界面安静地
+   * 不动（不报错、不重连、也没有提示）。`events.watch` 是同一个道理（连接级订阅，服务端按
+   * 连接登记），重放归包里的 `watch()` 管。
    */
   async start(): Promise<void> {
+    this.unsubscribeOpen = this.options.connection.onOpen(() => {
+      // 重建的那一次不必让调用方等：`start()` 自己那一下已经保证「首次一定挂上」，而重挂
+      // 失败不该抛进一个没人 await 的栈 —— 下一次取用会再建一条，那时还会再挂一次
+      void this.rebind().catch(() => {});
+    });
+    await this.rebind();
+  }
+
+  /**
+   * 在**当前**那条连接上挂好监听，并让它开始收事件。
+   *
+   * 顺序是必须的：**先挂监听，再 `watch()`**。反过来的话，「服务端已登记订阅者」到「客户端
+   * 挂上监听」之间有一个窗口，那期间推来的事件没有接收者（`on()` 之前到达的帧直接被丢掉）。
+   *
+   * `watch()` 幂等（包里按连接记账：同一条连接只发一帧，重复调用不再发）—— 多发一帧的
+   * 后果是服务端**每帧多注册一个订阅者**，屏幕上的答案会被切成两遍。
+   */
+  private async rebind(): Promise<void> {
     const client = await this.options.connection.client();
-    this.offs.push(
+    this.attach(client);
+    await this.options.connection.watch();
+  }
+
+  /** 把这一组订阅挂到 `client` 上（同一个对象重复调用是空操作：连接没换就不重订） */
+  private attach(client: ServerClient): void {
+    if (this.bound === client) return;
+    for (const off of this.subscriptions.splice(0)) off();
+    this.bound = client;
+    this.subscriptions.push(
       client.on(SESSION_EVENTS.phase, (event) => this.onPhase(event)),
       client.on(SESSION_EVENTS.delta, (event) => this.onDelta(event)),
       client.on(SESSION_EVENTS.toolCalls, (event) => this.onToolCalls(event)),
@@ -181,9 +241,8 @@ export class ChatEventBridge {
       client.on(SESSION_EVENTS.titleChanged, (event) => this.onTitleChanged(event)),
       client.on(SESSION_EVENTS.question, (event) => this.onQuestion(event)),
       client.on(SESSION_EVENTS.notice, (event) => this.onNotice(event)),
-      client.on(SESSION_EVENTS.globalNotice, (event) => this.onGlobalNotice(event)),
+      client.on(SERVER_EVENTS.notice, (event) => this.onServerNotice(event)),
     );
-    await client.call(EVENT_METHODS.watch);
   }
 
   /** 一轮即将开始：记下正文（派发 `start` 时上屏用），服务端事件里没有这份内容 */
@@ -208,7 +267,10 @@ export class ChatEventBridge {
 
   /** 断开订阅（连接本身由 `ServerConnection` 负责） */
   dispose(): void {
-    for (const off of this.offs.splice(0)) off();
+    this.unsubscribeOpen?.();
+    this.unsubscribeOpen = null;
+    for (const off of this.subscriptions.splice(0)) off();
+    this.bound = null;
   }
 
   // ==================================================================
@@ -218,7 +280,7 @@ export class ChatEventBridge {
   /**
    * 阶段变化 → `user` + `start`。
    *
-   * `phase === null` 是「本轮回到空闲」，收尾归 `turn.end`（它带 `ok` / `error`，之后
+   * `phase === null` 是「本轮回到空闲」，收尾归 `session.turnEnd`（它带 `ok` / `error`，之后
    * 还要补一次快照）—— 这里不重复收尾，否则一轮会派发两次 `done`。
    */
   private onPhase(event: SessionPhaseEvent): void {
@@ -251,7 +313,7 @@ export class ChatEventBridge {
    * 混在一起的后果不是「多一行」，而是主回答里凭空长出一段子 Agent 的正文，而主会话
    * 本身的拼接状态被推着往前走（本来该停在「等待 xxx 返回」）。
    */
-  private onDelta(event: MessageDeltaEvent): void {
+  private onDelta(event: SessionDeltaEvent): void {
     const key = this.keyOf(event.sessionId);
     if (event.subAgentId) {
       this.applySubAgentDelta(key, event.subAgentId, event.text, event.reasoning);
@@ -289,15 +351,15 @@ export class ChatEventBridge {
    * ## 为什么**不需要**本地拼装
    *
    * 服务端推过来的是那一刻就定型了的那条消息**本身**（`role: "tool"` + `tool_call_id` +
-   * `name` + 正文 + `status`），与收尾快照里的是同一份东西。客户端在这一层唯一要做的是把
-   * 协议的 `unknown` 回收成 SDK 形状（见下），然后原样推给 render —— 一旦在这里「顺手补
-   * 点什么」（拼进占位消息、给正文加前缀、按工具调用把结果挂到卡片上），同一条消息就有了
-   * 第二份表示，收尾对账时还得判「哪一份才是真的」。
+   * `name` + 正文 + `status`），与收尾快照里的是同一份东西。协议给的就是 core 的 `Message`
+   * （不再是 `unknown`），所以客户端这一层连回收都不用做，原样推给 render —— 一旦在这里
+   * 「顺手补点什么」（拼进占位消息、给正文加前缀、按工具调用把结果挂到卡片上），同一条
+   * 消息就有了第二份表示，收尾对账时还得判「哪一份才是真的」。
    *
    * ## 为什么它不会和占位 assistant 消息打架
    *
    * 占位消息是**客户端编 id** 的那一条（`{@link ChatEventBridge.pushAssistant}` 里的
-   * `${key}:assistant:${turnId}`，正文在流、由 `message.delta` 一路拼），而工具结果带的是
+   * `${key}:assistant:${turnId}`，正文在流、由 `session.delta` 一路拼），而工具结果带的是
    * **服务端真实 id**。render 的 `type: "message"` 是按 id 就地 upsert（`stores/chat.ts`：
    * 有则替换、无则追加末尾），两个 id 不同，于是它们**各自占一个气泡**：正文一条、结果一条。
    * 也正因为 id 来自服务端，收尾那次 `done`（快照全量替换）不会把这条结果当成「多出来的
@@ -314,20 +376,20 @@ export class ChatEventBridge {
    * ## 消息**一定**有 id，所以这里没有兜底分支
    *
    * core 的 `Message` 构造函数保证 `id = options.id ?? generateMessageId()`
-   * （`packages/core/src/Message.ts`），落进 `agent.messages` 的每一条都带着 id；协议把它
-   * 交成 `unknown` 只是「不认识 SDK 的消息形状」，不是「可能没有 id」。为「万一是
-   * undefined」补一条自编 id 的分支，就是在制造第二份 id 真相：同一条消息在 `messageAppended`
-   * 里一个 id、在 `done` 的快照里另一个 id，render 按 id upsert 会把它画成两条 —— 一个
-   * 本不存在的情况硬生生变成一份重复的气泡。
+   * （`packages/core/src/Message.ts`），落进 `agent.messages` 的每一条都带着 id。协议在
+   * `agents@e9e15c5` 之后把载荷从 `unknown` 换成了具名类型（`Message`，就是 core 那份）——
+   * 于是「它到底有没有 id」由编译期回答，这里不必再断言，也不必为「万一是 undefined」补
+   * 一条自编 id 的分支：那是在制造第二份 id 真相，同一条消息在 `messageAppended` 里一个 id、
+   * 在 `done` 的快照里另一个 id，render 按 id upsert 会把它画成两条 —— 一个本不存在的情况
+   * 硬生生变成一份重复的气泡。
    *
    * 会话 key 走 `keyOf`：换过 id 的会话（迁移 / 另存为）在 render 那边仍以旧 key 认识自己，
-   * 与 `message.delta` / `turn.end` / `notice` 同一口径。
+   * 与 `session.delta` / `session.turnEnd` / `notice` 同一口径。
    */
   private onMessageAppended(event: SessionMessageAppendedEvent): void {
     const key = this.keyOf(event.sessionId);
-    // 回收成 SDK 形状是客户端这一层的事（协议刻意不认识它）：手法与收尾取快照那行
-    // `snapshot.messages as AgentNS.Message[]` 一致 —— 服务端给的就是 core 那条消息本身
-    const message = event.message as AgentNS.Message;
+    // 载荷就是服务端手里那条消息本身（协议转出 core 的 `Message`），原样搬给 render
+    const message = event.message;
     this.options.push({ conversationId: key, type: "message", id: message.id, message });
   }
 
@@ -349,12 +411,12 @@ export class ChatEventBridge {
    *
    * ## 失败为什么静默
    *
-   * 这次拉取只补内容：拉不到时增量照样拼、`ended` 照样改状态、`turn.end` 照样清空 ——
-   * 用户看不到任何"缺一块"的迹象。而连接真断了有别的信号（`turn.end` 的快照失败会走
+   * 这次拉取只补内容：拉不到时增量照样拼、`ended` 照样改状态、`session.turnEnd` 照样清空 ——
+   * 用户看不到任何"缺一块"的迹象。而连接真断了有别的信号（`session.turnEnd` 的快照失败会走
    * `error`，收尾的 `send` 也会失败）。在这里再推一条错误，只会让一次成功的委派凭空多一句
    * 红字。所以 `.catch(() => {})` 吞的是「这次补内容没成功」，不是「吞掉一个错误」。
    */
-  private onSubAgentStarted(event: SubAgentStartedEvent): void {
+  private onSubAgentStarted(event: SessionSubAgentStartedEvent): void {
     const key = this.keyOf(event.sessionId);
     const slot = this.agentSlotOf(key);
     slot.views.push({
@@ -377,18 +439,18 @@ export class ChatEventBridge {
    * `failed` 写成终态，客户端这一层仍然照着判：这条规则的两个实现（服务端的事件、客户端的
    * 视图）说的是同一件事，少一处就有一处会漂。
    */
-  private onSubAgentEnded(event: SubAgentEndedEvent): void {
+  private onSubAgentEnded(event: SessionSubAgentEndedEvent): void {
     const key = this.keyOf(event.sessionId);
     const slot = this.agents.get(key);
     const view = slot?.views.find((item) => item.id === event.subAgentId);
-    // 没有这一栏就没有状态可改：`ended` 属于一个客户端没见过的子 Agent（`turn.end` 已经
+    // 没有这一栏就没有状态可改：`ended` 属于一个客户端没见过的子 Agent（`session.turnEnd` 已经
     // 把栏目清掉了，或者这条连接的 `started` 早于订阅）—— 凭空补一条出来是在编造内容
     if (!slot || !view) return;
     if (!(view.status === "failed" && event.status === "done")) view.status = event.status;
     this.pushAgents(key, slot);
   }
 
-  private onTurnEnd(event: TurnEndEvent): void {
+  private onTurnEnd(event: SessionTurnEndEvent): void {
     // 子 Agent 只活当前这一轮：收尾就把栏目清掉（与 TUI 同一口径）。清在补快照**之前**
     // —— 那份快照只描述主会话，栏目不该被它带着复活（也不会：快照到达时列表已经空了）。
     this.clearSubAgents(this.keyOf(event.sessionId));
@@ -414,9 +476,9 @@ export class ChatEventBridge {
    * 不做增量对账、照旧整份替换：那条路是「让用户早点看到」，快照才是「最终历史」，而两者
    * 里的同一条消息 id 相同（服务端真实 id），替换不会画成两条。
    */
-  private async finishTurn(event: TurnEndEvent): Promise<void> {
+  private async finishTurn(event: SessionTurnEndEvent): Promise<void> {
     const key = this.keyOf(event.sessionId);
-    const snapshot = await this.options.connection.call<SessionSnapshotResult>(
+    const snapshot = await this.options.call<SessionSnapshotResult>(
       SESSION_METHODS.snapshot,
       { sessionId: event.sessionId },
     );
@@ -426,7 +488,7 @@ export class ChatEventBridge {
     this.options.push({
       conversationId: key,
       type: "done",
-      messages: snapshot.messages as AgentNS.Message[],
+      messages: snapshot.messages,
     });
     // 失败原因放在 `done` **之后**：render 的 `done` 分支会把错误条清空，先 error 后
     // done 等于把原因白白扔掉。
@@ -440,7 +502,7 @@ export class ChatEventBridge {
    *
    * render 的会话键只有 `conversationId`，`ChatStreamEvent` 里也没有「换 key」的类型 ——
    * 所以这里做**别名收敛**：新 id 上的后续请求与事件继续以旧 key 上报，画面才是连续的
-   * （不做的话，一段正在跑的会话会在旧 id 上等一个永远不来的 `turn.end`，界面卡死）。
+   * （不做的话，一段正在跑的会话会在旧 id 上等一个永远不来的 `session.turnEnd`，界面卡死）。
    * 迁移之后的内容是另一份历史，所以同时补一份快照推 `migrated`（render 的全量替换语义），
    * 侧栏里那条新会话由随后的列表刷新带出。
    */
@@ -451,13 +513,13 @@ export class ChatEventBridge {
     // 服务端此刻也把它们清掉了（`adopt` → `clearSubAgents`），客户端清一次才能与它同步
     // —— 不清的话，栏目会停在一段已经不存在于服务端的对话上，点进去永远拉不到快照。
     this.clearSubAgents(key);
-    void this.options.connection
+    void this.options
       .call<SessionSnapshotResult>(SESSION_METHODS.snapshot, { sessionId: event.sessionId })
       .then((snapshot) => {
         this.options.push({
           conversationId: key,
           type: "migrated",
-          messages: snapshot.messages as AgentNS.Message[],
+          messages: snapshot.messages,
         });
       })
       .catch((error: unknown) => {
@@ -500,7 +562,7 @@ export class ChatEventBridge {
    * 本来就没事的自动迁移凭空弹一条红字），也不重试（重试只会撞上同一条「来晚了」）。
    */
   private onQuestion(event: SessionQuestionEvent): void {
-    void this.options.connection
+    void this.options
       .call<SessionAnswerResult>(SESSION_METHODS.answer, {
         // 用服务端给的 id（不是 `keyOf`）：回答这条请求认的是服务端自己的会话键
         sessionId: event.sessionId,
@@ -516,7 +578,7 @@ export class ChatEventBridge {
    * 对话内通知 → `notice`（**带** `conversationId`）。
    *
    * 会话 id 走 `keyOf`：换过 id 的会话（迁移 / 另存为）在 render 那边仍以旧 key 认识自己 ——
-   * 与 `message.delta` / `turn.end` 同一口径。直接报服务端 id 的话，通知会贴到一段 render
+   * 与 `session.delta` / `session.turnEnd` 同一口径。直接报服务端 id 的话，通知会贴到一段 render
    * 从没见过、也永远不会选中过的会话上，等于又回到「什么都没发生」。
    */
   private onNotice(event: SessionNoticeEvent): void {
@@ -529,13 +591,16 @@ export class ChatEventBridge {
   }
 
   /**
-   * 全局通知 → `notice` 且**不给** `conversationId`。
+   * 服务端通知（`server.notice`）→ `notice` 且**不给** `conversationId`。
    *
    * 它不属于任何会话（存档目录不可用、MCP 连不上是服务本身的事）：填个空串等于声称
    * 「有一个 key 为空的会话」，render 会照着这个 key 开一个假槽位；省掉这个字段才是
    * 「没有会话」—— `ChatStreamEvent.notice` 把它定义成可选就是为了这个。
+   *
+   * 它住在 `SERVER_EVENTS` 而不是 `SESSION_EVENTS`（`agents@e9e15c5` 把它拆出去了），
+   * 名字也跟着变：**看到前缀就知道该看哪张表**。
    */
-  private onGlobalNotice(event: GlobalNoticeEvent): void {
+  private onServerNotice(event: ServerNoticeEvent): void {
     this.options.push({
       type: "notice",
       level: event.level,
@@ -616,7 +681,7 @@ export class ChatEventBridge {
    * 来源时，两边说法不同就得二选一 —— 那是又一处判定，收益为零。
    */
   private async syncSubAgent(sessionId: string, subAgentId: string): Promise<void> {
-    const snapshot = await this.options.connection.call<SubAgentSnapshotResult>(
+    const snapshot = await this.options.call<SubAgentSnapshotResult>(
       SESSION_METHODS.subAgentSnapshot,
       // 用服务端给的 id（不是 `keyOf`）：这条请求认的是服务端自己的会话键
       { sessionId, subAgentId },
@@ -624,12 +689,12 @@ export class ChatEventBridge {
     const key = this.keyOf(sessionId);
     const slot = this.agents.get(key);
     const view = slot?.views.find((item) => item.id === subAgentId);
-    // 往返期间这一轮收了尾（`turn.end` 清空了栏目）：这份内容属于一段已经过去的子 Agent，
+    // 往返期间这一轮收了尾（`session.turnEnd` 清空了栏目）：这份内容属于一段已经过去的子 Agent，
     // 落到一个不存在的栏目上就是凭空复活一个标签（点进去也再也拉不到第二次快照）
     if (!slot || !view) return;
 
     const merged = mergeStreamedSnapshot(
-      snapshot.messages as AgentNS.Message[],
+      snapshot.messages,
       slot.streams.get(subAgentId) ?? null,
     );
     view.messages = merged.messages;
@@ -641,7 +706,7 @@ export class ChatEventBridge {
   }
 
   /**
-   * 清空这条会话的子 Agent 栏目（`turn.end` / `session.idChanged`）。
+   * 清空这条会话的子 Agent 栏目（`session.turnEnd` / `session.idChanged`）。
    *
    * 子 Agent 是「内循环里工具调用的产物」，**只活在当前一轮**：一轮结束后主 Agent 已经给出
    * 最终答案，留着栏目就是留一份永远不会再更新的残影（而且下一轮的第一个子 Agent 会顶着上
@@ -676,7 +741,7 @@ export class ChatEventBridge {
     });
   }
 
-  /** 取（或开）这条会话本轮的子 Agent 栏目（`turn.end` / `idChanged` 之后整份丢弃） */
+  /** 取（或开）这条会话本轮的子 Agent 栏目（`session.turnEnd` / `idChanged` 之后整份丢弃） */
   private agentSlotOf(key: string): SubAgentSlot {
     const existing = this.agents.get(key);
     if (existing) return existing;
@@ -697,7 +762,7 @@ export class ChatEventBridge {
    *
    * ## 占位 id 为什么在这里生成
    *
-   * 服务端不给消息 id（见文件头的缺口②），而 `message.delta` 与 `session.toolCalls` **任何
+   * 服务端不给消息 id（见文件头的缺口②），而 `session.delta` 与 `session.toolCalls` **任何
    * 一条都可能先到**：模型可以先决定调工具，正文要等工具跑完的下一段流才有。把生成收在这
    * 一个函数里，两条路就必然落在**同一条**消息上 —— render 才是原地替换，而不是工具卡片
    * 一行、正文一行。

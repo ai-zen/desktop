@@ -14,7 +14,7 @@
 - UI：标题栏窗口控制（hover 加强 + 最大化/还原方块图标）
 - UI：消息头像（User / ChatDotRound 图标 + rgba 低透明背景适配深浅主题）
 - UI：消息气泡圆角（助手左上 / 用户右上尖锐）
-- 性能：main 同步 IO 异步化——SQLite 走 worker_threads（dbWorker 独立线程）、fs 用 `fs/promises`（app.ts / ProviderPool），主进程事件循环不再被同步 SQL 阻塞
+- 性能：main 同步 IO 异步化——SQLite 走 worker_threads（dbWorker 独立线程）、fs 用 `fs/promises`（app.ts / ProviderPool），主进程事件循环不再被同步 SQL 阻塞（这一层已随后续的瘦客户端改造整体移除：桌面端不再落地任何本地库，会话存档归常驻服务端）
 - 清理：移除消息隐藏功能（contentHidden/眼睛按钮，鸡肋且默认隐藏反直觉）
 - 中止生成：streaming 时发送按钮切换「停止」→ `ChatService.abort()` + IPC `chat.abort`；中断保留已生成部分（Aborted），core 3.3.0 接管防孤儿（删除 `cleanupOrphanToolMessages`，formatHistory 过滤 Aborted）——已端到端实测：中断后无孤儿消息、继续对话无 400
 - 上下文迁移 + 护栏：`ChatService` 引入 `AutoRefreshToolsPlugin` / `ContextGuardPlugin` / `AutoMigratePlugin`（参照 CLI conversation-runner）；`DesktopMigrationService` 迁移后保留旧历史并打 `omit`（已作废）标记，UI 可见但不进请求；新增独立 `migrated` 事件 + `MessageBubble`「已作废」徽标
@@ -34,8 +34,7 @@
 
 - 错误重试 UI：消息 error 状态 → 重试按钮 → 重新发送
 - 切换模型后发送：对话级 `modelId` 覆盖 Agent 定义（优先级：对话 > Agent > 全局）
-- 运行中删除会话：abort 进行中的 agent + 释放注册表（`release()` 已实现，需实测）
-- worker 崩溃重建路径：dbWorker 异常后主进程的恢复行为
+- 运行中删除会话：abort 进行中的 agent + 释放注册表（`session.remove` / `workspace.remove` 在服务端会关掉活会话，需实测）
 - autoRename 兜底名：本地降级取名（首条用户消息前 16 字符）是否合适
 
 ## 3. 设置页：完整全局资源管理（AGENTS / SUBAGENTS / MCP / SKILLS / TOOLS）

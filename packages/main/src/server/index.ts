@@ -10,12 +10,29 @@
  *
  * 依赖注入是显式手写的：要连哪台服务端、默认目录取哪、事件往哪推，全在参数里看得见，
  * 没有隐式全局。
+ *
+ * ## 连接只在**这里**建一次，但「一条」不等于「永远那一条」
+ *
+ * 一个进程一条连接（`ServerConnection`，来自 `@ai-zen/agents-client` 的
+ * `transport/connection.ts`）。本文件只组装它一次、`dispose()` 时关掉它；**它死了之后怎么
+ * 长回来是它自己的事**：每次取用都判 `closed`、断了重建、并在新连接上重放 `events.watch`。
+ *
+ * 本层以前自己实现过那点逻辑（缓存在 `pending ??=`、建成后不复查 `closed`），代价写在
+ * `daemon 重启 → 桌面端永久失能` 那次事故里：所有 IPC 一律 `client is closed`，而界面上看
+ * 起来只是「没反应」（没有重连、没有提示、也没有错误）。所以这件事不该有第二份实现 ——
+ * 它归包里那一个，本仓只负责组装与收摊。
+ *
+ * ## 组装根为什么不需要再判一次「要不要重建」
+ *
+ * 「连的是哪台服务端」由**发现文件**回答（`<aiZenDir>/run/server.json`）：重启后的服务端
+ * 会把它换成新端口，`ensureServer` 于是自然连到新的那个。本层不缓存端口、也不记 pid。
  */
 
-import type { ClientInfo, ServerClient } from "@ai-zen/agents-client";
+import type { ClientInfo } from "@ai-zen/agents-client";
+import { ServerConnection } from "@ai-zen/agents-client";
 import type { ChatStreamEvent } from "@ai-zen/desktop-shared";
 import { ServicesManager } from "./ServicesManager.js";
-import { ServerConnection } from "./connection.js";
+import { protocolCall } from "./call.js";
 import { ChatEventBridge } from "./events.js";
 import {
   ServerAgentService,
@@ -27,7 +44,7 @@ import {
 } from "./services.js";
 
 export interface ServerLayerOptions {
-  /** 配置根目录（`AI_ZEN_DIR`） */
+  /** 配置根目录（`AI_ZEN_DIR`）：服务发现文件在工作它下面（`run/server.json`） */
   aiZenDir: string;
   /** 握手首帧自报的身份（应用名 + 版本） */
   clientInfo: ClientInfo;
@@ -35,8 +52,6 @@ export interface ServerLayerOptions {
   defaultCwd: () => string;
   /** `chat:push` 的出口（桌面端 = `webContents.send`） */
   push: (event: ChatStreamEvent) => void;
-  /** 注入一条现成的连接（用例用：指向自己起的 Daemon） */
-  client?: ServerClient;
 }
 
 export interface ServerLayer {
@@ -49,20 +64,23 @@ export interface ServerLayer {
 }
 
 export function createServerLayer(options: ServerLayerOptions): ServerLayer {
+  // 「连哪台、断了怎么办」全在这一个对象里（发现 → 探活 → 复用 / 拉起 → 断了重建）。
+  // 组装根拿到的只是它的 `client` / `watch` / `onOpen` 三面，**发请求的入口是另一个**：
+  // 收在一个 `call` 上（见 `./call.ts`），六处调用点就不可能各自存一份会过期的 client
   const connection = new ServerConnection({
     aiZenDir: options.aiZenDir,
     clientInfo: options.clientInfo,
-    ...(options.client ? { client: options.client } : {}),
   });
-  const events = new ChatEventBridge({ connection, push: options.push });
+  const call = protocolCall(connection);
+  const events = new ChatEventBridge({ connection, call, push: options.push });
 
   const manager = new ServicesManager({
-    workspace: new ServerWorkspaceService({ connection, defaultCwd: options.defaultCwd }),
-    conversation: new ServerConversationService({ connection }),
-    agent: new ServerAgentService({ connection }),
-    model: new ServerModelService({ connection }),
-    chat: new ServerChatService({ connection, events }),
-    config: new ServerConfigService({ connection }),
+    workspace: new ServerWorkspaceService({ call, defaultCwd: options.defaultCwd }),
+    conversation: new ServerConversationService({ call }),
+    agent: new ServerAgentService({ call }),
+    model: new ServerModelService({ call }),
+    chat: new ServerChatService({ call, events }),
+    config: new ServerConfigService({ call }),
   });
 
   return {

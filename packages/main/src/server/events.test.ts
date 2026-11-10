@@ -5,7 +5,7 @@
  * —— 翻译层唯一的验收口径就是这条通道。
  *
  * 两处的例外：`session.question` **不进 render**（`ChatStreamEvent` 里没有「提问」这一类），
- * 但它必须被答回去 —— 断言的是「客户端真的答了」与服务端认领了那条回答；`global.notice`
+ * 但它必须被答回去 —— 断言的是「客户端真的答了」与服务端认领了那条回答；`server.notice`
  * 今天在服务端**没有生产者**（见 `TestServer.hub`），所以由脚手架扮演组装根那一声
  * `hub.publish`，往后每一段仍是真的（真 socket + 真翻译）。
  */
@@ -13,7 +13,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ChatStreamEvent, Conversation } from "@ai-zen/desktop-shared";
 import type { AgentNS } from "@ai-zen/agents-core";
-import { SESSION_EVENTS } from "@ai-zen/agents-client";
+import { SERVER_EVENTS, SESSION_EVENTS } from "@ai-zen/agents-client";
 import type { HandoffMode, SessionSaveAsResult } from "@ai-zen/agents-client";
 import { noticeText } from "./notices.js";
 import {
@@ -309,7 +309,7 @@ describe("工具调用：流式期间就画出来（session.toolCalls）", () =>
 /**
  * 工具结果消息：工具跑完那一刻就上屏（`session.messageAppended`）。
  *
- * 这一组盯的是**时机与身份**：什么时候能收到（不必等 `turn.end`）、收到的是哪条消息
+ * 这一组盯的是**时机与身份**：什么时候能收到（不必等 `session.turnEnd`）、收到的是哪条消息
  * （服务端真实 id + `tool_call_id`，不是占位 id）、以及它和占位 assistant 消息在 render 那边
  * 是否各自占一个位置。
  */
@@ -334,7 +334,7 @@ describe("工具结果：跑完那一刻就上屏（session.messageAppended）",
     // 否则同一条消息会在 `messageAppended` 与 `done` 里各有一个 id，render 画成两条
     expect(event.id).toBe(result.id);
     expect(event.id).not.toBe(`${conversationId}:assistant:1`);
-    // 这一刻这一轮还**没**收尾：不必等 `turn.end` 正是这条事件存在的理由
+    // 这一刻这一轮还**没**收尾：不必等 `session.turnEnd` 正是这条事件存在的理由
     expect(eventsOf("done")).toHaveLength(0);
   });
 
@@ -363,7 +363,7 @@ describe("工具结果：跑完那一刻就上屏（session.messageAppended）",
     expect(merged.get(result.id)?.tool_call_id).toBe("call_1");
   });
 
-  it("turn.end 之后仍以快照为准：done 里那条结果与流式推来的是同一条（同一个 id）", async () => {
+  it("session.turnEnd 之后仍以快照为准：done 里那条结果与流式推来的是同一条（同一个 id）", async () => {
     await send("读一下文件");
     server.agent.emitDelta("我读一下");
     const result = server.agent.pushToolResult("文件内容", "read");
@@ -414,7 +414,7 @@ describe("工具结果：跑完那一刻就上屏（session.messageAppended）",
   });
 });
 
-describe("收尾：turn.end 不带消息，必须补一次快照", () => {
+describe("收尾：session.turnEnd 不带消息，必须补一次快照", () => {
   it("done 里是服务端那份完整消息（含工具结果），流式占位消息被真实 id 替换", async () => {
     await send("你好");
     server.agent.emitDelta("答案");
@@ -452,7 +452,7 @@ describe("收尾：turn.end 不带消息，必须补一次快照", () => {
 
 describe("自动标题：session.titleChanged → renamed", () => {
   it("第一轮收尾后服务端起好名字，侧栏拿到的就是它", async () => {
-    // 这一条要服务端真的去起名（其余用例不注入自动标题：那是 `turn.end` 之后的后台动作）
+    // 这一条要服务端真的去起名（其余用例不注入自动标题：那是 `session.turnEnd` 之后的后台动作）
     await openServer({ autoTitle: true });
 
     await send("你好");
@@ -522,7 +522,7 @@ describe("提问：桌面端没有提问 UI，收到就按「跳过」回答", (
     expect(Date.now() - startedAt).toBeLessThan(5_000);
   });
 
-  it("回答失败（会话已收 / 来晚了）不推 error，同一会话后续 delta 与 turn.end 照常翻译", async () => {
+  it("回答失败（会话已收 / 来晚了）不推 error，同一会话后续 delta 与 session.turnEnd 照常翻译", async () => {
     // 回答失败在生产里就是「会话刚被收掉」：服务端自己会走 fallback，不该弹一条红字。
     // 超时调小只是让挂着的那个问题自己收场（客户端没答成，它就得等这一下）
     await openServer({
@@ -577,22 +577,22 @@ describe("通知：服务端推来的通知不再被丢掉", () => {
     // 文本是词典出的**人话**，不是 code 本身（丢掉词典这一环，用户会看到 `migrationSkipped`）
     expect(notice.text).toBe(noticeText("migrationSkipped"));
     expect(notice.text).not.toBe("migrationSkipped");
-    // 绑会话：这条通知属于 render 认识的那段会话（与 message.delta 同一口径）
+    // 绑会话：这条通知属于 render 认识的那段会话（与 session.delta 同一口径）
     expect(notice.conversationId).toBe(conversationId);
     // 通知不是错误：错误通道一点没被它碰过
     expect(eventsOf("error")).toEqual([]);
   });
 
-  it("global.notice 也进 render，且**不带** conversationId（它不属于任何会话）", async () => {
+  it("server.notice 也进 render，且**不带** conversationId（它不属于任何会话）", async () => {
     // 服务端今天还没有全局通知的生产者（协议先立住 code）；组装根的职责就是往 hub 里发
     server.hub.publish({
-      event: SESSION_EVENTS.globalNotice,
+      event: SERVER_EVENTS.notice,
       level: "warn",
       code: "mcpUnavailable",
       params: { name: "filesystem" },
     });
 
-    const notice = await waitFor(() => eventsOf("notice")[0], "global.notice 翻出来的 notice");
+    const notice = await waitFor(() => eventsOf("notice")[0], "server.notice 翻出来的 notice");
     expect(notice).toEqual({
       type: "notice",
       level: "warn",
@@ -636,7 +636,7 @@ describe("子 Agent：另开一条 agents 通道（整份替换）", () => {
     // 而服务端说的是 1（同一个子 Agent 在标题上被叫成「子AGENT2」）。
     server.agent.endSubAgent(first);
     server.agent.finish();
-    await waitFor(() => agentsEvents().at(-1)?.agents.length === 0, "turn.end 清空栏目");
+    await waitFor(() => agentsEvents().at(-1)?.agents.length === 0, "session.turnEnd 清空栏目");
 
     await send("第二轮");
     server.agent.startSubAgent();
@@ -756,7 +756,7 @@ describe("子 Agent：另开一条 agents 通道（整份替换）", () => {
     expect(after?.agents[0]).toMatchObject({ id: "sub-1", status: "failed" });
   });
 
-  it("turn.end 清空栏目：推一条空数组（子 Agent 只活当前这一轮）", async () => {
+  it("session.turnEnd 清空栏目：推一条空数组（子 Agent 只活当前这一轮）", async () => {
     await send("第一轮");
     server.agent.startSubAgent();
     const shown = await waitFor(
@@ -770,7 +770,7 @@ describe("子 Agent：另开一条 agents 通道（整份替换）", () => {
     // 空数组 = 「这一轮的子 Agent 都没了」：render 据此把栏目收回去，退回主对话
     const cleared = await waitFor(
       () => (agentsEvents().at(-1)?.agents.length === 0 ? agentsEvents().at(-1) : undefined),
-      "turn.end 之后的清空事件",
+      "session.turnEnd 之后的清空事件",
     );
     expect(cleared?.conversationId).toBe(conversationId);
     expect(cleared?.agents).toEqual([]);

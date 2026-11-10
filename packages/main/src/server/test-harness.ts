@@ -38,7 +38,7 @@ import {
   type SubAgentSnapshotParams,
   type SubAgentSnapshotResult,
 } from "@ai-zen/agents-server";
-import { SocketServerClient, type ClientInfo } from "@ai-zen/agents-client";
+import { SocketServerClient, type ClientInfo, type ServerClient } from "@ai-zen/agents-client";
 // 只要类型：`AgentNS` 在本文件里全是类型位置。里面那几个 role/status 字面量走下面的
 // `as AgentNS.Role / MessageStatus` 断言（与 `events.ts` 同一口径）：依赖图里不出现
 // 「main → 整个模型库」这条运行期边
@@ -162,7 +162,14 @@ export class FakeSubAgent extends EventBus {
  */
 export class FakeAgent extends EventBus implements AgentLike {
   messages: AgentNS.Message[] = [];
-  lastUsage: unknown = undefined;
+  /**
+   * 最近一轮用量。
+   *
+   * 类型跟着 `AgentLike` 走（`Usage | undefined`，不再是 `unknown`）：服务端的端口已经把它
+   * 声明成具名类型，假件若还写 `unknown`，`implements AgentLike` 就不成立 —— 而那个错会
+   * 被推给每一个用到 `createAgent` 的地方，掩盖真正想测的东西。
+   */
+  lastUsage: AgentNS.Usage | undefined = undefined;
   modelLevel: ModelLevel = "agent";
   model = MODEL_ID;
   modelConfig: Record<string, unknown> = {};
@@ -330,7 +337,7 @@ export class FakeAgent extends EventBus implements AgentLike {
     this.pending.shift()?.();
   }
 
-  /** 本轮出错（真件的 `error`）：服务端据此把 `turn.end` 标成 `ok:false` */
+  /** 本轮出错（真件的 `error`）：服务端据此把 `session.turnEnd` 标成 `ok:false` */
   fail(error: unknown): void {
     this.fire("error", error);
   }
@@ -386,15 +393,28 @@ export interface TestServer {
   /** 走原始协议（准备数据 / 验服务端侧事实时用，例如 `saveAs`、`snapshot`） */
   call: <T>(method: string, params?: unknown) => Promise<T>;
   /**
-   * 服务端的事件出口（会话事件与全局通知共用这一条线）。
+   * 把服务端**重启一次**：在一个**新的**监听实例上重新起一遍（同一个 `aiZenDir`、同一份
+   * 业务状态），发现文件跟着换成新端口。
    *
-   * 为什么脚手架要把它递出来：**全局通知今天没有生产者**。协议里那两个 code
+   * 为什么不是 `stop()` 再 `start()` 同一个 `Daemon`：`stop()` 之后那个实例的 `stopping`
+   * 已经落定（它是单飞闸门），再 `stop()` 会拿到一个「已经停了」的旧 promise，于是第二次
+   * 收摊是空操作 —— 测试进程里留一个还在监听的 socket。换一个实例既干净，也真的就是
+   * 「重启」：新进程、新端口、新发现文件，而 `SessionManager` / `ConfigService`（业务状态）
+   * 由本脚手架持有、跟着活下来。
+   *
+   * 用例拿它复现那个审计确认过的真 bug：daemon 重启后桌面端还能不能自己长回来。
+   */
+  restart: () => Promise<void>;
+  /**
+   * 服务端的事件出口（会话事件与服务端通知共用这一条线）。
+   *
+   * 为什么脚手架要把它递出来：**服务端通知今天没有生产者**。协议里那两个 code
    * （`mcpUnavailable` / `storeUnavailable`）由组装根在发现 MCP / 存档不可用时发，而这件事
    * 在桌面端与 `agents` 的服务端入口里都还没接上。真件里这一行是 `hub.publish({ event:
-   * "global.notice", … })`（见 `SessionManager` 的 `notice()` 注释：「全局通知不归这里管
-   * —— 那是服务本身的事，由组装根直接往 hub 里发」），而本脚手架**就是**那个组装根（它自己
-   * 也 `new SessionManager` 并注入 hub）。所以用例在这里发一条，走的是真链路：hub → 真 socket
-   * → 桌面端的事件翻译；没有替任何一侧演动作。
+   * SERVER_EVENTS.notice, … })`（见 `SessionManager` 的 `notice()` 注释：「服务端通知不归这里
+   * 管 —— 那是服务本身的事，由组装根直接往 hub 里发」），而本脚手架**就是**那个组装根（它
+   * 自己也 `new SessionManager` 并注入 hub）。所以用例在这里发一条，走的是真链路：hub → 真
+   * socket → 桌面端的事件翻译；没有替任何一侧演动作。
    */
   hub: EventHub;
   stop: () => Promise<void>;
@@ -404,7 +424,7 @@ export interface TestServerOptions {
   /**
    * 注入自动标题（缺省不注入 = 服务端不做自动标题）。
    *
-   * 它与被测的映射无关，而且是在 `turn.end` **之后**异步跑的后台动作；不测标题的用例
+   * 它与被测的映射无关，而且是在 `session.turnEnd` **之后**异步跑的后台动作；不测标题的用例
    * 开着它，就会在拆服务端时与那次写档撞上（服务端会对着已经关掉的会话推通知）。
    */
   autoTitle?: boolean;
@@ -549,7 +569,12 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
     return result;
   };
 
-  const daemon = new Daemon({
+  /**
+   * 当前那个监听实例（`restart()` 之后会换成新的一个，所以这里是 `let` + getter）。
+   *
+   * 用例读它多半是为了看 `port` / `connectionCount` 这类「服务端那一侧」的事实。
+   */
+  let daemon = new Daemon({
     aiZenDir: dir,
     port: 0,
     version: "0.0.0-test",
@@ -557,17 +582,38 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
   });
   await daemon.start();
 
-  const client = await SocketServerClient.connect({
-    address: { host: "127.0.0.1", port: daemon.port },
-    client: CLIENT_INFO,
-  });
+  /**
+   * 走原始协议的那条连接（`TestServer.call` 用）。
+   *
+   * 它**不订阅事件**，只发请求，所以「断了就重建」在这里就是两行：发现 `closed` 就重连一次。
+   *
+   * 为什么它把着**第二条**连接：桌面端那一条由 `createServerLayer` 自己扫发现文件建（见下），
+   * 而验证方要直接问服务端一些「客户端不该知道的事」（`session.saveAs` 的原始回执、存档里
+   * 那份 `updatedAt` …）。两条连接互不干涉：事件只推给 watch 过的那一条。
+   */
+  let probe: ServerClient | null = null;
+  const probeClient = async (): Promise<ServerClient> => {
+    if (probe && !probe.closed) return probe;
+    probe = await SocketServerClient.connect({
+      address: { host: "127.0.0.1", port: daemon.port },
+      client: CLIENT_INFO,
+    });
+    return probe;
+  };
+
   const pushed: ChatStreamEvent[] = [];
+  /**
+   * 门面自己扫发现文件（`<dir>/run/server.json`）连上来 —— 与桌面端走的是**同一条**路。
+   *
+   * 为什么不再注入一条现成的连接：注进去的连接只会被用一辈子（`ServerConnection` 对注入的
+   * 那一条不重建），于是「daemon 重启之后自己长回来」这条路在用例里永远是假的。走发现文件
+   * 之后，`restart()` 换掉端口，门面下一次取用时自然连到新的那个 —— 被测的正是生产里那一条。
+   */
   const layer = createServerLayer({
     aiZenDir: dir,
     clientInfo: CLIENT_INFO,
     defaultCwd: () => projectDir,
     push: (event) => pushed.push(event),
-    client,
   });
   await layer.start();
 
@@ -575,18 +621,42 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
     dir,
     projectDir,
     agent,
-    daemon,
+    get daemon() {
+      return daemon;
+    },
     layer,
     pushed,
     agentInputs,
     answerCalls,
     answerResults,
     subAgentSnapshotCalls,
-    call: async <T>(method: string, params?: unknown) => await client.call<T>(method, params),
+    call: async <T>(method: string, params?: unknown) =>
+      await (await probeClient()).call<T>(method, params),
     hub,
+    restart: async () => {
+      await daemon.stop("test restart");
+      /**
+       * 先等**客户端这一侧**把断开通知处理完，再起新 daemon。
+       *
+       * 两个 socket（`probe` 与桌面端那条）是在同一个 `stop()` 里被一起 destroy 的，所以
+       * `probe.closed` 变真，就意味着这一轮事件循环里两条 socket 的 close 都已经送到了。
+       * 不先等这一步的话，用例可能在「已经断了但还没告诉任何人」的那一瞬发请求 —— 那会写进
+       * 一条对端已不在的 socket（不报错、也没有回音），用例于是得等一个往返超时。那是
+       * 测试特有的噪声，不是被测行为（真窗口里用户此刻也不会发请求）。
+       */
+      await waitFor(
+        () => (probe === null || probe.closed ? true : undefined),
+        "客户端这一侧发现连接已断",
+      );
+      probe?.close();
+      probe = null;
+      daemon = new Daemon({ aiZenDir: dir, port: 0, version: "0.0.0-test", handlers });
+      await daemon.start();
+    },
     stop: async () => {
       layer.dispose();
-      client.close();
+      probe?.close();
+      probe = null;
       manager.dispose();
       // hub 是外面传的（`ownsHub === false`），`manager.dispose()` 不会清它
       hub.clear();
@@ -606,8 +676,16 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
 export async function waitFor<T>(
   check: () => T | undefined | false | Promise<T | undefined | false>,
   what: string,
+  /**
+   * 最多等多久（缺省 5s）。
+   *
+   * 之所以可调：默认值与 vitest 的用例时限（也是 5s）撞在一起，超时就变成一句没头没尾的
+   * `Test timed out in 5000ms`。需要「失败的时候能看出在等什么」的用例传一个**更短**的
+   * 时限（例如 3s），于是红的时候报的是 `等待超时：<what>`。它是个**上界**，不是 sleep。
+   */
+  timeoutMs = 5_000,
 ): Promise<T> {
-  const deadline = Date.now() + 5_000;
+  const deadline = Date.now() + timeoutMs;
   for (;;) {
     const value = await check();
     if (value) return value;

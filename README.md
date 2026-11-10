@@ -9,11 +9,11 @@ AI-Zen Desktop — 多 Workspace、多会话并存的 AI 工作台（Electron + 
 
 | 层 | 技术 |
 |----|------|
-| 主进程 | Electron 43（Node 24 内置 `node:sqlite`）+ TypeScript + rolldown 打包 |
+| 主进程 | Electron 43（Node 24）+ TypeScript + rolldown 打包 |
 | 渲染进程 | Vue 3 + Vite + Pinia + Element Plus |
 | 流式 Markdown | markstream-vue + Shiki 高亮 |
-| Agent 运行时 | `@ai-zen/agents-sdk`（Provider / Agent / MCP 能力） |
-| 数据存储 | SQLite（`node:sqlite`，零 native 依赖） |
+| Agent 运行时 | `@ai-zen/agents-sdk`（Provider / Agent / MCP 能力）—— 跑在**常驻服务端**那边 |
+| 数据存储 | 常驻服务端 `agents-server`（工作区与会话存档都在它盘上，桌面端不落盘） |
 
 ## 项目结构
 
@@ -33,21 +33,16 @@ desktop/
 ```
 packages/main/src/
 ├── main.ts            ← 入口（仅一行：new DesktopApp().start()）
-├── app.ts             ← DesktopApp 单根：全部状态（字段）+ 行为（方法）
-├── config.ts          ← 路径常量（~/.ai-zen 共享根）
+├── app.ts             ← DesktopApp 单根：窗口 / IPC / 原生对话框
+├── config.ts          ← 路径常量（只剩 `AI_ZEN_DIR` 一个）
 ├── preload.ts         ← contextBridge 暴露 window.electronAPI
-├── services/
-│   ├── ServicesManager.ts        ← invokeService 动态分发（薄）
-│   ├── ChatService.ts            ← ★ 核心：会话 agent 运行注册表 + 流式
-│   ├── WorkspaceService.ts       ← 工作空间 CRUD（级联删会话 + onRemove 钩子）
-│   ├── ConversationService.ts    ← 会话 CRUD / rename / setModel（+ onRemove 钩子）
-│   ├── AgentService.ts           ← 入口 Agent 列表
-│   ├── ModelService.ts           ← 模型列表
-│   └── ProviderPool.ts           ← 每 workspace 一个 Provider（懒加载缓存）
-└── storage/
-    ├── db.ts                     ← SQLite 单例（WAL + 建表）
-    ├── WorkspaceRepository.ts    ← workspaces 表
-    └── ConversationRepository.ts ← conversations 表（meta 列 + messages JSON blob）
+└── server/            ← 常驻服务端的门面（组装根 = index.ts）
+    ├── index.ts       ← createServerLayer：六个 Service + 事件翻译器 + 那一条常驻连接
+    ├── call.ts        ← 一次协议调用（取一条活着的连接，不缓存 client）
+    ├── services.ts    ← 六个 Service：render 的形状 ↔ 协议调用
+    ├── ServicesManager.ts ← invokeService 动态分发（薄）
+    ├── events.ts      ← 服务端事件 → `ChatStreamEvent`（订阅随连接重建自动重挂）
+    └── notices.ts     ← 通知 code → 中文文案
 ```
 
 ### render — 渲染进程（瘦客户端：只调服务 + 订阅事件）
@@ -96,35 +91,37 @@ packages/shared/src/
   ├─ invokeService("conversation",      │ ServicesManager 动态分发
   │   "create", wsId, agentId) ────────→│   ├─ workspace.service
   ├─ invokeService("chat","send",       │   ├─ conversation.service
-  │   wsId, convId, content) ──────────→│   ├─ chat.service（agent 运行注册表）
+  │   wsId, convId, content) ──────────→│   ├─ chat.service（转发 session.send）
   │                                     │   └─ agent / model
   │  on("chat:push", evt) ←─────────────┤ webContents.send("chat:push")
 ```
 
 - **调用**：`invokeService(service, method, ...args)` 动态分发到对应 service（preload 暴露，极薄，零业务定义）
-- **推送**：`chat:push` 单通道事件流 `user → start → delta… → done / error`（+ 异步 `renamed`）
+- **推送**：`chat:push` 单通道事件流 `user → start → delta… → done / error`（+ 异步 `renamed` / `notice` / `agents`）
+- **出口**：main 不再自己跑 Agent —— 每个动作都是对常驻 `agents-server` 的一次协议调用（`session.*` / `workspace.*` / `config.*` …），事件由服务端推回
 
-## 核心设计（ChatService）
+## 核心设计（会话执行与存档都在服务端）
 
-- **agent = 运行注册表**：每个会话的 agent 仅运行期驻留（流式中可读），`done/error` 后释放；不运行时状态由 SQLite 快照接管
-- **`agent.messages` 是运行时唯一真相**（含流式进行中的 user + assistant 占位）；`conversation.messages` 仅是磁盘快照（每轮内循环结束 `onInnerLoopEnd` 落库 + done 兜底）
-- **send 只提交**：只 await 取/建 agent 快速返回，流式循环后台跑、结果走事件
-- **getState**：前端切回任何会话都从服务读实时状态（有运行 agent 读 agent.messages，否则读 SQLite）——切换会话/窗口开关不丢状态
-- **自动命名**：首轮 done 后异步生成标题（默认名才命名、防重入、写库前 re-read 校验，不覆盖手动改名）
-- 删除会话/工作空间 → 通过构造钩子联动释放运行中 agent（`abort()`）
+- **agent = 服务端的运行注册表**：每个会话的 agent 仅运行期驻留（流式中可读），一轮收尾后释放；不运行时的状态由服务端的工作区存档接管（`workspaces/<id>/sessions/`）
+- **`session.snapshot` 是运行时唯一真相**（含流式进行中的 user + assistant 占位）；桌面端收到的 `done` / `migrated` 就是这份快照的全量替换
+- **send 只提交**：`session.send` 立刻回 `turnId`，过程与结果全走事件（一轮可能跑几分钟）
+- **getState**：切回任何会话都问服务端要实时状态（`session.attach` + `session.snapshot`）——切换会话/窗口开关不丢状态
+- **自动命名**：服务端在首轮之后异步起名，推 `session.titleChanged`；桌面端只把它翻成 `renamed`
+- 删除会话/工作空间 → 服务端在 `session.remove` / `workspace.remove` 里关掉活会话（桌面端不再挂钩子）
 
 ## 数据存储
 
 ```
-~/.ai-zen/                    ← 共享根（CLI / Desktop 共用）
-├── config.json               ← 全局配置（endpoints / models）
-├── agents/                   ← Agent 定义（入口 Agent 单来源）
-└── desktop/
-    └── ai-zen.db             ← SQLite（WAL）：workspaces + conversations
+~/.ai-zen/                    ← 共享根（CLI / Desktop 共用；服务端的 AI_ZEN_DIR）
+├── config.json               ← 全局配置（endpoints / models / 默认模型与 Agent）
+├── agents/                   ← Agent 定义（入口 Agent）
+├── sub-agents/               ← 子 Agent 定义
+├── workspaces/<id>/          ← 每个工作区一个目录（workspace.json + sessions/*.json 存档）
+└── run/server.json           ← 服务发现：常驻服务端此刻在哪个端口
 ```
 
-- 元数据走结构化列（列表/排序不解析大 JSON），消息整体存 `messages` JSON blob
-- Repository 接口统一（list/read/write/delete），services/render 零感知存储实现
+- 桌面端**不读写**这里的任何数据文件：它只读 `run/server.json` 找到服务端，之后一切读写都发生在服务端那一侧
+- 协议里没有「本地存档」这条路：会话清单、消息、工作区都由服务端给（`session.list` / `session.snapshot` / `workspace.list`）
 
 ## 开发
 

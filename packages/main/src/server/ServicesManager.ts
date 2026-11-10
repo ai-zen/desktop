@@ -17,8 +17,8 @@
  * ## 为什么放在 `server/` 而不是 `services/`
  *
  * 它分发的是 `ServerXxxService`（`server/services.ts`），唯一构造点也在 `server/index.ts`，
- * 搬进来之后这条依赖是同目录内的，`services/` 这个旧目录（只剩它一个文件、名字还和新
- * 实现的分层撞车）可以彻底消失。
+ * 所以这条依赖是同目录内的。旧的 `services/` 目录（当时只剩这一个文件、名字还和新实现的
+ * 分层撞车）已经不存在了。
  */
 
 import type {

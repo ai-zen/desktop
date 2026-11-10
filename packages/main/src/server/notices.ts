@@ -3,8 +3,8 @@
  *
  * ## 为什么翻译在客户端，而且只在 main 这一份
  *
- * 服务端的通知只带机器码（`SESSION_NOTICE_CODES` / `GLOBAL_NOTICE_CODES`，见
- * `agents/packages/server/src/protocol/sessions.ts`），一句自然语言都不产 —— 一个服务端
+ * 服务端的通知只带机器码（`SESSION_NOTICE_CODES` / `SERVER_NOTICE_CODES`，见
+ * `@ai-zen/agents-protocol` 的 `sessions.ts`），一句自然语言都不产 —— 一个服务端
  * 同时接中文终端与英文浏览器时，它只能挑一种语言撒谎。于是「这句 code 该怎么说」落在各
  * 客户端自己的词典里：CLI 那份在 `cli/src/tui/notice-text.ts`，本文件是桌面端的那一份。
  *
@@ -27,7 +27,7 @@
  * 直接编译失败；`if/else` 链漏一个分支则一句抱怨都没有，运行期默默走到兜底。
  */
 
-import type { GlobalNoticeCode, SessionNoticeCode } from "@ai-zen/agents-client";
+import type { ServerNoticeCode, SessionNoticeCode } from "@ai-zen/agents-client";
 
 /** 服务端给来的可变部分（协议里是 `Record<string, unknown>`，本层不假设值的类型） */
 type NoticeParams = Record<string, unknown>;
@@ -119,12 +119,16 @@ const SESSION_TEXTS: Record<SessionNoticeCode, NoticeTemplate> = {
 };
 
 /**
- * 全局通知（`global.notice`）的文案。
+ * 服务端通知（`server.notice`）的文案。
+ *
+ * 它与对话内通知分属**两张码表**（`SERVER_NOTICE_CODES` / `SESSION_NOTICE_CODES`）：这条
+ * 事件的载荷里没有 `sessionId`，切到别的会话也不该消失 —— 事件表与码表的名字都跟
+ * `SERVER_` 走（见协议里的 `SERVER_EVENTS` 注释）。
  *
  * 这两条今天在服务端**还没有生产者**（协议先立住 code，等组装根接上 MCP 探活 / 存档探活），
  * 参数名沿用 CLI 那份模板的字段（`name` / `error`）—— 两边说的是同一条通知，不该各叫一个名。
  */
-const GLOBAL_TEXTS: Record<GlobalNoticeCode, NoticeTemplate> = {
+const SERVER_TEXTS: Record<ServerNoticeCode, NoticeTemplate> = {
   /** `params.name` 是连不上的那个 MCP server */
   mcpUnavailable: (params) => `MCP server 连不上：${text(params, "name")}`,
   /** `params.error` 是存档读写失败的原因 */
@@ -134,12 +138,12 @@ const GLOBAL_TEXTS: Record<GlobalNoticeCode, NoticeTemplate> = {
 /**
  * 把一条通知翻成中文。
  *
- * `code` 收成 `string`（而不是 `SessionNoticeCode | GlobalNoticeCode`）：服务端版本比桌面端
+ * `code` 收成 `string`（而不是 `SessionNoticeCode | ServerNoticeCode`）：服务端版本比桌面端
  * 新时，运行期真的会来一个类型上不存在的 code，而这条路的正确行为是「说出来」而不是
  * 编译期假装它不可能（理由见文件头）。
  */
 export function noticeText(code: string, params: NoticeParams = {}): string {
-  const templates: Record<string, NoticeTemplate | undefined> = { ...SESSION_TEXTS, ...GLOBAL_TEXTS };
+  const templates: Record<string, NoticeTemplate | undefined> = { ...SESSION_TEXTS, ...SERVER_TEXTS };
   const template = templates[code];
   if (!template) return `未知通知：${code}（桌面端还不认识这条，可能是服务端更新了）`;
   return template(params);
