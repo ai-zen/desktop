@@ -100,7 +100,31 @@ export type ChatStreamEvent =
   | { conversationId: string; type: "migrated"; messages: AgentNS.Message[] }
   | { conversationId: string; type: "error"; message: string }
   /** 自动生成对话标题后推送（不阻塞 done，侧栏据此更新名称） */
-  | { conversationId: string; type: "renamed"; name: string };
+  | { conversationId: string; type: "renamed"; name: string }
+  /**
+   * 服务端推来的一条**通知**（`session.notice` / `global.notice`）：给用户看的一句话，瞬时的。
+   *
+   * ## 为什么不是 `type: "error"`
+   *
+   * `error` 的语义是「这一轮失败了」：render 把它写进会话状态里的错误条，占着位置，直到
+   * 下一轮 `done` 才被清掉。通知说的不是失败，而是「顺带告诉你一句」——存档没写成功、
+   * 本次迁移被跳过、子 Agent 挂了、交接文档落在哪。走 `error` 通道有两个后果：用户要在
+   * 下一轮开始前一直看着一条红字（其实这轮没事），而 `done` 会替它提前销账（真该看的那句
+   * 反而被抹掉）。两条通道各说各的：`error` 是状态，`notice` 是提示。
+   *
+   * ## 为什么 `text` 到了这一层已经是人话
+   *
+   * 服务端刻意不产文案（协议只给 `level + code + params`，见 `SessionNoticeEvent`），
+   * 翻译发生在 main 的词典里（`packages/main/src/server/notices.ts`）—— 那里是唯一一份，
+   * render 只管把拿到的这句话弹出来，不再查第二份词典。
+   *
+   * ## 为什么 `conversationId` 是可选的
+   *
+   * `global.notice` **不属于任何会话**（存档目录不可用、MCP 连不上是服务本身的事）。
+   * 空串不是它的替身：空串的意思是「有一个会话，它的 key 是空字符串」，与「没有会话」是
+   * 两件事 —— render 按 key 取状态槽位，空串会凭空开出一个谁都不认识的假槽位。
+   */
+  | { type: "notice"; level: "info" | "warn" | "error"; text: string; conversationId?: string };
 
 /** 窗口最大化状态变更 */
 export interface WindowStateEvent {

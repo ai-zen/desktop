@@ -22,6 +22,7 @@ import { join } from "node:path";
 import {
   ConfigService,
   Daemon,
+  EventHub,
   FileSessionStore,
   SESSION_METHODS,
   SessionManager,
@@ -249,6 +250,18 @@ export interface TestServer {
   answerResults: SessionAnswerResult[];
   /** 走原始协议（准备数据 / 验服务端侧事实时用，例如 `saveAs`、`snapshot`） */
   call: <T>(method: string, params?: unknown) => Promise<T>;
+  /**
+   * 服务端的事件出口（会话事件与全局通知共用这一条线）。
+   *
+   * 为什么脚手架要把它递出来：**全局通知今天没有生产者**。协议里那两个 code
+   * （`mcpUnavailable` / `storeUnavailable`）由组装根在发现 MCP / 存档不可用时发，而这件事
+   * 在桌面端与 `agents` 的服务端入口里都还没接上。真件里这一行是 `hub.publish({ event:
+   * "global.notice", … })`（见 `SessionManager` 的 `notice()` 注释：「全局通知不归这里管
+   * —— 那是服务本身的事，由组装根直接往 hub 里发」），而本脚手架**就是**那个组装根（它自己
+   * 也 `new SessionManager` 并注入 hub）。所以用例在这里发一条，走的是真链路：hub → 真 socket
+   * → 桌面端的事件翻译；没有替任何一侧演动作。
+   */
+  hub: EventHub;
   stop: () => Promise<void>;
 }
 
@@ -299,11 +312,15 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
 
   const agent = new FakeAgent();
   let seq = 0;
+  /** 会话层的事件出口（注入进去，用例才能发全局通知，见 `TestServer.hub`） */
+  const hub = new EventHub();
   /** 会话层每次交给 Agent 装配的入参（含 `resolveMode`，见 `TestServer.agentInputs`） */
   const agentInputs: CreateAgentInput[] = [];
   const answerCalls: SessionAnswerParams[] = [];
   const answerResults: SessionAnswerResult[] = [];
   const manager = new SessionManager({
+    // 组装根会传自己的 hub，这样**全局通知**也走同一条推送线（见 `SessionManagerOptions.hub`）
+    hub,
     // 假件必须照抄真件这一处：SDK 的 `createAgent` 递给 Agent 的是**解析之后**的定义
     // （三级里赢了的那一档已经写进 `definition.modelId`，`modelLevel` 说清是哪一档）。
     // 服务端的 `SessionListEntry.effectiveModelId` 正是从这里取的（`modelIdOf`），
@@ -404,10 +421,13 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
     answerCalls,
     answerResults,
     call: async <T>(method: string, params?: unknown) => await client.call<T>(method, params),
+    hub,
     stop: async () => {
       layer.dispose();
       client.close();
       manager.dispose();
+      // hub 是外面传的（`ownsHub === false`），`manager.dispose()` 不会清它
+      hub.clear();
       await daemon.stop("test teardown");
       rmSync(dir, { recursive: true, force: true });
     },

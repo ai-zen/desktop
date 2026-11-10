@@ -22,11 +22,18 @@
  * 4. **`session.phase` 的文案没处放** —— `ChatStreamEvent` 里没有 stage 字段，所以阶段
  *    只用来判「有没有在跑」（派发 `start`、给侧栏的 `running` 提供口径），文案不进 render。
  *
- * ## 没有 render 落点的那几条（协议有、这一阶段不用）
+ * ## 通知（`session.notice` / `global.notice`）：翻成人话再推
  *
- * `session.notice` / `global.notice` / `session.subAgent.*`：render 侧既没有通知栏、也没有
- * 子 Agent 栏目（`ChatStreamEvent` 里没有对应类型，而 D1 不许改 render）。所以它们的增量
- * 不进主对话 —— 把子 Agent 的正文拼进主回答，等于凭空多出一段文字。
+ * 这两条原来在这里被丢掉，理由是「render 没有通知栏」。后果不是「少一条提示」，而是
+ * **用户看不到为什么什么都没发生**：自动迁移被跳过、存档没写成功（他以为存了）、子 Agent
+ * 挂着、交接文档落在哪 —— 全都静默。现在它们有了落点 `type: "notice"`（render 弹一条
+ * 瞬时提示）——只差翻译：服务端只给 `code + params`，文案由本端出（词典在 `notices.ts`，
+ * 全桌面端就这一份）。
+ *
+ * ## 仍然没有 render 落点的那几条
+ *
+ * `session.subAgent.*`：render 侧没有子 Agent 栏目，它们的增量不进主对话 —— 把子 Agent 的
+ * 正文拼进主回答，等于凭空多出一段文字（子 Agent **出错**这件事有通知，走 `subAgentFailed`）。
  *
  * 同一组里 **`session.question` 是唯一的例外**：它不是「推给用户看的信息」，而是「服务端
  * 在等一个回答」。没人答，服务端就白等到 5 分钟超时 —— 所以桌面端收到就立刻按「跳过」答
@@ -37,9 +44,11 @@ import {
   EVENT_METHODS,
   SESSION_EVENTS,
   SESSION_METHODS,
+  type GlobalNoticeEvent,
   type MessageDeltaEvent,
   type SessionAnswerResult,
   type SessionIdChangedEvent,
+  type SessionNoticeEvent,
   type SessionPhaseEvent,
   type SessionQuestionEvent,
   type SessionSnapshotResult,
@@ -53,6 +62,7 @@ import {
 import type { AgentNS } from "@ai-zen/agents-core";
 import type { ChatStreamEvent } from "@ai-zen/desktop-shared";
 import type { ServerConnection } from "./connection.js";
+import { noticeText } from "./notices.js";
 
 /**
  * 占位 assistant 消息的 role。
@@ -118,6 +128,8 @@ export class ChatEventBridge {
       client.on(SESSION_EVENTS.idChanged, (event) => this.onIdChanged(event)),
       client.on(SESSION_EVENTS.titleChanged, (event) => this.onTitleChanged(event)),
       client.on(SESSION_EVENTS.question, (event) => this.onQuestion(event)),
+      client.on(SESSION_EVENTS.notice, (event) => this.onNotice(event)),
+      client.on(SESSION_EVENTS.globalNotice, (event) => this.onGlobalNotice(event)),
     );
     await client.call(EVENT_METHODS.watch);
   }
@@ -321,6 +333,37 @@ export class ChatEventBridge {
       .catch(() => {
         // 见上面「失败不报人看」：服务端自己会走 fallback，这条路不该出现在 render 里
       });
+  }
+
+  /**
+   * 对话内通知 → `notice`（**带** `conversationId`）。
+   *
+   * 会话 id 走 `keyOf`：换过 id 的会话（迁移 / 另存为）在 render 那边仍以旧 key 认识自己 ——
+   * 与 `message.delta` / `turn.end` 同一口径。直接报服务端 id 的话，通知会贴到一段 render
+   * 从没见过、也永远不会选中过的会话上，等于又回到「什么都没发生」。
+   */
+  private onNotice(event: SessionNoticeEvent): void {
+    this.options.push({
+      conversationId: this.keyOf(event.sessionId),
+      type: "notice",
+      level: event.level,
+      text: noticeText(event.code, event.params),
+    });
+  }
+
+  /**
+   * 全局通知 → `notice` 且**不给** `conversationId`。
+   *
+   * 它不属于任何会话（存档目录不可用、MCP 连不上是服务本身的事）：填个空串等于声称
+   * 「有一个 key 为空的会话」，render 会照着这个 key 开一个假槽位；省掉这个字段才是
+   * 「没有会话」—— `ChatStreamEvent.notice` 把它定义成可选就是为了这个。
+   */
+  private onGlobalNotice(event: GlobalNoticeEvent): void {
+    this.options.push({
+      type: "notice",
+      level: event.level,
+      text: noticeText(event.code, event.params),
+    });
   }
 
   /** 服务端自动标题（只发「起好了」这一条）→ 旧的 `renamed`（侧栏直接改名，不刷列表） */

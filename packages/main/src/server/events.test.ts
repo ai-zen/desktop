@@ -4,14 +4,18 @@
  * 这里断言的是**render 会看到什么**（`server.pushed` 的顺序与形状），不是服务端内部状态
  * —— 翻译层唯一的验收口径就是这条通道。
  *
- * 最后一个 block 是个例外：`session.question` **不进 render**（`ChatStreamEvent` 里没有
- * 这一类），但它必须被答回去 —— 断言的是「客户端真的答了」与服务端认领了那条回答。
+ * 两处的例外：`session.question` **不进 render**（`ChatStreamEvent` 里没有「提问」这一类），
+ * 但它必须被答回去 —— 断言的是「客户端真的答了」与服务端认领了那条回答；`global.notice`
+ * 今天在服务端**没有生产者**（见 `TestServer.hub`），所以由脚手架扮演组装根那一声
+ * `hub.publish`，往后每一段仍是真的（真 socket + 真翻译）。
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ChatStreamEvent, Conversation } from "@ai-zen/desktop-shared";
 import type { AgentNS } from "@ai-zen/agents-core";
+import { SESSION_EVENTS } from "@ai-zen/agents-client";
 import type { HandoffMode, SessionSaveAsResult } from "@ai-zen/agents-client";
+import { noticeText } from "./notices.js";
 import { startTestServer, waitFor, AUTO_TITLE, type TestServer, type TestServerOptions } from "./test-harness.js";
 
 let server: TestServer;
@@ -381,5 +385,56 @@ describe("提问：桌面端没有提问 UI，收到就按「跳过」回答", (
     await expect(asking).resolves.toBeNull();
     // ……而整轮里错误通道一直是干净的：这条失败不该变成 render 里的 error
     expect(eventsOf("error")).toEqual([]);
+  });
+});
+
+describe("通知：服务端推来的通知不再被丢掉", () => {
+  /**
+   * 造一条**真的** `session.notice`：让服务端问一次「用哪种方式交接」，客户端答「跳过」
+   * 之后它会发 `migrationSkipped`（`SessionManager.askHandoffMode` 的最后一行）。
+   *
+   * 为什么用这条链路而不是自己发一条事件：这一条路是「真件里用户会遇上的那种通知」，
+   * 每一环都是真的（`askQuestion` 记表 → hub → 真 socket → 翻译）。而它曾经是静默丢弃的
+   * 那一条 —— 用户只看到「什么都没发生」。
+   */
+  it("回答「跳过」之后那条 session.notice(migrationSkipped) 变成 notice，conversationId 是本会话", async () => {
+    await openServer({ askTimeoutMs: ASK_TIMEOUT_MS });
+
+    await send("你好");
+    server.agent.emitDelta("答");
+
+    // 提问 → 客户端答「跳过」→ 服务端当场发那条 migrationSkipped
+    await expect(askHandoffMode()).resolves.toBeNull();
+
+    const notice = await waitFor(() => eventsOf("notice")[0], "notice 事件");
+    if (notice.type !== "notice") throw new Error("unreachable");
+
+    expect(notice.level).toBe("info");
+    // 文本是词典出的**人话**，不是 code 本身（丢掉词典这一环，用户会看到 `migrationSkipped`）
+    expect(notice.text).toBe(noticeText("migrationSkipped"));
+    expect(notice.text).not.toBe("migrationSkipped");
+    // 绑会话：这条通知属于 render 认识的那段会话（与 message.delta 同一口径）
+    expect(notice.conversationId).toBe(conversationId);
+    // 通知不是错误：错误通道一点没被它碰过
+    expect(eventsOf("error")).toEqual([]);
+  });
+
+  it("global.notice 也进 render，且**不带** conversationId（它不属于任何会话）", async () => {
+    // 服务端今天还没有全局通知的生产者（协议先立住 code）；组装根的职责就是往 hub 里发
+    server.hub.publish({
+      event: SESSION_EVENTS.globalNotice,
+      level: "warn",
+      code: "mcpUnavailable",
+      params: { name: "filesystem" },
+    });
+
+    const notice = await waitFor(() => eventsOf("notice")[0], "global.notice 翻出来的 notice");
+    expect(notice).toEqual({
+      type: "notice",
+      level: "warn",
+      text: noticeText("mcpUnavailable", { name: "filesystem" }),
+    });
+    // 不能拿空串糊：`conversationId: ""` 在 render 那边等于「有一个 key 为空的会话」
+    expect(notice).not.toHaveProperty("conversationId");
   });
 });

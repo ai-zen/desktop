@@ -9,6 +9,8 @@
  */
 
 import { defineStore } from "pinia";
+// 通知用 toast 弹（与设置页同一种提示）：element-plus 已在 render 的 dependencies 里
+import { ElMessage } from "element-plus";
 import { AgentNS } from "@ai-zen/agents-core";
 import type { ChatStreamEvent } from "@ai-zen/desktop-shared";
 import * as api from "../apis/index.js";
@@ -30,6 +32,20 @@ function emptyState(): ConversationChatState {
     error: "",
     lastFailedContent: "",
   };
+}
+
+/**
+ * 弹一条通知（`type: "notice"` 的唯一出口）。
+ *
+ * 三档语气对应 element-plus 的三个入口：`info` 是「顺带说一句」（迁移被跳过、交接文档
+ * 落在哪），`warn` 是「这次打了折扣，但事情做完了」（交接方式降级），`error` 是「事情没做成」
+ * （存档没写成功、子 Agent 挂了）。**不是** `type: "error"` 那条红色错误条 —— 那个位置
+ * 留给「这一轮失败了」。
+ */
+function showNotice(level: "info" | "warn" | "error", text: string): void {
+  if (level === "warn") ElMessage.warning(text);
+  else if (level === "error") ElMessage.error(text);
+  else ElMessage.info(text);
 }
 
 export const useChatStore = defineStore("chat", {
@@ -147,6 +163,23 @@ export const useChatStore = defineStore("chat", {
       // 自动生成标题：无论是否当前激活，都直接更新侧栏名称
       if (evt.type === "renamed") {
         convStore.applyRename(evt.conversationId, evt.name);
+        return;
+      }
+
+      // 通知：弹一条瞬时提示，**不进**会话状态。
+      //
+      // 为什么先于下面的 `ensure` 返回（而不是写在 switch 里）：① `global.notice` 不绑会话，
+      // `evt.conversationId` 是 undefined，走 `ensure` 会凭空开一个 key 为 "undefined" 的
+      // 状态槽位（那个槽位谁也不会选中，只是内存里多一份垃圾）；② 通知不是状态，本来就不该
+      // 落到 `ConversationChatState` 上 —— 尤其不能碰 `error`：那是「本轮失败」的红色错误条，
+      // `done` 会把它清空。通知若塞进 `error`，下一轮 `done` 就会替它销账（真正该看的那句
+      // 反而没了），而它本身又会让用户以为这轮失败了。
+      //
+      // 为什么用 toast 而不是通知栏：桌面端还没有通知栏（做它要改布局、要新增一块交互）；
+      // toast 不占位置、不改布局，设置页已经在用它。将来真做了通知栏，这里换成「写状态」即可
+      // —— 调用点只有一个，换的时候不用碰别处。
+      if (evt.type === "notice") {
+        showNotice(evt.level, evt.text);
         return;
       }
 
