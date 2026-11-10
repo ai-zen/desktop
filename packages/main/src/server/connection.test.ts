@@ -1,23 +1,22 @@
 /**
  * 连接重建用例：**daemon 重启之后，桌面端自己长回来**。
  *
- * ## 这一组盯的是那个审计确认过的真 bug
+ * ## 这一组盯的是那个真 bug
  *
- * 旧实现（`server/connection.ts`）把连接缓存在 `pending ??=` 里，**建成之后再也不复查
- * `closed`**。而 `socket-server-client` 在断开那一刻会 `listeners.clear()` 并把 `closed`
- * 置真（见 `packages/client/src/socket-server-client.ts` 的 `failAll`）。两件事合起来：
+ * 旧实现把连接缓存在 `pending ??=` 里，**建成之后再也不复查 `closed`**，于是
  * daemon 重启一次，那个进程就**永久失能** —— 之后每一次 IPC 都撞在一条已经 destroy 的
  * socket 上（`client is closed, cannot call …`），而界面上看起来只是「没反应」：没有重连、
  * 没有提示、也没有错误可看。
  *
  * 修法不是在本仓加一段重连，而是换成包里那一个（`@ai-zen/agents-client` 的
- * `transport/connection.ts`）：它每次取用都判活、断了重建、并且在重建的连接上重放
- * `events.watch`。
+ * `transport/connection.ts`）：它每次取用都判活、断了重建、并且在重建的连接上重新订阅事件。
+ * 断开那一刻 `socket-server-client` 会 `listeners.clear()` 并把 `closed` 置真（见
+ * `packages/client/src/socket-server-client.ts` 的 `failAll`），所以重挂监听是重建的必要一步。
  *
  * ## 为什么必须用真 daemon
  *
  * 被测的三件事全在真件里：socket 的断开通知什么时候到、发现文件（`run/server.json`）指向
- * 新端口、以及「重放 `events.watch` + 重挂监听」之后事件还照常到达。任何一处换成假件，
+ * 新端口、以及「重新订阅 + 重挂监听」之后事件还照常到达。任何一处换成假件，
  * 测出来的就是「我假装的断开」与「我假装的推送」—— 而这恰恰是这条 bug 当初没被抓住的原因。
  *
  * ## 两条断言的形状
@@ -25,7 +24,7 @@
  * 1. 重启后**一次 IPC 调用能成功**（而不是永久的 `client is closed`）；
  * 2. 重建之后**事件流仍在**（推一条事件，`chat:push` 那头能收到）。
  *
- * 用 `server.notice` 当第 2 条的探针：它不绑任何会话（不需要先开会话、也不会被会话状态
+ * 用 `server-notice` 当第 2 条的探针：它不绑任何会话（不需要先开会话、也不会被会话状态
  * 搅乱），而且是真链路 —— `EventHub` → 真 socket → `events.ts` 的翻译 → `chat:push`。
  */
 
@@ -98,7 +97,7 @@ describe("连接：daemon 重启之后", () => {
     expect(await listIds(workspaceId)).toEqual([conversationId]);
   });
 
-  it("重建之后事件流仍在（推一条 server.notice，chat:push 那头收得到）", async () => {
+  it("重建之后事件流仍在（推一条 server-notice，chat:push 那头收得到）", async () => {
     server = await startTestServer();
     const { workspaceId, conversationId } = await openWorkspace();
     expect(await listIds(workspaceId)).toEqual([conversationId]);
@@ -123,7 +122,7 @@ describe("连接：daemon 重启之后", () => {
      * 而客户端在断开那一刻会把监听表清空。少了这一步，新连接能发请求、却一个事件也收不到
      * —— 症状是界面安静地不动（这条 bug 与上一条是同一次事故的两半）。
      *
-     * 探针用 `server.notice`：它不绑会话，`EventHub` 一 publish，所有在 watch 的连接都该
+     * 探针用 `server-notice`：它不绑会话，`EventHub` 一 publish，所有在 watch 的连接都该
      * 收到一份。
      */
     server.hub.publish({

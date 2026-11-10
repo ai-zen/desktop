@@ -108,8 +108,7 @@ export class DesktopApp {
 
   // ==================== IPC ====================
   private registerIpc(): void {
-    // 业务服务动态分发（分发键与旧实现完全一致：workspace / conversation / agent /
-    // model / chat / config）
+    // 业务服务动态分发（分发键：workspace / conversation / agent / model / chat / config）
     ipcMain.handle(
       "invokeService",
       (_event, service: string, method: string, ...args: unknown[]) =>

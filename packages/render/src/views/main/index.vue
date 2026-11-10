@@ -1,9 +1,9 @@
 <template>
   <el-container class="main-view">
-    <!-- 侧栏（下一步实现：workspace 树 + 会话列表） -->
+    <!-- 侧栏（workspace 树 + 会话列表） -->
     <Sidebar />
 
-    <!-- 主内容区（下一步实现：ChatPanel 流式对话） -->
+    <!-- 主内容区（ChatPanel 流式对话） -->
     <el-container class="main-area">
       <ChatPanel />
     </el-container>

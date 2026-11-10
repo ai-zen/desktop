@@ -1,7 +1,6 @@
 <template>
   <div class="guide-view">
     <div class="guide-card">
-      <!-- Logo / 图标 -->
       <div class="logo">
         <el-icon :size="56" color="var(--el-color-primary)">
           <MagicStick />
@@ -14,7 +13,6 @@
         在各自目录下与 AI 协作对话。
       </p>
 
-      <!-- 创建第一个工作空间 -->
       <el-button type="primary" size="large" class="create-btn" @click="openForm">
         <el-icon style="margin-right: 6px"><Plus /></el-icon>
         创建第一个工作空间
@@ -22,7 +20,6 @@
       <p class="hint">创建后可随时在侧栏添加更多工作空间</p>
     </div>
 
-    <!-- 新建工作空间表单 -->
     <el-dialog
       v-model="showForm"
       title="创建工作空间"
@@ -79,7 +76,7 @@ async function pickDirectory() {
 }
 
 async function handleCreate() {
-  // 名称/目录均选填：名称空由服务端兜底为文件夹名，目录空默认桌面
+  // 名称/目录均选填：名称空用目录名兜底、目录空用默认桌面（两者都在 main 的 services.ts 补齐）
   const name = form.name.trim();
   const cwd = form.cwd.trim();
 
@@ -88,7 +85,6 @@ async function handleCreate() {
   form.cwd = "";
   showForm.value = false;
 
-  // 创建成功 → 进入主界面
   uiStore.setView("main");
 }
 </script>

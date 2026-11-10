@@ -9,11 +9,10 @@
  * 由它去做服务发现（`<AI_ZEN_DIR>/run/server.json`）和按需拉起服务端（`ensureServer`）
  * —— 根目录下面有什么（存档、desktop 子目录等）是**服务端的事实**，客户端不解释它。
  *
- * ## 为什么可以没有子路径常量
+ * ## 为什么没有子路径常量
  *
- * 以前这里还导出 `CONFIG_FILE` / `AGENTS_DIR` / `DESKTOP_DIR` / `DB_FILE`，那是「main 自己
- * 跑 SDK + 本地 SQLite」时代的产物；那一层已整体删除，这些常量一个调用方都没有，留着
- * 只会诱导新代码再往本地磁盘写。
+ * 子路径（config.json / agents/ / workspaces/）都是**服务端的事实**，客户端不应该知道
+ * 它们：多一个常量就多一处可以往本地磁盘写代码的入口。
  *
  * 环境变量 `AI_ZEN_DIR` 优先：用例要指向 `/tmp` 下的临时目录，桌面端跟着 Electron 的
  * home 走 —— 两者都不该改代码。

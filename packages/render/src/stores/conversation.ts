@@ -1,5 +1,5 @@
 /**
- * conversation store — 会话列表（按 workspace 缓存）+ 当前激活 + 运行中标记（D8）。
+ * conversation store — 会话列表（按 workspace 缓存）+ 当前激活 + 运行中标记。
  *
  * 按 workspace 分别缓存（byWorkspace），切换工作空间不丢失已加载的会话列表；
  * getter conversations 返回「当前 workspace」的列表，向后兼容单列表用法。
@@ -110,7 +110,7 @@ export const useConversationStore = defineStore("conversation", {
       if (c) c.modelId = modelId;
     },
 
-    // ---------- D8：运行中标记 ----------
+    // ---------- 运行中标记 ----------
 
     setRunning(id: string, running: boolean) {
       const c = (this.byWorkspace[this.currentWorkspaceId] ?? []).find(

@@ -74,6 +74,6 @@ ws.onmessage = (event) => {
 ## Notes
 
 - Prefer the CDP toolset in `.ai-zen/tools/` (auto-discovered by AI Agents)
-- CDP is only enabled when `NODE_ENV=development` or `pnpm start` (port 9222)
-- Port 9222 may be occupied; modify it in `package.json`
+- The debug port is passed by the launch command: both `pnpm dev` (through `scripts/dev.mjs`) and `start` in `packages/main/package.json` use `--remote-debugging-port`
+- The port defaults to `9222`; when it is taken, switch it with the `CDP_PORT` env var (`CDP_PORT=9333 pnpm dev`). `app.commandLine.appendSwitch` in code does not work
 - Remember to close the Electron process after use to avoid port occupation

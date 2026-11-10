@@ -32,7 +32,7 @@ pnpm dev
 ```
 
 - 组合：`vite`（render 热更新）+ `rolldown --watch`（main 编译）+ `nodemon`（main 变更重启 electron）+ `electron`（带 `--remote-debugging-port=9222`）
-- render 页面加载地址：`http://localhost:5173`（**写死**，见 `packages/main/src/main.ts`）
+- render 页面加载地址：`http://localhost:5173`（**写死**，见 `packages/main/src/app.ts` 的 `createMainWindow`）
 
 ## ⚠️ 重复启动警告（重要）
 
@@ -89,17 +89,14 @@ cd packages/render && pnpm exec vue-tsc --noEmit
 cd packages/main && pnpm build
 ```
 
-## Markdown 渲染（markstream-vue）经验教训
+## Markdown 渲染
 
-消息正文用 `markstream-vue` 做流式 Markdown 渲染（assistant 消息），Shiki 代码高亮已启用（`main.ts` 注册 `setCustomComponents({ code_block: MarkdownCodeBlockNode })`）。
+消息正文由 `packages/render/src/components/MarkdownContent.vue` 用 `markdown-it` + `highlight.js`（`lib/core` + 按需注册语言）同步渲染成 HTML，一次成型：没有占位符、没有视口懒加载、也没有动态高度，滚动位置因此稳定。
 
-- **最大坑：Shadow DOM 隔离**。代码高亮在 `<diffs-container>` 的 shadowRoot 里，常规 DOM 查询（textContent/innerHTML/querySelector）看不到内容，极易误判"内容丢失/没渲染"。检查渲染结果要访问 `el.shadowRoot`。看到"内容为空"先怀疑渲染隔离，不要急着下"库有 bug"的结论
-- **启用 Shiki**：装 `markstream-vue` + `shiki@3.23.0` + `stream-markdown`；组件配 `code-renderer="shiki"` + `html-policy="escape"`（防 XSS）+ `:final`（流式结束才 true）+ `max-live-nodes="0"`（chat 打字机模式）
-- **不要装 stream-diffs**：peer 版本冲突会导致渲染静默失败，且 markstream 自带 runtime，不需要它（装了反而抢占 Shiki 路径）
-- **shiki 用 3.23.0**：满足 stream-markdown peer，4.x 有 API 变化风险
-- 装新依赖后建议重启 dev（vite 重新 optimize），热更新可能造成状态混乱假象
+- 新增语言：在同一个文件里再 `import` 一个 `highlight.js/lib/languages/*` 并注册 —— 全量引入会让包体积膨胀一个数量级
+- 改渲染链后要重启 dev（vite 重新 optimize），热更新可能造成状态混乱假象
 
-## main 端调试经验教训（本次自动命名踩坑）
+## main 端调试经验
 
 - **rolldown 会把正则字面量里的 `\d` 转义成 `\\d`**（语义从「数字」变成「反斜杠+d」），正则永远不匹配——排查时先 `node -e` 验证构建产物里的正则源码。**规避：正则里用 `[0-9]` 而非 `\d`**
 - **`import type { AgentNS }` 是 type-only**，运行时 `AgentNS` 是 undefined，`AgentNS.Role.User` 访问直接 TypeError（被 async void 调用吞掉，症状是函数"莫名提前结束"）。**需要运行时枚举值必须用值导入 `import { AgentNS }`**
@@ -112,7 +109,7 @@ cd packages/main && pnpm build
 
 - 数据根目录：`~/.ai-zen/`（共享根，CLI/Desktop 共用）
   - **桌面端不落盘**：工作区、会话存档、配置全在常驻 `agents-server` 那边（它的 `AI_ZEN_DIR`）。main 只读一个事实 —— `<AI_ZEN_DIR>/run/server.json`（服务发现：服务端此刻在哪个端口），见 `packages/main/src/server/index.ts`
-  - main 不再有本地数据库、也没有 `storage/` 目录：会话历史由服务端的 `workspace.json` + `sessions/*.json` 存档接管
+  - 会话历史由服务端的 `<workspace>/workspace.json` + `<workspace>/sessions/*.json` 存档接管，main 侧没有本地库
   - 全局配置：`~/.ai-zen/config.json`（含 endpoints/models，DeepSeek apiKey 明文）——**由服务端读写**，桌面端只走 `config.get` / 窄方法
 - IPC 通道：`invokeService`（业务）+ `window:xxx`（窗口控制）+ `dialog:selectDirectory`（原生目录选择，默认桌面、记住上次位置）
 - 业务语义：工作空间 cwd **选填，默认桌面**（`app.getPath("desktop")` 兜底）；删 workspace 级联删会话，删会话不碰 workspace

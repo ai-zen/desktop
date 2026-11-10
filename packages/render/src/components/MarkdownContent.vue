@@ -52,9 +52,9 @@ for (const [name, lang] of Object.entries(LANGUAGES)) {
 }
 
 // ==================== markdown-it 单例 ====================
-// 同步解析，一次成型，无占位符/无视口懒加载/无动态高度
+// 同步解析一次成型：内容每变一次就整份重解析，不做增量与异步补丁
 const md = new MarkdownIt({
-  html: false,      // 转义原始 HTML（安全，等价于旧 html-policy="escape"）
+  html: false,      // 原始 HTML 一律转义：消息正文来自模型输出，不能当可信标记
   linkify: true,    // 自动识别链接
   breaks: false,    // 标准 markdown 换行语义
   typographer: false,

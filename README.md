@@ -11,7 +11,7 @@ AI-Zen Desktop — 多 Workspace、多会话并存的 AI 工作台（Electron + 
 |----|------|
 | 主进程 | Electron 43（Node 24）+ TypeScript + rolldown 打包 |
 | 渲染进程 | Vue 3 + Vite + Pinia + Element Plus |
-| 流式 Markdown | markstream-vue + Shiki 高亮 |
+| 流式 Markdown | markdown-it + highlight.js（按需注册语言，同步渲染） |
 | Agent 运行时 | `@ai-zen/agents-sdk`（Provider / Agent / MCP 能力）—— 跑在**常驻服务端**那边 |
 | 数据存储 | 常驻服务端 `agents-server`（工作区与会话存档都在它盘上，桌面端不落盘） |
 
@@ -24,8 +24,7 @@ desktop/
 │   ├── render/     ← Vue 3 渲染进程（Vite）
 │   └── shared/     ← 共享类型 / IPC 协议（纯类型，零运行时）
 ├── scripts/dev.mjs ← 根目录 `pnpm dev` 一键开发（见下）
-├── AGENTS.md       ← ⚠️ 接手指南（协作原则 / 启动 / 踩坑，必读）
-└── TODO.md         ← 功能 Roadmap
+└── AGENTS.md       ← ⚠️ 接手指南（协作原则 / 启动 / 踩坑，必读）
 ```
 
 ### main — 主进程（面向对象单根）
@@ -49,26 +48,30 @@ packages/main/src/
 
 ```
 packages/render/src/
-├── main.ts            ← Vue 入口（Pinia / ElementPlus / MarkdownRender）
-├── App.vue            ← 根：TitleBar + Guide/Main 视图切换；初始化订阅 chat:push
+├── main.ts            ← Vue 入口（Pinia / ElementPlus）
+├── App.vue            ← 根：TitleBar + Guide/Main/Settings 视图切换；初始化订阅 chat:push
 ├── components/
-│   └── TitleBar.vue   ← 自定义标题栏（窗口控制）
+│   ├── TitleBar.vue         ← 自定义标题栏（窗口控制）
+│   └── MarkdownContent.vue  ← markdown-it + highlight.js 渲染
 ├── views/
 │   ├── guide/index.vue        ← 引导页（无工作空间时）
-│   └── main/
-│       ├── index.vue          ← 主界面（Sidebar + ChatPanel）
-│       ├── Sidebar.vue        ← 工作空间树 + 会话树 + 右键菜单（重命名/删除/新建）
-│       ├── ChatPanel.vue      ← 对话面板（模型选择 / 消息列表 / 输入）
-│       ├── MessageBubble.vue  ← 消息气泡（流式 Markdown / 工具结果折叠）
-│       └── NewChatDialog.vue  ← 新建对话（选 Agent）
+│   ├── main/
+│   │   ├── index.vue          ← 主界面（Sidebar + ChatPanel）
+│   │   ├── Sidebar.vue        ← 工作空间树 + 会话树 + 右键菜单（重命名/删除/新建）
+│   │   ├── ChatPanel.vue      ← 对话面板（模型选择 / 消息列表 / 输入）
+│   │   ├── MessageBubble.vue  ← 消息气泡（流式 Markdown / 工具结果折叠）
+│   │   └── NewChatDialog.vue  ← 新建对话（选 Agent）
+│   └── settings/index.vue     ← 设置页（默认模型 / 默认 Agent / API Key / 数据目录）
+├── composables/       ← 消息分页窗口 + 自动滚动策略
 ├── stores/            ← Pinia
 │   ├── ui.ts                  ← 当前视图 + Agent/Model 选项
 │   ├── workspace.ts           ← 工作空间列表 + 激活
 │   ├── conversation.ts        ← 会话列表（按 workspace 缓存）+ 激活 + 运行中标记
-│   └── chat.ts                ← ★ 按会话隔离的消息/流式状态（事件投影）
-└── apis/              ← 与 main services 一一对应
+│   ├── chat.ts                ← ★ 按会话隔离的消息/流式状态（事件投影）
+│   └── agentView.ts           ← 子 Agent 栏目的纯逻辑（选中态修正 / Tab 循环）
+└── apis/              ← 与 main 的六个 service 一一对应
     ├── base.ts                ← invokeService + subscribeServiceEvent
-    ├── workspace.ts / conversation.ts / agent.ts / model.ts
+    ├── workspace.ts / conversation.ts / agent.ts / model.ts / config.ts
     └── chat.ts                ← sendChatMessage / getChatState / onChatPush
 ```
 
@@ -89,24 +92,24 @@ packages/shared/src/
   │                                     │
   ├─ invokeService("workspace","list") ─┤
   ├─ invokeService("conversation",      │ ServicesManager 动态分发
-  │   "create", wsId, agentId) ────────→│   ├─ workspace.service
-  ├─ invokeService("chat","send",       │   ├─ conversation.service
-  │   wsId, convId, content) ──────────→│   ├─ chat.service（转发 session.send）
-  │                                     │   └─ agent / model
+  │   "create", wsId, agentId) ────────→│   ├─ workspace
+  ├─ invokeService("chat","send",       │   ├─ conversation
+  │   wsId, convId, content) ──────────→│   ├─ chat（转发 session.send）
+  │                                     │   └─ agent / model / config
   │  on("chat:push", evt) ←─────────────┤ webContents.send("chat:push")
 ```
 
 - **调用**：`invokeService(service, method, ...args)` 动态分发到对应 service（preload 暴露，极薄，零业务定义）
-- **推送**：`chat:push` 单通道事件流 `user → start → delta… → done / error`（+ 异步 `renamed` / `notice` / `agents`）
+- **推送**：`chat:push` 单通道事件流 `start → user → message… → done / error`（+ 独立的 `migrated` / `renamed` / `notice` / `agents`）
 - **出口**：main 不再自己跑 Agent —— 每个动作都是对常驻 `agents-server` 的一次协议调用（`session.*` / `workspace.*` / `config.*` …），事件由服务端推回
 
 ## 核心设计（会话执行与存档都在服务端）
 
-- **agent = 服务端的运行注册表**：每个会话的 agent 仅运行期驻留（流式中可读），一轮收尾后释放；不运行时的状态由服务端的工作区存档接管（`workspaces/<id>/sessions/`）
+- **agent 活服务端**：每个会话在服务端有一个 agent，会话活着它就活着（流式中可读），服务端按空闲宽限期回收；不运行时的状态由服务端的工作区存档接管（`workspaces/<id>/sessions/`）
 - **`session.snapshot` 是运行时唯一真相**（含流式进行中的 user + assistant 占位）；桌面端收到的 `done` / `migrated` 就是这份快照的全量替换
 - **send 只提交**：`session.send` 立刻回 `turnId`，过程与结果全走事件（一轮可能跑几分钟）
 - **getState**：切回任何会话都问服务端要实时状态（`session.attach` + `session.snapshot`）——切换会话/窗口开关不丢状态
-- **自动命名**：服务端在首轮之后异步起名，推 `session.titleChanged`；桌面端只把它翻成 `renamed`
+- **自动命名**：服务端在首轮之后异步起名，推 `session-title-changed`；桌面端只把它翻成 `renamed`
 - 删除会话/工作空间 → 服务端在 `session.remove` / `workspace.remove` 里关掉活会话（桌面端不再挂钩子）
 
 ## 数据存储
@@ -120,7 +123,7 @@ packages/shared/src/
 └── run/server.json           ← 服务发现：常驻服务端此刻在哪个端口
 ```
 
-- 桌面端**不读写**这里的任何数据文件：它只读 `run/server.json` 找到服务端，之后一切读写都发生在服务端那一侧
+- 桌面端**不读写**这里的任何数据文件：它只读 `<AI_ZEN_DIR>/run/server.json` 找到服务端，之后一切读写都发生在服务端那一侧
 - 协议里没有「本地存档」这条路：会话清单、消息、工作区都由服务端给（`session.list` / `session.snapshot` / `workspace.list`）
 
 ## 开发
@@ -143,14 +146,10 @@ cd packages/render && pnpm exec vue-tsc --noEmit
 ## 文档
 
 - [AGENTS.md](./AGENTS.md) — 接手指南（协作原则 / 启动 / 踩坑记录，⚠️ 必读）
-- [TODO.md](./TODO.md) — 功能 Roadmap
-- [desktop-design.md](docs/desktop-design.md) — 设计文档（架构决策）
-- [electron-setup.md](docs/electron-setup.md) — Electron 环境搭建（二进制下载失败处理等）
-- [cdp-debug.md](docs/cdp-debug.md) — CDP 远程调试
-
-## Roadmap
-
-见 [TODO.md](./TODO.md)。已完成：流式 Markdown 渲染（markstream-vue + Shiki）、对话右键菜单（重命名/删除/新建）、自动生成对话名称、agent 运行注册表 + getState + 每轮持久化。待办：设置页（SettingsView）。
+- [docs/zh/desktop-design.md](docs/zh/desktop-design.md) — 设计文档（架构决策）
+- [docs/zh/electron-setup.md](docs/zh/electron-setup.md) — Electron 环境搭建（二进制下载失败处理等）
+- [docs/zh/cdp-debug.md](docs/zh/cdp-debug.md) — CDP 远程调试
+- 其余文档见 [docs/zh/index.md](docs/zh/index.md)（英文版在 `docs/en/`，清单见 `docs/manifest.json`）
 
 ## License
 

@@ -63,7 +63,7 @@ export const useWorkspaceStore = defineStore("workspace", {
       }
     },
 
-    /** D3：恢复上次活跃状态 */
+    /** 恢复上次活跃状态 */
     async restore(workspaceId: string, conversationId: string) {
       if (this.workspaces.length === 0) return;
       const target = this.workspaces.find((w) => w.id === workspaceId) ?? this.workspaces[0];

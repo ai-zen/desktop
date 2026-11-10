@@ -6,7 +6,7 @@
  * 这一层要验的是**协议映射**：方法名、参数、返回形状、事件翻译。这四件事都发生在
  * socket 的另一侧，所以 daemon 必须是真的（真端口、真帧、真 SessionManager）；而 Agent
  * 本身（SDK 的流式循环、真模型请求）与映射无关，用假件才能精确控制「一轮什么时候开始、
- * 推了哪几片增量、什么时候收尾」。这也是 `agents/packages/client/src/sessions.test.ts`
+ * 推了哪几片增量、什么时候收尾」。这也是 `agents` 仓 `packages/client/src/facade/sessions.test.ts`
  * 的标准写法。
  *
  * ## 假件的形状必须照抄真件
@@ -50,7 +50,7 @@ import { createServerLayer, type ServerLayer } from "./index.js";
 /** 握手时自称的身份（与桌面端一致，只进日志与服务端回执） */
 export const CLIENT_INFO: ClientInfo = { name: "@ai-zen/desktop", version: "0.0.0-test" };
 
-/** 测试里自动标题的返回值：服务端第一轮收尾后会发 `session.titleChanged` */
+/** 测试里自动标题的返回值：服务端第一轮收尾后会发 `session-title-changed` */
 export const AUTO_TITLE = "自动起的名字";
 
 /** 配置里那个模型 id（`conversation.create` 的 `modelId` 应该等于它） */
@@ -73,7 +73,7 @@ const COMPLETED_STATUS = "completed" as AgentNS.MessageStatus;
  * `on` / `off` 是 core 的 `Agent.events` 真有的两个方法（服务端只挂这两个）；`fire` 是假件
  * 才有的那一半 —— 真件里由 core 在恰当时刻广播，这里由用例决定「什么时候推哪一片」。
  * 子 Agent 的那条流（`chunk-parsed` / `error`）与主 Agent 走同一个形状：服务端给子 Agent
- * 挂的就是这两个监听（`SessionManager` 的 `onSubStart`）。
+ * 挂的就是这两个监听（`agents` 仓 `EventBridge` 的 `onSubStart`）。
  */
 class EventBus {
   private readonly handlers = new Map<string, Set<(...args: any[]) => void>>();
@@ -96,7 +96,7 @@ class EventBus {
 /**
  * 假子 Agent：一个子 Agent 能提供的最小面（`messages` + `events`）。
  *
- * 形状照抄真件的 `SubAgentLike`（`SessionManager` 从 `sub-agent-start` 的载荷里只取这两样）：
+ * 形状照抄真件的 `SubAgentLike`（服务端从 `sub-agent-start` 的载荷里只取这两样）：
  * 服务端给它挂 `chunk-parsed` / `error` 两个监听，并在 `session.subAgent.snapshot` 里把它
  * **自己的** `messages` 原样交出去。所以这里要的正是「一个消息表 + 一条事件流」。
  */
@@ -268,7 +268,7 @@ export class FakeAgent extends EventBus implements AgentLike {
    * 往消息里塞一条工具结果（只有服务端才知道的东西）。
    *
    * 两种用法：单独用 = 验「收尾那次快照把它补齐」；配合 {@link endToolCall} = 验「工具跑完
-   * 那一刻就上屏」（服务端那一刻才推 `session.messageAppended`）。
+   * 那一刻就上屏」（服务端那一刻才推 `tool-call-end`）。
    */
   pushToolResult(content: string, name?: string): AgentNS.Message {
     const message: AgentNS.Message = {
@@ -287,18 +287,18 @@ export class FakeAgent extends EventBus implements AgentLike {
    * 一个工具跑完了：把 core 那一刻的 `tool-call-end` 发出去（服务端据此推工具结果）。
    *
    * 形状照抄真件的 `markResult`（`packages/core/src/Agent.ts`，载荷类型
-   * `AgentNS.ToolCallEndContext`）：**三个字段** `{ agent, toolCall, result }`，而且
+   * `ToolCallEndContext`，同文件导出）：**三个字段** `{ agent, toolCall, result }`，而且
    * `result.status` 在 fire **之前**就已经翻成终态。两处都不能省：
    *
-   *   - 服务端推 `session.messageAppended` 的判据是「这条消息定型了吗」
+   *   - 服务端推 `tool-call-end` 的判据是「这条消息定型了吗」
    *     （`FINISHED_STATUSES`），先 fire 后翻状态就等于让用例造一个真件里不存在的时序；
    *   - `result` 就是刚定型的那条消息**本身**，服务端推上线时直接搬它（不重新包装）。
    *     用例传的就是 {@link pushToolResult} 返回的那个对象 —— 它已经进了 `messages`，
    *     与真件里「执行前先 append、跑完就地翻终态」是同一个位置。
    *
-   * 为什么 `toolCall` 只填 `id` / `type` / `function.name`：`markResult` 把**任务本身**
-   * （`PendingTask.function`）递出去，这里没有真调用的入参可填，而服务端今天不读它 ——
-   * 但字段形状不能省，否则将来有人真的去读 `event.toolCall` 时，用例仍然是绿的。
+   * 为什么 `toolCall` 只填 `id` / `type` / `function.name`：`markResult` 递出去的是**被调用的
+   * 那次 `toolCall`**（`task`，即 `AgentNS.ToolCall`），这里没有真调用的入参可填，而服务端
+   * 今天不读它 —— 但字段形状不能省，否则将来有人真的去读 `event.toolCall` 时，用例仍然是绿的。
    */
   endToolCall(message: AgentNS.Message, status: AgentNS.MessageStatus = COMPLETED_STATUS): void {
     message.status = status;
@@ -317,7 +317,7 @@ export class FakeAgent extends EventBus implements AgentLike {
    * 一个子 Agent 开工（真件的 `sub-agent-start`）。
    *
    * 载荷就是 core 的 `SubAgentContext` 里服务端真正读的那两样：`{ agent, subAgent }`
-   * （`SessionManager` 的 `onSubStart` 只解构 `subAgent`）。真件里这个对象还带
+   * （`EventBridge` 的 `onSubStart` 只解构 `subAgent`）。真件里这个对象还带
    * `toolCallContext`，但服务端一个字段都不从那里取 —— 在这里编一个半截的上下文，只会让
    * 「假件比真件多的东西」变成下一个人要猜的负担。
    */
@@ -337,7 +337,7 @@ export class FakeAgent extends EventBus implements AgentLike {
     this.pending.shift()?.();
   }
 
-  /** 本轮出错（真件的 `error`）：服务端据此把 `session.turnEnd` 标成 `ok:false` */
+  /** 本轮出错（真件的 `error`）：服务端据此把 `session-turn-end` 标成 `ok:false` */
   fail(error: unknown): void {
     this.fire("error", error);
   }
@@ -388,7 +388,7 @@ export interface TestServer {
    * 会话层交给 Agent 装配的入参（每次 `createAgent` 一条，按先后）。
    *
    * 里面有 `resolveMode`：真件里 SDK 的自动迁移插件在上下文到阈值时调它，服务端因此向
-   * 客户端提问（`session.question`）。假 Agent 不会自己跑到那一步，用例只能从这里取那**
+   * 客户端提问（`session-question`）。假 Agent 不会自己跑到那一步，用例只能从这里取那**
    * 一个函数**来发起提问 —— 见 `events.test.ts` 的 `askHandoffMode`。
    */
   agentInputs: CreateAgentInput[];
@@ -415,7 +415,7 @@ export interface TestServer {
    * 「重启」：新进程、新端口、新发现文件，而 `SessionManager` / `ConfigService`（业务状态）
    * 由本脚手架持有、跟着活下来。
    *
-   * 用例拿它复现那个审计确认过的真 bug：daemon 重启后桌面端还能不能自己长回来。
+   * 用例拿它复现那个真 bug：daemon 重启后桌面端还能不能自己长回来。
    */
   restart: () => Promise<void>;
   /**
@@ -437,12 +437,12 @@ export interface TestServerOptions {
   /**
    * 注入自动标题（缺省不注入 = 服务端不做自动标题）。
    *
-   * 它与被测的映射无关，而且是在 `session.turnEnd` **之后**异步跑的后台动作；不测标题的用例
+   * 它与被测的映射无关，而且是在 `session-turn-end` **之后**异步跑的后台动作；不测标题的用例
    * 开着它，就会在拆服务端时与那次写档撞上（服务端会对着已经关掉的会话推通知）。
    */
   autoTitle?: boolean;
   /**
-   * 等客户端回答 `session.question` 的时限（缺省是服务端的 5 分钟）。
+   * 等客户端回答 `session-question` 的时限（缺省是服务端的 5 分钟）。
    *
    * 用例把它**调大**才有意义：提问方在几毫秒内就回来了，说明答案来自客户端而不是超时兜底。
    * 调小则用来「让一个答失败的问题自己收场」，用例不必等。
@@ -554,8 +554,8 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
       defaultWorkspacePath: projectDir,
     }),
     ...createAgentHandlers({
-      // 只有 `agent.model.set` 用它（写定义 + 清思考参数）；这一阶段没有 render 面
-      // 调它，用例也不需要它真去改定义，所以给一个记录用的最小实现
+      // 只有 `agent.model.set` 用它（写定义 + 清思考参数）；render 没有调用点，
+      // 用例也不需要它真去改定义，所以给一个记录用的最小实现
       factory: { setModel: async ({ agentId, modelId }) => ({ agentId, modelId }) },
       config,
     }),

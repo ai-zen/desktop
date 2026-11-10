@@ -1,6 +1,6 @@
 // ==================== 类型契约（shared）====================
 // 实体 + IPC 事件 DTO。纯类型，零运行时。
-// 消息模型直接沿用 Core 的 AgentNS.Message（见 desktop-design.md A7）。
+// 消息模型直接沿用 Core 的 AgentNS.Message（三层统一，不做 adapter）。
 
 import type { AgentNS } from "@ai-zen/agents-core";
 
@@ -9,7 +9,7 @@ import type { AgentNS } from "@ai-zen/agents-core";
 export interface Workspace {
   id: string;
   name: string;
-  /** 工作目录 —— Provider.cwd 的注入基准 */
+  /** 工作目录 —— 会话在服务端跑在这个目录下（服务端规范化后的绝对路径） */
   cwd: string;
 }
 
@@ -32,16 +32,16 @@ export interface ConversationSummary {
   id: string;
   workspaceId: string;
   agentId: string;
-  /** 同上：模型下拉框要显示的**当前模型**（桌面端填入服务端清单里的 `effectiveModelId`，解析不出来时才退回会话级覆盖值 / 空串） */
+  /** 同上：模型下拉框要显示的**当前模型**（桌面端填入服务端清单里的 `effectiveModelId`，解析不出来时空串） */
   modelId: string;
   name: string;
   messageCount: number;
   updatedAt: string;
-  /** D8：会话运行中标记（侧栏显示） */
+  /** 会话运行中标记（侧栏显示） */
   running?: boolean;
 }
 
-/** chat.getState 返回：会话实时状态（有常驻 agent 则取 agent.messages，含流式进行中的消息） */
+/** chat.getState 返回：会话实时状态（服务端 `session.snapshot` 原样转回，含流式进行中的消息） */
 export interface ConversationState {
   messages: AgentNS.Message[];
   streaming: boolean;
@@ -78,7 +78,7 @@ export interface ConfigSettings {
   defaultModel: string;
   /** 默认 Agent（config.defaultAgent） */
   defaultAgent: string;
-  /** 数据目录（只读：AI_ZEN_DIR 路径） */
+  /** 数据目录（只读：服务端 `config.json` 所在目录，由服务端随配置一起回来） */
   dataDir: string;
 }
 
@@ -87,8 +87,8 @@ export interface ConfigSettings {
 /**
  * 子 Agent 的状态：`running` 是进行态，`done` / `failed` 是终态。
  *
- * 取值与服务端 `session.subAgent.*` 那两条事件逐字一致（协议不另造词汇）：`started` 只会
- * 带来 `running`，`ended` 带来 `done` / `failed`，快照也回这三个值之一。
+ * 取值与服务端 `sub-agent-start` / `sub-agent-end` 那两条事件逐字一致（协议不另造词汇）：
+ * 前者只会带来 `running`，后者带来 `done` / `failed`，快照也回这三个值之一。
  */
 export type SubAgentStatus = "running" | "done" | "failed";
 
@@ -96,11 +96,11 @@ export type SubAgentStatus = "running" | "done" | "failed";
  * 一个子 Agent 自己的对话（= 栏目标签 `子AGENT{n}` 点进去看到的那一屏）。
  *
  * 三处事实**都来自服务端**，客户端一个都不自己算：
- *   - `id`：`session.subAgent.started` 的 `subAgentId`（稳定标识，选中态与 v-for key 靠它；
- *     每轮会重来，所以它不带展示含义）；
+ *   - `id`：`sub-agent-start` 的 `subAgentId`（跨轮稳定的标识，选中态与 v-for key 靠它；
+ *     它不带展示含义，展示序号是 `index`）；
  *   - `index`：同一个事件里的 `index`（本轮内从 1 起，栏目标签直接印它）。客户端不数：
  *     它要在「切到某个子 Agent」「中途接上连接」时都对得上，而那时本地没数过；
- *   - `status`：`started` 给 `running`、`ended` 与 `session.subAgent.snapshot` 给终态。
+ *   - `status`：`sub-agent-start` 给 `running`、`sub-agent-end` 与 `session.subAgent.snapshot` 给终态。
  */
 export interface SubAgentView {
   id: string;
@@ -113,14 +113,14 @@ export interface SubAgentView {
 // ==================== 推送事件 DTO ====================
 
 /** chat:push 单通道推送（discriminated union）
- *  状态源在 main 的 agent：send 只提交（快速返回），user/delta/done 全由事件回流 */
+ *  状态源是常驻服务端：send 只提交（快速返回），user/start/message/done 全由事件回流 */
 export type ChatStreamEvent =
   | { conversationId: string; type: "start" }
-  /** main 确认收到用户消息（render 据此上屏，不再本地乐观插入）
-   *  id 为 agent 中真实 user 消息 id（send 同步部分创建后读取） */
+  /** 本轮的用户消息上屏（render 据此上屏，不本地乐观插入）
+   *  id 由 main 编（`${会话}:user:${turnId}`）：协议不推用户消息，id 只为给 render 一个稳定的 v-for key */
   | { conversationId: string; type: "user"; id: string; content: string }
-  /** 一条完整消息的实时同步（chunk-parsed 的 receiver 完整状态：正文/reasoning/tool_calls/status；
-   *  以及每轮结束补推的工具结果消息）。id 为 agent 中真实消息 id（v-for key 从流式开始即稳定），
+  /** 一条完整消息的实时同步（流式中的 assistant 消息：正文/reasoning/tool_calls/status；
+   *  以及每轮结束补推的工具结果消息）。id 是服务端消息 id，流式那条由 main 编并随后被 `done` 里的真 id 取代；
    *  render 按 id 就地 upsert：有则替换、无则追加末尾 —— 事件到达顺序即消息顺序 */
   | { conversationId: string; type: "message"; id: string; message: AgentNS.Message }
   | { conversationId: string; type: "done"; messages: AgentNS.Message[] }
@@ -130,7 +130,7 @@ export type ChatStreamEvent =
   /** 自动生成对话标题后推送（不阻塞 done，侧栏据此更新名称） */
   | { conversationId: string; type: "renamed"; name: string }
   /**
-   * 服务端推来的一条**通知**（`session.notice` / `server.notice`）：给用户看的一句话，瞬时的。
+   * 服务端推来的一条**通知**（`session-notice` / `server-notice`）：给用户看的一句话，瞬时的。
    *
    * ## 为什么不是 `type: "error"`
    *
@@ -148,7 +148,7 @@ export type ChatStreamEvent =
    *
    * ## 为什么 `conversationId` 是可选的
    *
-   * `server.notice` **不属于任何会话**（存档目录不可用、MCP 连不上是服务本身的事）。
+   * `server-notice` **不属于任何会话**（存档目录不可用、MCP 连不上是服务本身的事）。
    * 空串不是它的替身：空串的意思是「有一个会话，它的 key 是空字符串」，与「没有会话」是
    * 两件事 —— render 按 key 取状态槽位，空串会凭空开出一个谁都不认识的假槽位。
    */
@@ -169,14 +169,14 @@ export type ChatStreamEvent =
    *
    * ## 空数组 = 这一轮的子 Agent 都没了
    *
-   * 子 Agent 只活在当前一轮（`session.turnEnd` 之后服务端把它们连同展示序号一起清掉，客户端同一
+   * 子 Agent 只活在当前一轮（`session-turn-end` 之后服务端把它们连同展示序号一起清掉，客户端同一
    * 口径）。所以 `agents: []` 的意思是「把栏目收回去」，不是「这段会话没有子 Agent 这个
    * 概念」。render 收到空数组就清空栏目、退回主对话 —— 不能让一个标签停在一段已经过去的
    * 对话上。换会话 id（迁移 / 另存为）同样清空。
    *
    * ## 顺序
    *
-   * 数组顺序 = `session.subAgent.started` 的到达顺序 = 服务端给的 `index` 顺序（栏目标签
+   * 数组顺序 = `sub-agent-start` 的到达顺序 = 服务端给的 `index` 顺序（栏目标签
    * 从左到右）。render 直接照数组渲染，不重排 —— 重排就得知道「序号是谁给的」，而那是
    * 服务端的展示序号，不是客户端可以推的东西。
    */

@@ -1,9 +1,7 @@
 <template>
   <div class="app-wrapper">
-    <!-- 自定义标题栏 -->
     <TitleBar />
 
-    <!-- 页面切换（uiStore.currentView） -->
     <GuideView v-if="uiStore.currentView === 'guide'" />
     <SettingsView v-else-if="uiStore.currentView === 'settings'" />
     <MainView v-else />
@@ -35,15 +33,12 @@ const onChatPushHandler = (
 };
 
 async function init() {
-  // 1. 订阅主进程流式推送 → chat store
   if (!unsubscribe) {
     unsubscribe = onChatPush(onChatPushHandler);
   }
 
-  // 2. 加载全局选项（Agent / 模型列表）
   await uiStore.loadOptions();
 
-  // 3. 加载 workspace → 决定进引导页还是主界面
   await workspaceStore.load();
   uiStore.setView(workspaceStore.workspaces.length === 0 ? "guide" : "main");
 }

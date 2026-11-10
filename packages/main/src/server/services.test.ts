@@ -1,5 +1,5 @@
 /**
- * 六个 Service 的**映射**用例：方法名 / 参数 / 返回形状是否与旧的 `services/*.ts` 一致，
+ * 六个 Service 的**映射**用例：方法名 / 参数 / 返回形状是否与 render 的调用面一致，
  * 以及每一步在服务端立了什么事实。
  *
  * 全部走 `ServicesManager.invokeService`（render 真实走的那条路），不直接 new 服务类 ——
@@ -164,7 +164,7 @@ describe("conversation", () => {
       workspaceId: workspace.id,
       agentId: "default",
       // 没有会话级覆盖不等于「没有模型」：这一位是下拉框的当前值，服务端给的是三级解析后
-      // 的生效值（Agent 定义那一档）。只读覆盖值的话下拉框会空着（改造前的回归）
+      // 的生效值（Agent 定义那一档）。只读覆盖值的话下拉框会空着
       modelId: MODEL_ID,
       messageCount: 1,
       // 还没起名：兜底名是一个**常量**（不掺时间戳）。按 `updatedAt` 拼名字的话，同一段
@@ -192,7 +192,7 @@ describe("conversation", () => {
     expect("modelId" in raw.sessions[0]!).toBe(false);
     expect(raw.sessions[0]!.effectiveModelId).toBe(MODEL_ID);
 
-    // 下拉框读的就是这一位：空串 = 用户看到「没选模型」（改造前的行为回归）
+    // 下拉框读的就是这一位：空串 = 用户看到「没选模型」
     const list = await invoke<ConversationSummary[]>("conversation", "list", workspace.id);
     expect(list[0]).toMatchObject({ id: conversation.id, modelId: MODEL_ID });
   });
@@ -322,7 +322,7 @@ describe("conversation", () => {
     ).rejects.toThrow(/title/);
   });
 
-  it("read：活会话直读；盘上的历史先 attach 再取；不存在的会话回 null（旧签名的那条返回值）", async () => {
+  it("read：活会话直读；盘上的历史先 attach 再取；不存在的会话回 null", async () => {
     const workspace = await createWorkspace();
     const conversation = await invoke<Conversation>(
       "conversation",
@@ -338,7 +338,7 @@ describe("conversation", () => {
     const live = await invoke<Conversation | null>("conversation", "read", workspace.id, conversation.id);
     expect(live?.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
 
-    // 把会话从内存里放掉：只剩盘上的存档。`session.snapshot` 这时是取不到的（协议缺口①），
+    // 把会话从内存里放掉：只剩盘上的存档。`session.snapshot` 只认活会话，这时取不到，
     // 所以 read 必须先 attach
     await invoke<void>("chat", "release", conversation.id);
     expect(
@@ -473,7 +473,7 @@ describe("chat", () => {
     expect(state.messages.map((message) => message.role)).toEqual(["user"]);
   });
 
-  it("send：撞上 turn-busy 时静默忽略（与旧实现一致：重复提交不弹错）", async () => {
+  it("send：撞上 turn-busy 时静默忽略（重复提交不弹错）", async () => {
     const workspace = await createWorkspace();
     const conversation = await invoke<Conversation>(
       "conversation",
@@ -486,7 +486,7 @@ describe("chat", () => {
     await waitFor(() => server.pushed.some((event) => event.type === "start"), "本轮开始");
     const pushedBefore = server.pushed.length;
 
-    // 上一轮还没收尾，再发一次：旧实现在运行注册表里看到 pending 就直接 return
+    // 上一轮还没收尾，再发一次：服务端回 `turn-busy`，客户端不弹错
     await expect(
       invoke<void>("chat", "send", workspace.id, conversation.id, "第二句"),
     ).resolves.toBeUndefined();
@@ -528,7 +528,7 @@ describe("chat", () => {
     const listed = await server.call<SessionListResult>("session.list", { workspaceId: workspace.id });
     expect(listed.sessions[0]!.live).toBe(false);
 
-    // 点回来：getState 先 attach 再取快照（协议缺口①的唯一出口）
+    // 点回来：getState 先 attach 把存档装回内存，再取快照
     const state = await invoke<ConversationState>("chat", "getState", workspace.id, conversation.id);
     expect(state.streaming).toBe(false);
     expect(state.messages.map((message) => message.role)).toEqual(["user", "assistant"]);

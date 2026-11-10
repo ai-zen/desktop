@@ -1,16 +1,9 @@
 ---
 title: 环境搭建
-description: Electron 二进制下载失败处理、path.txt 注意事项、CDP 调试端口与 pnpm 结构说明
+description: Electron 二进制下载失败处理与 path.txt 注意事项
 ---
 
 # Electron 环境搭建备忘
-
-## 首次安装 Electron
-
-```bash
-cd packages/main
-pnpm add -D electron
-```
 
 ## 如果 Electron 二进制下载失败
 
@@ -49,27 +42,3 @@ executablePath = fs.readFileSync(pathFile, 'utf-8');
 const fullPath = path.join(__dirname, 'dist', executablePath);
 // → "dist/electron.exe\n"  ❌ 路径带换行，文件找不到！
 ```
-
-## CDP 调试端口
-
-开启 Chrome DevTools Protocol 需要在 **命令行参数** 中传递 `--remote-debugging-port`：
-
-```bash
-electron --remote-debugging-port=9222 dist/main.mjs
-```
-
-> **⚠️ 注意：** 在代码中用 `app.commandLine.appendSwitch("remote-debugging-port", "9222")` 是**无效**的，必须在启动时传参。
-
-当前 `packages/main/package.json` 中已配置：
-```json
-"start": "electron --remote-debugging-port=9222 dist/main.mjs"
-```
-
-## pnpm 结构说明
-
-本项目使用 pnpm workspace，Electron 包位于：
-```
-node_modules/.pnpm/electron@{version}/node_modules/electron/
-```
-
-`packages/main/node_modules/.bin/electron.cmd` 指向的是这个路径的 `cli.js`。

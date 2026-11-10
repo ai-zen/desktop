@@ -2,7 +2,7 @@
  * 聊天自动滚动策略。
  *
  * - alignToBottom：初始化/切会话时强制对齐底部（一次滚底 + 下一帧兑底）。
- * - followIfNearBottom：内容增量（append / delta / done）时仅当视口位于底部附近
+ * - followIfNearBottom：内容增量（append / message / done）时仅当视口位于底部附近
  *   才跟随 —— 用户上翻历史时不强制拽回底部。
  */
 import { nextTick } from "vue";

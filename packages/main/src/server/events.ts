@@ -5,9 +5,9 @@
  *
  * 「一轮之内该记住什么」—— 正文增量往哪条消息上拼、子 Agent 的增量与服务端快照怎么合并、
  * 一轮收尾用哪份数据、失败算不算终态 —— 全部归 `@ai-zen/agents-client` 的 `SessionStream`
- * （纯状态机，零 I/O）。那是这条规则在本仓与 CLI 之间**唯一**的一份实现；本文件曾经自己
- * 攒过一份，两份的边界情形迟早分叉，而分叉只在竞态里显形（「答案凭空短一截」「子任务失败
- * 显示成成功」）。现在这里只剩三件事：
+ * （纯状态机，零 I/O）。那是这条规则在本仓与 CLI 之间**唯一**的一份实现：在这一层再攒一份，
+ * 两份的边界情形迟早分叉，而分叉只在竞态里显形（「答案凭空短一截」「子任务失败显示成
+ * 成功」）。这里只剩三件事：
  *
  *   1. **一段会话一台状态机**（`Map<conversationId, SessionStream>`）。
  *
@@ -18,18 +18,18 @@
  *      建一条连接）。再套一层就是第二份「哪条连接」的记账，那是这类 bug 的老家。
  *   2. **状态 → `ChatStreamEvent`**：`stream.state` 是唯一输入。推出去的成员不多不少就是
  *      render 认的那 9 个（`start` / `user` / `message` / `done` / `migrated` / `error` /
- *      `renamed` / `notice` / `agents`），语义与改造前逐字一致。
+ *      `renamed` / `notice` / `agents`）。
  *   3. **桌面端独有的两件事**（包里不管，也不该管，见下）。
  *
  * ## 桌面端独有，留在 main 的两件事
  *
- * - **`user` 事件的正文**：协议**不推用户消息**（`session.delta` 只有模型增量），而 render
+ * - **`user` 事件的正文**：协议**不推用户消息**（`chunk-parsed` 只有模型增量），而 render
  *   的 `user` 事件要正文才能上屏。正文由 `chat.send` 那一侧登记（{@link noteSend}），派发
  *   `start` 时消费掉，占位 id 用 `${会话}:user:${turnId}`（render 的 `v-for` key 要稳定）。
- * - **`session.question` 自动答「跳过」**：桌面端没有提问 UI（`ChatStreamEvent` 里没有这一
- *   类，本期不许改 render），不答就等于让服务端干等 5 分钟超时（用户看不到为什么什么都没
+ * - **`session-question` 自动答「跳过」**：桌面端没有提问 UI（`ChatStreamEvent` 里没有这一
+ *   类事件），不答就等于让服务端干等 5 分钟超时（用户看不到为什么什么都没
  *   发生）。这条留在 main，**不**塞进 `SessionStream`：纯状态机不该有 Promise 回调，包里
- *   的 `resolveQuestion` 在 `SessionChannel` 上（本端没有用它）。
+ *   的提问由 `SessionChannel` 的 `answerQuestion` 拿 `policy.answerQuestion` 分派（本端没有用它）。
  *
  * ## 为什么占位 assistant 消息的 id 还在这一层编
  *
@@ -38,19 +38,19 @@
  * `placeholder()`：收尾快照会给真 id，编一个假的反而在收尾时与它打架，同一条消息两个 id
  * 会被画成两条）。协议不给流式消息 id、状态机也不编 —— 于是「给 render 一个稳定的 key」
  * 只能在通道这一层做：一轮一个 id（`${会话}:assistant:${turnId}`），正文与工具调用都落在
- * 同一条上，`session.toolCalls` 与 `session.delta` 谁先到都一样。
+ * 同一条上，`session-tool-calls` 与 `chunk-parsed` 谁先到都一样。
  *
  * ## 收尾 / 迁移：都以服务端快照为准
  *
- * `session.turnEnd` 只带 `ok` / `error`，不带消息：补一次 `session.snapshot` 交给
+ * `session-turn-end` 只带 `ok` / `error`，不带消息：补一次 `session.snapshot` 交给
  * `stream.settle(snapshot)`，再把合并结果推成 `done`（消息 `status` 与服务端对历史的清洗
- * 都只有快照里有）。`session.idChanged`（迁移 / 另存为 / **一轮进行中的自动迁移**）要做
+ * 都只有快照里有）。`session-id-changed`（迁移 / 另存为 / **一轮进行中的自动迁移**）要做
  * **别名收敛**（新 id → render 认识的旧 key）：`ChatStreamEvent` 里没有「换 key」这个类型，
- * 不收敛的话一段正在跑的会话会在旧 id 上等一个永远不来的 `turn.end`。
+ * 不收敛的话一段正在跑的会话会在旧 id 上等一个永远不来的 `session-turn-end`。
  *
  * ## 通知与子 Agent
  *
- * 通知（`session.notice` / `server.notice`）服务端只给 `code + params`，文案由本端出
+ * 通知（`session-notice` / `server-notice`）服务端只给 `code + params`，文案由本端出
  * （`notices.ts`，全桌面端就这一份）。丢掉它们的后果不是「少一条提示」，而是**用户看不到
  * 为什么什么都没发生**。子 Agent 的增量（带 `subAgentId`）**不进主对话**（那是另一层对话）：
  * 状态机把它拼进那个子 Agent 自己的临时消息，本层把 `stream.state.subAgents` **整份**推给
@@ -58,25 +58,26 @@
  */
 
 import {
+  AGENT_EVENTS,
   ROLE,
   SERVER_EVENTS,
   SESSION_EVENTS,
   SESSION_METHODS,
   SessionStream,
+  type AgentChunkParsedEvent,
+  type AgentSubAgentEndEvent,
+  type AgentSubAgentStartEvent,
+  type AgentToolCallEndEvent,
   type ServerClient,
   type ServerConnection,
   type ServerNoticeEvent,
   type SessionAnswerResult,
-  type SessionDeltaEvent,
   type SessionIdChangedEvent,
-  type SessionMessageAppendedEvent,
   type SessionNoticeEvent,
   type SessionPhaseEvent,
   type SessionQuestionEvent,
   type SessionSnapshotResult,
   type SessionStreamState,
-  type SessionSubAgentEndedEvent,
-  type SessionSubAgentStartedEvent,
   type SessionTitleChangedEvent,
   type SessionToolCallsEvent,
   type SessionTurnEndEvent,
@@ -200,11 +201,11 @@ export class ChatEventBridge {
     this.bound = client;
     this.subscriptions.push(
       client.on(SESSION_EVENTS.phase, (event) => this.onPhase(event)),
-      client.on(SESSION_EVENTS.delta, (event) => this.onDelta(event)),
+      client.on(AGENT_EVENTS.chunkParsed, (event) => this.onDelta(event)),
       client.on(SESSION_EVENTS.toolCalls, (event) => this.onToolCalls(event)),
-      client.on(SESSION_EVENTS.messageAppended, (event) => this.onMessageAppended(event)),
-      client.on(SESSION_EVENTS.subAgentStarted, (event) => this.onSubAgentStarted(event)),
-      client.on(SESSION_EVENTS.subAgentEnded, (event) => this.onSubAgentEnded(event)),
+      client.on(AGENT_EVENTS.toolCallEnd, (event) => this.onMessageAppended(event)),
+      client.on(AGENT_EVENTS.subAgentStart, (event) => this.onSubAgentStarted(event)),
+      client.on(AGENT_EVENTS.subAgentEnd, (event) => this.onSubAgentEnded(event)),
       client.on(SESSION_EVENTS.turnEnd, (event) => this.onTurnEnd(event)),
       client.on(SESSION_EVENTS.idChanged, (event) => this.onIdChanged(event)),
       client.on(SESSION_EVENTS.titleChanged, (event) => this.onTitleChanged(event)),
@@ -227,8 +228,8 @@ export class ChatEventBridge {
   /**
    * 直接推一条 `error`（`chat.send` 自己的失败出口）。
    *
-   * 旧实现把「取 agent 阶段」的错误也走这条事件通道，而不是让 IPC 抛错 —— render 的
-   * `send()` 因此永远正常返回，错误条由事件驱动。这里保持同一条语义。
+   * 不让 IPC 抛错，而是走这条事件通道 —— render 的 `send()` 因此永远正常返回，错误条由
+   * 事件驱动。
    */
   pushError(conversationId: string, message: string): void {
     this.options.push({ conversationId, type: "error", message });
@@ -248,7 +249,7 @@ export class ChatEventBridge {
    *
    * 判据只能来自服务端：快照里的 `turnId` 比手上的**小**，说明它的计数在往回走（同一个
    * 进程里轮次只增不减），手上这一轮是残影。包里 `SessionChannel` 收尾时做的是同一件事的
-   * 另一面（`Math.max(snapshot.turnId, pending.turnId)`：快照的编号可能比我们等的那个小，
+   * 另一面（`Math.max(snapshot.turnId, pendingTurn.turnId ?? 0)`：快照的编号可能比我们等的那个小，
    * 别让较小的那个把在等的一轮判成不存在）—— 两处都必须以「较大值才是我们知道的真相」
    * 为准。
    *
@@ -275,7 +276,7 @@ export class ChatEventBridge {
    * 阶段变化 → `user` + `start`。
    *
    * 阶段本身先喂给状态机（它才是「这一轮在跑没有」的唯一记账处）。`phase === null` 是
-   * 「本轮回到空闲」，收尾归 `session.turnEnd`（它带 `ok` / `error`，之后还要补快照）
+   * 「本轮回到空闲」，收尾归 `session-turn-end`（它带 `ok` / `error`，之后还要补快照）
    * —— 这里不重复收尾，否则一轮会派发两次 `done`。
    */
   private onPhase(event: SessionPhaseEvent): void {
@@ -314,7 +315,7 @@ export class ChatEventBridge {
    * 对象），没变就是同一个对象。只带用量的流末 chunk（正文与推理都空）因此不会在转录里多
    * 出一条空消息。
    */
-  private onDelta(event: SessionDeltaEvent): void {
+  private onDelta(event: AgentChunkParsedEvent): void {
     const key = this.keyOf(event.sessionId);
     const stream = this.streamOf(key);
     const before = stream.state;
@@ -359,7 +360,7 @@ export class ChatEventBridge {
    * 顺序别假设：服务端是「谁先跑完谁先推」（并行时后开始的工具可能先完成），所以这里不插
    * 到指定位置、也不假设上一条是谁 —— render 的追加语义就是它的正确语义。
    */
-  private onMessageAppended(event: SessionMessageAppendedEvent): void {
+  private onMessageAppended(event: AgentToolCallEndEvent): void {
     const key = this.keyOf(event.sessionId);
     this.streamOf(key).applyMessageAppended(event.message);
     this.options.push({
@@ -380,7 +381,7 @@ export class ChatEventBridge {
    * 快照是**补内容**，不是拉状态：`index` / `status` 已经由事件给过。拉不到就静默（增量照样
    * 拼、`ended` 照样改状态、收尾照样清空），在一条成功的委派上凭空弹红字才是错的。
    */
-  private onSubAgentStarted(event: SessionSubAgentStartedEvent): void {
+  private onSubAgentStarted(event: AgentSubAgentStartEvent): void {
     const key = this.keyOf(event.sessionId);
     const stream = this.streamOf(key);
     const before = stream.state;
@@ -395,7 +396,7 @@ export class ChatEventBridge {
    * `failed` 不被随后的 `done` 覆盖那条规则在状态机里（core 在 `finally` 里分发收尾事件，
    * 出错的那次也照样会来一条）—— 本层只搬运结果。
    */
-  private onSubAgentEnded(event: SessionSubAgentEndedEvent): void {
+  private onSubAgentEnded(event: AgentSubAgentEndEvent): void {
     const key = this.keyOf(event.sessionId);
     const stream = this.streamOf(key);
     const before = stream.state;
@@ -466,7 +467,7 @@ export class ChatEventBridge {
    *
    * render 的会话键只有 `conversationId`，`ChatStreamEvent` 里也没有「换 key」的类型 ——
    * 所以这里做**别名收敛**：新 id 上的后续请求与事件继续以旧 key 上报，画面才是连续的
-   * （不做的话，一段正在跑的会话会在旧 id 上等一个永远不来的 `session.turnEnd`，界面卡死）。
+   * （不做的话，一段正在跑的会话会在旧 id 上等一个永远不来的 `session-turn-end`，界面卡死）。
    * 迁移之后的内容是另一份历史，所以同时补一份快照推 `migrated`（render 的全量替换语义）。
    */
   private onIdChanged(event: SessionIdChangedEvent): void {
@@ -498,7 +499,7 @@ export class ChatEventBridge {
   /**
    * 服务端在自动迁移之前问「用哪种方式交接」→ 立刻按**跳过**回答（`choice: null`）。
    *
-   * 服务端发出 `session.question` 之后会一直等（等满 `ASK_TIMEOUT_MS`，5 分钟）。桌面端
+   * 服务端发出 `session-question` 之后会一直等（等满 `ASK_TIMEOUT_MS`，5 分钟）。桌面端
    * 没有提问 UI，也就是说这 5 分钟里没有任何人看得见这个问题 —— 用户那边的感受是「界面像
    * 是死了 5 分钟」。`choice: null` 与服务端这条退路的取值是**同一个答案**（`fallback` 就是
    * `null`），所以这里没有替用户做决定，只是把那个超时提前表达出来。
@@ -506,8 +507,9 @@ export class ChatEventBridge {
    * 失败不报人看：连接断了 / 会话刚被收掉 / 来晚了，服务端那边本来就会走 `fallback`，结果
    * 与「答成功了」完全一样 —— 弹一条红字只会让一次本来就没事的自动迁移看起来坏了。
    *
-   * 加了提问 UI 之后这里要改成弹窗（把 `kind` / `options` 交给用户，点了才 `session.answer`）
-   * ——「桌面端答不了」是今天的限制，不是产品语义。
+   * 「桌面端答不了」是这一层的**限制**，不是产品语义：有提问 UI 的客户端会把 `kind` /
+   * `options` 交给用户、点了才调 `session.answer`；没有 UI 时，早答 `null` 与等满超时
+   * 是同一个结果。
    */
   private onQuestion(event: SessionQuestionEvent): void {
     void this.options
@@ -538,7 +540,7 @@ export class ChatEventBridge {
   }
 
   /**
-   * 服务端通知（`server.notice`）→ `notice` 且**不给** `conversationId`。
+   * 服务端通知（`server-notice`）→ `notice` 且**不给** `conversationId`。
    *
    * 它不属于任何会话（存档目录不可用、MCP 连不上是服务本身的事）：填个空串等于声称
    * 「有一个 key 为空的会话」，render 会照着这个 key 开一个假槽位；省掉这个字段才是
@@ -629,8 +631,7 @@ export class ChatEventBridge {
    * 把整份子 Agent 栏目推给 render（**整份替换**语义）。
    *
    * 不需要拷贝：状态机每次变更都换新对象（`subAgents` 数组、每个视图、每条消息都是），
-   * 推出去的那一份因此天然定格在这一刻 —— 本层曾经的「就地改 `stream.message`」正是要拷贝
-   * 的理由，那份就地改已经随手写状态机一起删掉了。
+   * 推出去的那一份因此天然定格在这一刻 —— 本层不再就地改状态里的字段，也就没有拷贝的理由。
    */
   private pushAgents(key: string, state: SessionStreamState): void {
     this.options.push({ conversationId: key, type: "agents", agents: state.subAgents });

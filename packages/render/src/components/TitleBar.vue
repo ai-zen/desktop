@@ -1,6 +1,5 @@
 <template>
   <div class="title-bar" @dblclick="toggleMaximize">
-    <!-- 拖拽区域 -->
     <div class="drag-area">
       <div class="app-title-group">
         <el-icon :size="18" color="var(--el-color-primary)">
@@ -10,7 +9,6 @@
       </div>
     </div>
 
-    <!-- 窗口控制按钮 -->
     <div class="window-controls">
       <button
         class="control-btn"
@@ -100,9 +98,7 @@ function onMaximizeChange(_event: unknown, maximized: unknown) {
 onMounted(async () => {
   const api = getAPI();
   if (api) {
-    // 查询当前最大化状态
     isMaximized.value = await api.window.isMaximized();
-    // 监听最大化状态变化
     api.on("window:maximizeChange", onMaximizeChange);
   }
 });

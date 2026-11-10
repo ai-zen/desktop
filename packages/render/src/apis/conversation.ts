@@ -1,5 +1,5 @@
 /**
- * conversation api — 会话（对应 main ConversationService）。
+ * conversation api — 会话（对应 main ServerConversationService）。
  */
 
 import type { Conversation, ConversationSummary } from "@ai-zen/desktop-shared";

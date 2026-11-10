@@ -2,7 +2,7 @@
  * chat store — 按会话隔离的聊天状态（消息/流式/错误/重试 + 子 Agent 栏目）。
  *
  * 每个 conversation 拥有独立的 byConversation[id] 槽位，切换会话只是切换视角，
- * 各会话的流式状态互不干扰（修复：原全局单 messages/streaming 在切换时互相覆盖，
+ * 各会话的流式状态互不干扰（全局单 messages/streaming 会在切换时互相覆盖，
  * 导致进行中消息断裂、streaming 卡死）。
  *
  * 槽位里除了主对话，还存了**当前这一轮**的子 Agent 栏目（`agents` + `activeAgentId`）：
@@ -105,8 +105,8 @@ export const useChatStore = defineStore("chat", {
 
   actions: {
     /**
-     * 切换激活会话：同步视角 id，并**总是从服务读取实时状态**（chat.getState）。
-     * 有常驻 agent 时返回 agent 当前消息（含流式进行中的回复），
+     * 切换激活会话：同步视角 id，并**总是从服务端读取实时状态**（chat.getState → `session.snapshot`）。
+     * 返回的是服务端此刻的消息（含流式进行中的回复），
      * 使前端切回流式中的会话也能看到正确的进行中内容 —— 前端始终访问服务，
      * 不持有独立状态副本。
      */
@@ -163,8 +163,8 @@ export const useChatStore = defineStore("chat", {
       const st = this.ensure(conversationId);
       st.error = "";
       st.lastFailedContent = content;
-      // 只提交：user 消息上屏 / streaming 均由 main 事件驱动（user / start），
-      // render 不再本地乐观插入或自行置位 —— 状态源在 main 的 agent
+      // 只提交：user 消息上屏 / streaming 均由事件驱动（user / start），
+      // render 不本地乐观插入也不自行置位 —— 状态源是常驻服务端
       try {
         await api.sendChatMessage(workspaceId, conversationId, content);
       } catch (err) {
@@ -218,7 +218,7 @@ export const useChatStore = defineStore("chat", {
 
       // 通知：弹一条瞬时提示，**不进**会话状态。
       //
-      // 为什么先于下面的 `ensure` 返回（而不是写在 switch 里）：① `global.notice` 不绑会话，
+      // 为什么先于下面的 `ensure` 返回（而不是写在 switch 里）：① `server-notice` 不绑会话，
       // `evt.conversationId` 是 undefined，走 `ensure` 会凭空开一个 key 为 "undefined" 的
       // 状态槽位（那个槽位谁也不会选中，只是内存里多一份垃圾）；② 通知不是状态，本来就不该
       // 落到 `ConversationChatState` 上 —— 尤其不能碰 `error`：那是「本轮失败」的红色错误条，
@@ -243,7 +243,7 @@ export const useChatStore = defineStore("chat", {
           convStore.setRunning(evt.conversationId, true);
           break;
 
-        // main 确认收到用户消息 → 上屏（id 为 agent 中真实 user 消息 id）
+        // 本轮用户消息上屏（id 由 main 编，只为给 v-for 一个稳定的 key；收尾那次 done 会换成服务端的真 id）
         case "user":
           st.messages.push({
             id: evt.id,
@@ -254,8 +254,8 @@ export const useChatStore = defineStore("chat", {
 
         case "message": {
           // 完整消息按 id 就地 upsert：有则替换、无则追加末尾。
-          // 事件到达顺序即消息顺序（chunk 实时同步 → 工具结果补推 → 下一轮），
-          // 与 done 全量数组 id 一致 → v-for key 从流式开始即稳定。
+          // 事件到达顺序即消息顺序（流式同步 → 工具结果补推 → 下一轮），
+          // v-for key 从流式开始即稳定（收尾那次 done 用服务端的全量数组换掉）。
           const idx = st.messages.findIndex((m) => m.id === evt.id);
           if (idx >= 0) {
             st.messages[idx] = evt.message;

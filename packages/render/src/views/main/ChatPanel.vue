@@ -335,7 +335,7 @@ async function handleSend() {
   scrollToBottom();
 }
 
-/** 停止生成：main 对运行中 agent 调 abort，保留已生成部分，done 事件结束流式态 */
+/** 停止生成：让服务端取消本轮，保留已生成部分，done 事件结束流式态 */
 async function handleStop() {
   await chatStore.abort();
 }

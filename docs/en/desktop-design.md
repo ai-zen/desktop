@@ -1,266 +1,143 @@
 ---
 title: Architecture Design
-description: AI-Zen Desktop's layered architecture, core entities, design decisions and data flow (an early v0.5 design outline, which differs from the current implementation)
+description: AI-Zen Desktop's layering, connection, protocol surface and state ownership
 outline: deep
 ---
 
-# Desktop Design Outline (v0.5 final)
+# Architecture Design
 
-> Status: **Architecture + key decisions + user scenarios + render layering finalized**.
-> Development strategy: **UI first** — prototype = UI = actual interaction, main is built to fulfill UI requirements.
-> Prerequisite: SDK 0.5.0 removed the session/draft product layer; Desktop builds its own product layer.
+## 1. Positioning: desktop shell + a resident server
 
-> ⚠️ **Note**: This document is an **early version (v0.5) design outline**, reflecting the architecture ideas at that time, **which differs from the current implementation**.
-> The current implementation (source code is the source of truth) has evolved into: storage changed to SQLite (`node:sqlite` + worker_threads, see `packages/main/src/storage/`),
-> the main process uses an object-oriented single root `DesktopApp` for assembly (see `packages/main/src/app.ts`, handwritten DI / constructor injection),
-> render uses markdown-it + highlight.js, IPC goes through `invokeService` dynamic dispatch (see `ServicesManager`) and `chat:push` event callbacks.
-> The core concepts in this document (Workspace / Conversation / agent run registry / `chat:push`) still match the current implementation.
+Desktop is the **desktop shell** of AI-Zen: windows, native dialogs and IPC belong to it; conversation execution (the Agent loop, model requests, tools, archiving) belongs entirely to the **resident `agents-server`**. Desktop is therefore a thin client — it runs no Agent and keeps no local database. It holds one connection to the server, translates every action into a protocol call, and translates events pushed by the server into the shapes render understands.
 
----
+The payoff is concrete: a crashed client loses no conversation (the server still has it), a restarted server lets the client grow back by itself (section 4), and "what state is this conversation in" always has exactly one answer — the server's.
 
-## 1. Positioning
-
-- Desktop is an Electron desktop application that consumes `@ai-zen/agents-sdk` (engine) and `@ai-zen/agents-core` (message model).
-- The SDK only handles "driving + capabilities" (Provider / Agent / tools / plugins); Workspace and Conversation are **product data** that Desktop maintains itself.
-- Target form: multiple workspaces (each pointing to a local directory), multiple concurrent conversations, streaming conversation interface.
-
----
-
-## 2. Layered Skeleton
+## 2. Three packages
 
 ```
-render    Vue + Pinia view layer (transport / stores / views / components)
-shared    type contract layer (pure types)       — entities + IPC event DTOs
-main      main process host layer (object-oriented: classes + constructor injection)
-  ├─ services/   application service classes (ProviderPool / Workspace / Conversation / Chat)
-  ├─ storage/    storage classes (Workspace repository / Conversation repository)
-  ├─ events/     event dispatch (interface + Electron implementation)
-  ├─ provider/   engine interaction wrapper classes (ProviderFactory / AgentFactory)
-  ├─ ipc/        IPC registration classes
-  ├─ window/     window management classes
-  ├─ container.ts  manual DI assembly (new everything, in dependency order)
-  └─ main.ts        entry boot
+packages/
+├── main/     Electron main process (rolldown, ESM)
+├── render/   Vue 3 renderer (Vite; only calls services and subscribes to events)
+└── shared/   type contract (pure types, zero runtime)
 ```
 
-Dependency direction: render → shared; main → shared + SDK; each layer uses constructor injection / converged dependencies, no global singletons, no scattered calls.
+Dependency direction: `render → shared`, `main → shared + @ai-zen/agents-client`. render imports nothing from main; the only thing both sides share is the entities and IPC DTOs in `packages/shared/src/types.ts`.
 
----
-
-## 3. Core Entities (Conceptual)
-
-- **Workspace**: `{ id, name, cwd }` — the only persisted entity, stored in `workspaces.json`.
-- **Conversation**: `{ id, workspaceId, agentId, modelId, name, messages, timestamps }` — multiple conversations per workspace, one file per conversation.
-  - `modelId` is a **conversation-level local parameter**, overriding the Agent definition (priority: conversation > Agent definition > global default).
-- **Message model**: directly reuses Core's `AgentNS.Message`, no new model, no adapter; use inheritance if extension is truly needed.
-- **Event DTO**: `chat:push { conversationId, type: start|delta|done|error, ... }` — single-channel publish/subscribe.
-
----
-
-## 4. Design Decisions (Finalized)
-
-### A. Architecture Decisions
-
-| # | Decision | Rationale |
-|---|----------|------------|
-| A1 | Workspace is the only persisted entity; **Provider is not persisted**, maps 1:1 at runtime, **lazy-loaded** | Avoid dual writes; create on demand |
-| A2 | One Provider per workspace (injecting `cwd`), **multiple concurrent conversations** don't interfere | Tools use Provider.cwd as the base |
-| A3 | Conversation repository reuses the SDK `EntityRepository`, directory `conversations/{wsId}/{id}.json` | Reuse mature CRUD; directory isolation is naturally safe |
-| A4 | Delete `conversations-index.json`; the list is derived by repository scanning | Single source of truth, no dual writes |
-| A5 | **preload is only a communication channel (transport)**: `invoke/on/off` + the window four-piece set, zero business definitions, replaceable (future ws/http also possible) | Changing transport doesn't affect the contract; piling definitions into preload is anti-pattern |
-| A6 | Business push goes through **EventDispatcher (pub/sub)**: ChatService only emits, render subscribes on demand | Decouple window objects; multiple consumers subscribe directly |
-| A7 | Message model **directly reuses Core `AgentNS.Message`**, unified across three layers with zero conversion | Avoid dual-model splitting |
-| A8 | Restore history as `agent.messages = history`; after `agent.send()` do a **full snapshot** write, even on error | Single source of truth; don't manually construct user messages |
-
-### B. Product Decisions
-
-| # | Decision | Description |
-|---|----------|-------------|
-| B1 | Provider lazy loading | Create on use, optional warmUp |
-| B2 | main depends on SDK via **online 0.5.0** | Consistent with CLI; temporary link during development |
-| B3 | **UI first**: fully develop the UI from the user's perspective as an interactive prototype, main built to fulfill UI requirements | Prototype = UI = actual interaction |
-| B4 | No pre-embedded extension fields on messages | YAGNI, add when needed |
-| B5 | Creating a conversation: button + dropdown to select Agent; switch model within a conversation (conversation-level local parameter override) | `agent.model = createModel(provider, conv.modelId)`, model is a Core writable field, **no SDK change needed** |
-| B6 | Single event channel `chat:push` + discriminated union | render converges into one subscription function |
-
-### C. Engineering Principles (OO but not over-abstracted)
-
-| # | Principle | Description |
-|---|-----------|-------------|
-| C1 | **Everything is a class + constructor injection**, no global singletons | Explicit dependency relationships; AI reads the constructor to know the boundaries |
-| C2 | **No pre-embedded abstractions**: only extract interfaces when "there are genuinely multiple implementations / runtime replacement is needed / crossing external boundaries" | Reject Java-style interface/impl duplication bloat |
-| C3 | **Current abstractions**: main-side `IEventDispatcher`; render-side `Transport` (both because of multiple implementations: electron ↔ mock/ws) | Genuine multi-implementation boundaries |
-| C4 | Composition over inheritance, single responsibility; SDK interactions converge into factory classes (ProviderFactory / AgentFactory) | Avoid scattered SDK calls |
-| C5 | `container.ts` manual DI assembly; render's `mock-transport` can be swapped entirely | No framework; swap implementation to test / integrate |
-
-### D. Scenario Decisions
-
-| # | Decision | Description |
-|---|----------|-------------|
-| D1 | **MVP scope** = 11 P0 scenarios (see Section 5) | Core path: start → create workspace → create conversation → chat → switch |
-| D2 | First launch shows the **guide page** (when no workspace) | `GuideView`, switch to main interface after creation |
-| D3 | **Remember last active state** (workspace + conversation), auto-restore on startup | Separate UI state file, not in the workspace entity |
-| D4 | Agent list = `~/.ai-zen/agents` (reuse SDK `AgentRepository`) | Single source; sub-agent multi-source handled by SDK |
-| D5 | Model list = global `config.models` (reuse SDK `ConfigManager`) | Shares configuration with CLI |
-| D6 | Streaming **full data**, UI compromise: body first, **reasoning/tool calls collapsed & expandable** | Get the full data, render on demand |
-| D7 | Provide **retry** after error (send the same content again) | High-frequency scenario, good UX |
-| D8 | Multiple concurrent conversations: **focus current + sidebar running indicator** | Refresh the backing conversation list when a background conversation completes |
-
----
-
-## 5. User Scenario List
-
-### P0 (MVP core path)
-
-| # | Scenario | Action → UI behavior |
-|---|----------|----------------------|
-| 1 | First-launch guide | No workspace → `GuideView` "create the first workspace" |
-| 2 | Startup restore | Load the list, restore the last active workspace/conversation |
-| 3 | Create workspace | Fill name + choose directory → appears in sidebar and activates |
-| 6 | Create conversation | Button + right dropdown to select Agent (default preselected) → enter the conversation |
-| 7 | Conversation list | Name/message count/time, sorted by update time descending; running indicator |
-| 8 | Switch conversation | Load history messages |
-| 11 | Send message | User message appears on screen → AI streams a reply |
-| 12 | Streaming render | Reasoning/body/tool calls incrementally displayed (reasoning and tool calls collapsible) |
-| 13 | Sending state | Input still typeable; indicator shown while replying |
-| 15 | Error feedback | Clear prompt + retry button; conversation keeps its progress |
-| 18 | Window controls | Frameless custom title bar (already present) |
-
-### P1 (Enhancements)
-
-| # | Scenario | Action → UI behavior |
-|---|----------|----------------------|
-| 4 | Rename workspace | Hover/right-click → rename |
-| 5 | Delete workspace | Delete after confirmation, cascading to its conversations |
-| 9 | Delete conversation | Delete after confirmation |
-| 14 | Switch model within a conversation | Select model at the conversation header → applies to subsequent messages |
-| 17 | Multiple concurrent workspaces | Each with its own Provider, no interference; sidebar running indicator |
-| 20 | **Settings page** | `SettingsView`: API Key / default model / Agent list / data directory |
-
-### P2 (Postponed)
-
-| # | Scenario |
-|---|----------|
-| 10 | Rename conversation |
-| 16 | Clear conversation |
-| 19 | Theme (light/dark follow system) |
-
----
-
-## 6. render Layering
+## 3. main's layering
 
 ```
-render/src/
-  transport/          # communication layer —— the only abstraction (mock ↔ electron, two implementations)
-    transport.ts      #   Transport interface: invoke(service,method,...args) / on / off
-    electron-transport.ts   # Electron implementation (wraps window.electronAPI)
-    mock-transport.ts       # Mock implementation (UI first: in-memory data + simulated streaming push)
-    api.ts                  # Typed API: invoke converged into methods (contract derived from UI usage)
-
-  stores/             # state layer —— the only data entry point
-    workspace.store.ts
-    conversation.store.ts
-    chat.store.ts
-    ui.store.ts         #   page switching (currentView) + guide state
-
-  views/              # page layer —— one directory per page, entry fixed as index.vue, other components PascalCase
-    guide/
-      index.vue         # guide page
-    main/
-      index.vue         # main interface: combines Sidebar + ChatPanel
-      Sidebar.vue
-      ChatPanel.vue
-      MessageBubble.vue
-      NewChatDialog.vue
-      ModelSelect.vue
-    settings/
-      index.vue         # settings page
-      ApiKeyForm.vue
-
-  components/         # cross-page shared components (promote only when a second usage appears, YAGNI)
-    TitleBar.vue
-
-  App.vue             # root: switches pages by uiStore.currentView (v-if, no router)
-  main.ts
-  styles/
+packages/main/src/
+├── main.ts     entry: new DesktopApp().start()
+├── app.ts      DesktopApp: window / IPC / native dialogs / events pushed to render
+├── config.ts   the only path constant: AI_ZEN_DIR
+├── preload.ts  contextBridge exposing window.electronAPI
+└── server/     the server facade (directly verifiable by vitest + a real daemon)
+    ├── index.ts            assembly root: createServerLayer
+    ├── call.ts             one protocol call (fetches a live connection each time, caches no client)
+    ├── services.ts         six Services: render's shapes ↔ protocol calls
+    ├── ServicesManager.ts  invokeService dynamic dispatch
+    ├── events.ts           server events → ChatStreamEvent
+    └── notices.ts          notice code → Chinese text
 ```
 
-### render Layering Principles
+Two hard boundaries:
 
-| Principle | Implementation |
-|-----------|----------------|
-| Components/pages don't touch transport | Only call store actions / read store state |
-| store is the only data entry | store internally calls api (typed methods) |
-| transport converges invoke/on/off | No scattered `invoke("workspace","list")` strings |
-| **mock lives in the transport layer** | UI first uses mock-transport; switch to electron-transport when the real main is ready, zero UI changes |
-| Page-specific components stay in the page dir | Promote to `components/` only for cross-page sharing |
-| Component naming | Page entry `index.vue`, others **PascalCase** |
-| Page switching | `uiStore.currentView` + v-if (few pages, no router) |
+- **`server/` never touches electron.** `createServerLayer` takes only four non-electron facts (config root, handshake identity, default working directory, event sink), so a test can start it directly; `app.getPath` / `dialog` / `webContents.send` appear only in `packages/main/src/app.ts`, passed in as arguments or callbacks.
+- **`server/` never touches disk.** Conversation lists, messages, workspaces and config all come from the server over the protocol.
 
----
+## 4. One connection (`ServerConnection`)
 
-## 7. main Layering (object-oriented, not over-abstracted)
+"Which server, and what if the connection dies" lives in exactly one implementation: `agents/packages/client/src/transport/connection.ts` in `@ai-zen/agents-client`. `packages/main/src/server/index.ts` assembles it once:
+
+- **Which server** is answered by the discovery file (`<AI_ZEN_DIR>/run/server.json`). A restarted server switches ports and rewrites the file; this layer caches no port and remembers no pid.
+- **What if it dies**: `client()` checks `closed` on every use and rebuilds in place when shut; `watch()` makes that connection start receiving events; `onOpen()` tells the layer above to re-attach its listeners when the connection was replaced.
+
+All three matter, and the last one is the easiest to miss: listeners are attached to one **specific** `ServerClient`, and the client clears its listener table the moment the socket drops. Without re-attaching, the new connection can send requests but receives no events at all — the UI just sits there silently (no error, no reconnect, no notice).
+
+`packages/main/src/server/call.ts` is the only seam between this layer and the connection: `protocolCall(connection)` awaits `connection.client()` and then `call(method, params)` on every invocation. It holds no state, so there is no second place that could stash a stale client.
+
+## 5. Protocol surface
+
+render has exactly one entry point: `electronAPI.invokeService(service, method, ...args)`, which `ServicesManager` looks up and dispatches to one of six Services.
+
+| Dispatch key | Implementation | Main actions |
+|--------------|----------------|--------------|
+| `workspace` | `ServerWorkspaceService` | `workspace.list` / `create` (= `workspace.resolve`, plus one `workspace.rename` when a name was given) / `rename` / `remove` |
+| `conversation` | `ServerConversationService` | `session.list` / `create` / `attach` + `snapshot` / `rename` / `remove` / `model.set` |
+| `agent` | `ServerAgentService` | `agent.list` (entry Agents only) |
+| `model` | `ServerModelService` | `models` out of `config.get` |
+| `chat` | `ServerChatService` | `session.send` / `cancel` / `close` / `attach` + `snapshot` |
+| `config` | `ServerConfigService` | `config.get` / narrow setters for defaults / `config.save` |
+
+On the event side the protocol has three tables (`agents/packages/protocol/src/sessions.ts`): `AGENT_EVENTS` with 9 entries (the original names of core's `Agent.events`), `SESSION_EVENTS` with 7 (things the server derives or decides), `SERVER_EVENTS` with 1 (a server notice bound to no conversation). Event names are always kebab-case — `session-turn-end`, `session-title-changed`, `server-notice`.
+
+Method and event names are referenced from constant tables in `@ai-zen/agents-client`, never written as literals: a protocol change then fails to compile here instead of returning a 500 at runtime.
+
+## 6. Event translation (`packages/main/src/server/events.ts`)
+
+`ChatEventBridge` subscribes to 12 of them and translates into the 9 `ChatStreamEvent` kinds render knows: `start` / `user` / `message` / `done` / `migrated` / `error` / `renamed` / `notice` / `agents`.
+
+"what has to be remembered within a turn" is *not* here — which message deltas accumulate onto, how sub-agent deltas merge with server snapshots, whether a failure is terminal — that belongs to `SessionStream` in `@ai-zen/agents-client` (a pure state machine, zero I/O). Desktop has one connection carrying many concurrent conversations, so this layer keeps **one state machine per conversation** (`Map<conversationId, SessionStream>`); background conversations keep receiving events.
+
+The translation layer does four things:
+
+1. **The body of `user`.** The protocol does not push user messages (`chunk-parsed` carries model deltas only), so the body is registered on the `chat.send` side (`noteSend`) and consumed when `start` is dispatched. The placeholder id is `${conversation}:user:${turnId}` — it exists to give render a stable `v-for` key.
+2. **The id of the placeholder assistant message.** The streaming temporary message inside the state machine deliberately carries no id (the settling snapshot supplies the real one; inventing a fake id would collide with it), so the key is minted here: one per turn (`${conversation}:assistant:${turnId}`). Text and tool calls land on the same message, whichever arrives first.
+3. **Settling and migration follow the server snapshot.** `session-turn-end` carries only `ok` / `error`, so the layer fetches `session.snapshot` once, hands it to `stream.settle()`, and pushes the merged result as `done` (message status and the server's cleanup of history exist only in the snapshot). `session-id-changed` must **collapse aliases** (new id → the key render knows) and push `migrated`, otherwise a running conversation waits forever on the old id for a completion that will never come.
+4. **`session-question` is auto-answered with "skip".** Desktop has no question UI, and not answering means the server waits out its timeout (`ASK_TIMEOUT_MS`, 5 minutes) while the user sees a UI that looks frozen. `choice: null` is the same value as the server's own fallback for this path, so this does not decide anything for the user — it just expresses the timeout early.
+
+## 7. render's layering
 
 ```
-main/src/
-  services/    ProviderPool / WorkspaceService / ConversationService / ChatService
-  storage/     WorkspaceRepository / ConversationRepository (reuse EntityRepository)
-  events/      IEventDispatcher + ElectronEventDispatcher (the only abstraction)
-  provider/    ProviderFactory / AgentFactory (converge SDK interactions)
-  ipc/         IpcRegistrar
-  window/      WindowManager
-  container.ts manual DI assembly
-  main.ts      boot
+packages/render/src/
+├── main.ts        Vue entry (Pinia / ElementPlus)
+├── App.vue        root: TitleBar + Guide/Main/Settings switching; subscribes to chat:push
+├── views/         guide/index.vue, main/{index,Sidebar,ChatPanel,MessageBubble,NewChatDialog}.vue, settings/index.vue
+├── components/    TitleBar.vue, MarkdownContent.vue
+├── composables/   useMessageWindow (paged window), useAutoScroll (scroll policy)
+├── stores/        ui / workspace / conversation / chat / agentView
+└── apis/          base + workspace / conversation / chat / agent / model / config
 ```
 
-One-sentence module responsibilities:
-- **ProviderPool**: workspaceId → Provider 1:1 mapping + lazy-load lifecycle.
-- **WorkspaceService**: workspace CRUD, composes ProviderPool.
-- **ConversationService**: conversation CRUD + message snapshot save (only touches storage, not the Agent).
-- **ChatService**: send → get Provider → AgentFactory builds Agent → send → stream push → persist.
-- **WorkspaceRepository**: read/write workspaces.json.
-- **ConversationRepository**: reuses EntityRepository, directory `conversations/{wsId}`.
-- **EventDispatcher**: `emit(channel, payload)` (interface + Electron implementation).
-- **ProviderFactory**: wraps `Provider.create(cwd)`.
-- **AgentFactory**: wraps `createAgent + restore history + override model`.
-- **IpcRegistrar**: registers invoke routes + window controls.
-- **WindowManager**: window creation/management.
-- **container**: assembles the dependency graph; **main.ts**: boot.
+- **apis only forwards**: `invokeService` is converged into methods and errors are normalized into `InvokeServerError`; `subscribeServiceEvent("chat:push", …)` is the single event entry point.
+- **stores are the only data entry**: views never call `invokeService` with a string. `chat` slots state by `byConversation[id]`, so switching conversations only switches the viewpoint and each conversation's streaming state stays independent.
+- **The sub-agent strip runs parallel to the main conversation**: `agents` is a wholesale replacement of `SubAgentView[]` (the server pushes the whole list on every change) and render does no diffing; selection repair and Tab cycling live in `packages/render/src/stores/agentView.ts` as pure, testable functions.
+- **Notices are toasts, not state**: `type: "notice"` pops an element-plus message and never enters `ConversationChatState` — especially not `error`, which is the "this turn failed" banner that `done` clears.
 
----
+## 8. Where data lives
 
-## 8. Core Data Flow (Conceptual)
+Everything on disk belongs to the server (its `AI_ZEN_DIR`):
 
-Sending a message:
-1. render `chatStore.send` → api → main `ChatService`
-2. Read the conversation → ProviderPool gets the workspace's Provider → AgentFactory builds the Agent (restore history → override model)
-3. `agent.send()`, chunk events → EventDispatcher → `chat:push` push → render `chatStore.applyEvent` → incremental render
-4. On send end → full message snapshot to disk → push `done`
+```
+<AI_ZEN_DIR>/
+├── config.json                  global config (endpoints / models / default model & Agent)
+├── agents/                      entry Agent definitions
+├── sub-agents/                  sub-agent definitions
+├── workspaces/<workspaceId>/    workspace.json + sessions/<id>.json (with .meta.json listing)
+└── run/server.json              service discovery: which port the resident server is on
+```
 
----
+Desktop reads exactly one thing here: `<AI_ZEN_DIR>/run/server.json`. Session lifetime is reclaimed by the server on an idle grace period (`DEFAULT_SESSION_IDLE_TIMEOUT_MS`); `session.close` releases a session immediately because the user stopped looking at it. Neither deletes the archive.
 
-## 9. Boundary with the SDK
+## 9. Model resolution has exactly one implementation
 
-| SDK / Core provides | Desktop builds itself |
-|---------------------|-----------------------|
-| Provider (cwd / capability pipeline) | ProviderPool (1:1 lazy-load management) |
-| createAgent / SdkAgent / tools / plugins | AgentFactory (restore history + override model), conversation storage, stream push adaptation, UI |
-| `AgentNS.Message` (message model) | reuse directly (no new model) |
-| `AgentRepository` / `ConfigManager` | Agent/model lists reused directly (D4/D5) |
+The three-level resolution ("conversation override > Agent definition > global default") lives on the server (SDK's `resolveModel`). Desktop neither caches nor recomputes it; it reads two fields:
 
----
+- `SessionListEntry.modelId` — whether this conversation **has** its own override;
+- `SessionListEntry.effectiveModelId` — which model it is **actually using** (omitted when it cannot be resolved).
 
-## 10. Implementation Order (UI first)
+The sidebar's model dropdown reads the latter; recomputing "override + definition + default" on the client would be a second copy of the precedence rule, and the two copies eventually diverge at some edge.
 
-1. **Build the UI skeleton**: transport (mock) + stores + App page switching + GuideView guide page (scenario 1)
-2. **Main interface**: MainView (Sidebar tree + conversation list + create conversation → ChatPanel streaming chat, scenarios 2/3/6/7/8/11/12/13/15)
-3. **Extract service contracts from the UI**: api.ts method signatures + event channels + shared types
-4. **main implementation** (services → storage → events → provider → ipc → container), switch to electron-transport for integration
-5. **Enhancements**: P1 (rename/delete/switch model/concurrent/settings page)
-6. **Integration verification**: multiple concurrent workspaces, model override, streaming render, retry
+## 10. Test shape
 
----
+The `server/` layer is verified directly by vitest: `packages/main/src/server/test-harness.ts` starts a **real daemon** (real port, real frames, real `SessionManager`) plus a **fake Agent** (the test decides when which delta is pushed). What is under test is the protocol mapping itself, so the Agent's streaming loop should be fake while the socket and discovery file must be real. Tests assert on the `ChatStreamEvent` sequence the facade pushes — that channel is the only acceptance surface the translation layer has.
 
-## 11. Decided / Postponed Items
+## 11. Trade-offs
 
-- **Decided**: A1–A8, B1–B6, C1–C5, D1–D8; P0/P1/P2 scenarios; render layering (views organization, PascalCase naming, v-if page switching); main layering.
-- **Postponed**: window form (single main window + custom title bar as-is), rendering technical details (stream diff, markdown rendering), full IPC method list (derived after UI finalization), whether storage needs an interface (extract when a second implementation appears).
+| Trade-off | Rationale |
+|-----------|-----------|
+| Splitting the connection from "how to send a request" (`ServerConnection` / `packages/main/src/server/call.ts`) | A client cached in an object dies permanently when the server restarts, and the only symptom is "nothing happens" |
+| The state machine lives in the package, not in main | The "how to assemble a turn" rules can exist only once across this repo and the CLI; two copies diverge at edge cases |
+| Wholesale event replacement (`message` / `agents`) | Consumers need no merge logic; incremental events spread that complexity across every consumer |
+| Unknown notice codes still get text | Version skew is normal; silently dropping them shows the user "nothing happened" |
+| The dictionary lives in main, not render | Text and "which event becomes which code" are the same concern, and all event translation already sits in main |

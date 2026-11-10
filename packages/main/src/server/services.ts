@@ -4,9 +4,9 @@
  *
  * ## 三条纪律
  *
- * 1. **对外方法签名与旧的 `services/*.ts` 一字不差**（含参数顺序与返回类型），
+ * 1. **对外方法签名跟着 render 的调用面走**（含参数顺序与返回类型），
  *    `ServicesManager` 的分发键（`workspace` / `conversation` / `agent` / `model` /
- *    `chat` / `config`）也不变 —— render 一行不改是这一阶段的目标，签名一漂就等于改了它。
+ *    `chat` / `config`）也一样 —— 这两处就是 render 的调用面，签名一漂就等于改了 render。
  * 2. **不自己算规则**：模型走服务端三级解析（`会话级 > Agent 定义 > 全局`）、会话清单的
  *    排序与 `live/phase` 由服务端给、删工作区连会话一起删也在服务端。客户端再算一遍
  *    就是第二份会漂的实现。
@@ -19,7 +19,8 @@
  * 那两个门面已经是**全量**的了（协议方法表全覆盖，见包里的 `facade/coverage.test-d.ts`），
  * 但它们绑的是**构造那一刻**的那一条 `ServerClient`。在本层留一个长期存活的
  * `new RemoteSessions(client)` 字段，等于把「哪条连接」缓存进对象里 —— 连接一换
- * （daemon 重启、socket 断了重建）它就再也发不出请求，而那正是本仓刚修掉的那个 bug 的形状。
+ * （daemon 重启、socket 断了重建）它就再也发不出请求 —— 所有调用一律 `client is closed`，
+ * 而界面上看起来只是「没反应」。
  *
  * 所以这里要的是「每个动作都问一次活着的连接」：它落在 `call` 上（见 `./call.ts`）。方法名
  * 与结果类型仍来自 `@ai-zen/agents-client` 转出的协议包 —— 改协议时这里编译不过，而不是
@@ -72,11 +73,10 @@ import type { ChatEventBridge } from "./events.js";
  * 但那个「什么」必须是一个**常量**：同一段没名字的会话，在侧栏、在标题栏、刷新前后都必须
  * 是同一个名字。
  *
- * 这里曾经按 `updatedAt` 拼成 `对话_HH:mm`，注释还写着「每次列出来的名字都相同」——
- * 两句话互相矛盾：`updatedAt` 是「最后一次活动」的时间，每发一轮、每改一次名都会刷新，
- * 于是同一段会话的名字会跟着改（改个名，显示的名字反而从「我的问题」变回「对话_09:41」）。
- * 一个会跟着事实变化的名字是**第二个状态**，而它要表达的那个事实（还没有名字）本来只需要
- * 一个词。所以给一个常量，并且不再为它编时间戳。
+ * 按 `updatedAt` 拼成 `对话_HH:mm` 是不行的：`updatedAt` 是「最后一次活动」的时间，每发
+ * 一轮、每改一次名都会刷新，于是同一段会话的名字会跟着改（改个名，显示的名字反而从「我的
+ * 问题」变回「对话_09:41」）。一个会跟着事实变化的名字是**第二个状态**，而它要表达的那个
+ * 事实（还没有名字）本来只需要一个词。所以给一个常量，且不为它编时间戳。
  */
 const UNNAMED_CONVERSATION = "未命名对话";
 
@@ -99,7 +99,7 @@ export class ServerWorkspaceService {
     const result = await this.options.call<WorkspaceListResult>(WORKSPACE_METHODS.list);
     return result.workspaces.map((summary) => ({
       id: summary.workspaceId,
-      // `title` 缺省 = 还没起过名：用目录名兜底（与旧实现「名称选填，默认取文件夹名」一致）
+      // `title` 缺省 = 还没起过名：用目录名兜底（名称本来就是选填）
       name: summary.title ?? basename(summary.path),
       cwd: summary.path,
     }));
@@ -146,7 +146,7 @@ export class ServerWorkspaceService {
 
   /**
    * 删工作区 —— 服务端把整个 `workspaces/<id>/` 删掉（含 `sessions/` 与续接指针），并
-   * 关掉该工作区下还活着的会话。旧实现在这里挂的 `releaseWorkspace` 钩子因此不需要了。
+   * 关掉该工作区下还活着的会话。客户端因此不需要任何释放钩子。
    */
   async remove(id: string): Promise<void> {
     await this.options.call<WorkspaceRemoveResult>(WORKSPACE_METHODS.remove, {
@@ -205,7 +205,7 @@ export class ServerConversationService {
    *
    * 模型**不由客户端指定**：服务端按「会话级覆盖 > Agent 定义 > 全局默认」三级解析，
    * 解析结果只在快照里出现，所以建完必须再要一次 `session.snapshot` —— 顺便把初始消息
-   * （Agent 定义的预设 system/few-shot）也一起拿到，旧实现正是把这份预设写进库里。
+   * （Agent 定义的预设 system/few-shot）也一起拿到（预设由服务端写进会话，客户端不落盘）。
    */
   async create(workspaceId: string, agentId: string): Promise<Conversation> {
     const created = await this.options.call<SessionCreateResult>(
@@ -241,16 +241,12 @@ export class ServerConversationService {
    * 名字与时间**不在快照里**（`SessionSnapshotResult` 只给消息、模型、阶段），所以在快照
    * 之外再要一次 `session.list`，从那一行取 `title` 与 `updatedAt`。
    *
-   * 这里曾经有一个「顺序不能反过来」的约束：那时服务端把「装回内存的此刻」当成这段会话的
-   * `updatedAt`，所以必须先 `list` 后 `attach`，否则读回来的是「我刚读它的时间」。
-   * `agents@e93158b` 把那个缺陷堵了（续接沿用存档里的时间，`attach` 不再算一次活动），
-   * 这个约束因此**不存在了** —— 现在两步的先后只影响多一次还是少一次往返，不影响结果。
-   * 顺序仍保留 list 在前：少一次「先拿一个错值再改正」的窗口。read 是低频调用（render
+   * 顺序上 list 在前：少一次「先拿一个错值再改正」的窗口。read 是低频调用（render
    * 目前甚至没人调它），多这一次往返不做缓存 —— 缓存等于客户端存一份服务端的真相，
    * 迟早与它不一致。
    *
-   * 找不到时回 `null`：旧签名声明了这条返回值，服务端用 `session-missing` 这个码表达
-   * 同一件事 —— 在这里翻回 `null`，调用方不必认识服务端的错误码。
+   * 找不到时回 `null`：服务端用 `session-missing` 这个码表达同一件事 —— 在这里翻回
+   * `null`，调用方不必认识服务端的错误码。
    */
   async read(workspaceId: string, id: string): Promise<Conversation | null> {
     // 先读清单（理由见上）。复用 `list` 而不是自己再拼一遍："read 的名字/时间与侧栏那一条
@@ -321,8 +317,8 @@ export class ServerAgentService {
   /**
    * 入口 Agent 列表。
    *
-   * 服务端已经把两类定义分好（`{agents, subAgents}`），旧实现那句「过滤掉 SubAgent」
-   * （按 `definition.function` 判断）因此删掉 —— 判定只该在分目录的地方做一次。
+   * 服务端已经把两类定义分好（`{agents, subAgents}`）：客户端不再自己按字段过滤 SubAgent
+   * —— 判定只该在分目录的地方做一次。
    */
   async list(): Promise<AgentOption[]> {
     const result = await this.options.call<AgentListResult>(AGENT_METHODS.list);
@@ -392,10 +388,10 @@ export class ServerConfigService {
    * 终端与桌面端同时开着时，整份写回会把对方刚改的字段一起抹掉。
    *
    * 端点的 `apiKey / baseUrl / name` 没有窄方法（协议只有 `config.mcp.save` 那一族，
-   * 没有 `config.endpoint.set`），只能整份 `config.save` —— 这是这一阶段唯一还剩的
-   * 丢更新窗口，代价写在改造报告里。
+   * 没有 `config.endpoint.set`），只能整份 `config.save` —— 这是本层唯一还剩的丢更新窗口
+   * （两条连接同时改不同端点时，后写的那份覆盖先写的那份）。
    *
-   * 空串**不写**：旧实现里空串的含义是"这个字段没值"，而服务端的窄方法只接受非空 id
+   * 空串**不写**：空串的含义是"这个字段没值"，而服务端的窄方法只接受非空 id
    * （空串是 `bad-params`）。也没有"清空默认值"的协议方法，所以没有等价的写入。
    */
   async update(input: Partial<ConfigSettings>): Promise<void> {
@@ -443,15 +439,14 @@ export class ServerChatService {
    * 就没东西可渲染了）。`turnId` 交给事件层做归轮，本方法照旧返回 `void`（render 的
    * `sendChatMessage` 就是这个签名）。
    *
-   * 两条失败出口与旧实现对齐：
-   *   - `turn-busy`（上一轮还没收尾）→ **静默忽略**。旧实现在运行注册表里看到该会话
-   *     `isHasPendingMessage` 就直接 return，render 侧看不到任何东西；这里保持同一行为，
+   * 两条失败出口：
+   *   - `turn-busy`（上一轮还没收尾）→ **静默忽略**：render 侧看不到任何东西，
    *     不然"多点了一下发送"会弹一条看不懂的英文错误。
-   *   - 其余错误（会话不在、连接断了）→ 推 `error` 事件。旧实现也是把"取 agent 阶段"的
-   *     错误推成事件而不是让 IPC 抛错，render 的 `send()` 因此永远正常返回。
+   *   - 其余错误（会话不在、连接断了）→ 推 `error` 事件（不让 IPC 抛错，
+   *     render 的 `send()` 因此永远正常返回）。
    *
    * 前提：会话已经 attach 过（`conversation.create` 与 `chat.getState` 都做了）。服务端的
-   * `session.send` 只认内存里的活会话 —— 盘上的存档要先 `attach`（协议缺口①）。
+   * `session.send` 只认内存里的活会话 —— 盘上的存档要先 `attach` 装回内存。
    *
    * `workspaceId` 只是为了与 render 的签名一致留着：`session.send` 只认会话 id（会话已
    * 知道自己属于哪个工作区），这里不再拿它去查任何东西。
@@ -472,7 +467,7 @@ export class ServerChatService {
     }
   }
 
-  /** 中止本轮：服务端掐掉正在流的那一段，随后照常走 `session.turnEnd` 收尾（保留已生成内容） */
+  /** 中止本轮：服务端掐掉正在流的那一段，随后照常走 `session-turn-end` 收尾（保留已生成内容） */
   async abort(conversationId: string): Promise<void> {
     await this.options.call(SESSION_METHODS.cancel, { sessionId: conversationId });
   }
@@ -481,7 +476,7 @@ export class ServerChatService {
    * 会话实时状态（render 每次点开会话都调它）。
    *
    * 先 `attach` 再 `snapshot`：`snapshot` 只对**活**会话可用，而侧栏里点开的常常是盘上的
-   * 历史（协议缺口①）。`attach` 对活会话是空操作，对存档是"装回内存"，两条路收敛成一条，
+   * 历史。`attach` 对活会话是空操作，对存档是"装回内存"，两条路收敛成一条，
    * 不用 try/catch 猜是哪一种。
    */
   async getState(workspaceId: string, conversationId: string): Promise<ConversationState> {
@@ -509,8 +504,7 @@ export class ServerChatService {
    * 释放一段会话（服务端摘事件、让出 Agent 与 Scope 引用，**不删存档**）。
    *
    * 删除路径不需要它了：`session.remove` / `workspace.remove` 在服务端已经会关掉活会话。
-   * 服务端的 `close` 不掐正在跑的那一轮（那一轮会自己跑完、存档照写），与旧实现「先
-   * abort 再放手」略有差别 —— 差别只在"关一个正在跑的会话"这一种情况，而 render 没有
+   * 服务端的 `close` 不掐正在跑的那一轮（那一轮会自己跑完、存档照写）—— 而 render 没有
    * 这条路径（它只删会话，走 remove）。
    */
   async release(conversationId: string): Promise<void> {

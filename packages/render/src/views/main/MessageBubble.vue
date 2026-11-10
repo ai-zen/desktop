@@ -1,6 +1,5 @@
 <template>
   <div class="message" :class="[roleClass, { 'is-deprecated': message.omit }]">
-    <!-- 头像 -->
     <div class="avatar">
       <el-icon v-if="isUser" :size="18" color="var(--el-color-success)">
         <User />
@@ -14,10 +13,8 @@
       <!-- 已作废标记（任务迁移后旧消息：UI 可见，但不进后续 agent 请求） -->
       <span v-if="message.omit" class="deprecated-tag">已作废</span>
 
-      <!-- 系统消息：居中灰条 -->
       <div v-if="isSystem" class="system-text">{{ textContent }}</div>
 
-      <!-- 普通消息 -->
       <template v-else>
         <!-- 思考过程（折叠） -->
         <div v-if="message.reasoning_content" class="fold-section">
@@ -55,7 +52,6 @@
 
         <!-- 正文（工具消息结果已折叠展示，不重复渲染） -->
         <template v-if="!isTool">
-          <!-- AI 消息：markdown-it 同步一次成型，无占位符/无视口懒加载/无动态高度 -->
           <MarkdownContent
             v-if="isAssistant"
             :content="textContent"
@@ -64,7 +60,6 @@
           <div v-else class="content" v-html="textContentHtml"></div>
         </template>
 
-        <!-- 错误状态 + 重试 -->
         <div v-if="isError" class="error-bar">
           <el-icon :size="14"><WarningFilled /></el-icon>
           <span class="error-text">{{ errorText }}</span>

@@ -1,5 +1,5 @@
 /**
- * config api — 设置页（对应 main ConfigService）。
+ * config api — 设置页（对应 main ServerConfigService）。
  */
 
 import type { ConfigSettings } from "@ai-zen/desktop-shared";

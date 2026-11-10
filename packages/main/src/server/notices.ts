@@ -6,7 +6,7 @@
  * 服务端的通知只带机器码（`SESSION_NOTICE_CODES` / `SERVER_NOTICE_CODES`，见
  * `@ai-zen/agents-protocol` 的 `sessions.ts`），一句自然语言都不产 —— 一个服务端
  * 同时接中文终端与英文浏览器时，它只能挑一种语言撒谎。于是「这句 code 该怎么说」落在各
- * 客户端自己的词典里：CLI 那份在 `cli/src/tui/notice-text.ts`，本文件是桌面端的那一份。
+ * 客户端自己的词典里：CLI 那份在 `cli/src/session-notice.ts`，本文件是桌面端的那一份。
  *
  * 放在 main 而不是 render：文案与「哪条事件变成哪个 code」是同一件事，而事件翻译已经全在
  * main（`events.ts`）。render 那边若再查一份词典，就是同一份文案两处维护 —— 迟早一处改了
@@ -16,9 +16,9 @@
  * ## 为什么未知 code 也要给一条文案
  *
  * 协议把文案交给客户端，意味着**版本偏斜是常态**：服务端先发版、桌面端后装（或者反过来，
- * 用户很久不升级）。新 code 到了老客户端，若静默丢弃，用户看到的就是「什么都没发生」——
- * 正是这次要修的那个症状。所以查不到时给一条明确写着「未知通知 + 原 code」的句子：它不好
- * 看，但它说的是实话，而且带着 code 可以直接拿去查（`未知通知` 不是垃圾兜底，是诊断出口）。
+ * 用户很久不升级）。新 code 到了老客户端，若静默丢弃，用户看到的就是「什么都没发生」。
+ * 所以查不到时给一条明确写着「未知通知 + 原 code」的句子：它不好看，但它说的是实话，而且
+ * 带着 code 可以直接拿去查（`未知通知` 不是垃圾兜底，是诊断出口）。
  *
  * ## 为什么是函数表
  *
@@ -73,12 +73,12 @@ function modeSuffix(params: NoticeParams, key = "mode"): string {
 }
 
 /**
- * 对话内通知（`session.notice`）的文案。
+ * 对话内通知（`session-notice`）的文案。
  *
  * 参数名逐条对着 `agents` 仓的 emit 点核过（不是按 code 名字猜的），出处写在每一条后面。
  */
 const SESSION_TEXTS: Record<SessionNoticeCode, NoticeTemplate> = {
-  /** `SessionManager.writeSession` 的 catch：存档没写成功，用户以为存了 */
+  /** `Persistence.write` 的 catch：存档没写成功，用户以为存了 */
   persistFailed: (params) =>
     `会话存档没写成功，下次打开可能看不到这一段：${text(params, "error")}`,
   /** `SessionHandoff` 的 `onHandoff`：请求的执行者没产出文档，降级成了另一种 */
@@ -107,9 +107,9 @@ const SESSION_TEXTS: Record<SessionNoticeCode, NoticeTemplate> = {
   },
   /** 紧跟 `handoffMigrated` 的补充（无参数）：新助手会先读交接文档 */
   handoffMigratedHint: () => "新助手会先读交接文档，然后继续推进任务",
-  /** `SessionManager.askHandoffMode`（无参数）：这轮没迁，上下文会继续长 */
+  /** `QuestionBroker.askHandoffMode`（无参数）：这轮没迁，上下文会继续长 */
   migrationSkipped: () => "已跳过本次任务迁移，上下文会继续增长",
-  /** `SessionManager` 的 `onSubError`：`index` 指哪个子 Agent，`message` 是原始错误 */
+  /** `EventBridge` 的 `onSubError`：`index` 指哪个子 Agent，`message` 是原始错误 */
   subAgentFailed: (params) => {
     const index = text(params, "index");
     const message = text(params, "message");
@@ -119,7 +119,7 @@ const SESSION_TEXTS: Record<SessionNoticeCode, NoticeTemplate> = {
 };
 
 /**
- * 服务端通知（`server.notice`）的文案。
+ * 服务端通知（`server-notice`）的文案。
  *
  * 它与对话内通知分属**两张码表**（`SERVER_NOTICE_CODES` / `SESSION_NOTICE_CODES`）：这条
  * 事件的载荷里没有 `sessionId`，切到别的会话也不该消失 —— 事件表与码表的名字都跟

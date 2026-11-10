@@ -24,8 +24,7 @@ export interface MessageWindowOptions {
   maxLoaded?: number;
 }
 
-/** 渲染链路中的消息：id 恒存在 —— agent 构造即生成；
- *  流式事件携带真实 id；历史快照经 ConversationRepository 懒迁移补齐 */
+/** 渲染链路中的消息：id 恒存在 —— 服务端的流式与快照事件都带着它 */
 export type MessageWithId = AgentNS.Message & { id: string };
 
 export function useMessageWindow(

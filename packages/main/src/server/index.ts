@@ -15,12 +15,12 @@
  *
  * 一个进程一条连接（`ServerConnection`，来自 `@ai-zen/agents-client` 的
  * `transport/connection.ts`）。本文件只组装它一次、`dispose()` 时关掉它；**它死了之后怎么
- * 长回来是它自己的事**：每次取用都判 `closed`、断了重建、并在新连接上重放 `events.watch`。
+ * 长回来是它自己的事**：每次取用都判 `closed`、断了重建、并在新连接上重新订阅事件。
  *
- * 本层以前自己实现过那点逻辑（缓存在 `pending ??=`、建成后不复查 `closed`），代价写在
- * `daemon 重启 → 桌面端永久失能` 那次事故里：所有 IPC 一律 `client is closed`，而界面上看
- * 起来只是「没反应」（没有重连、没有提示、也没有错误）。所以这件事不该有第二份实现 ——
- * 它归包里那一个，本仓只负责组装与收摊。
+ * 在本层自己写这套逻辑（把连接缓存在 `pending ??=`、建成后不复查 `closed`）的代价是
+ * `daemon 重启 → 桌面端永久失能`：所有 IPC 一律 `client is closed`，而界面上看起来只是
+ * 「没反应」（没有重连、没有提示、也没有错误）。所以这件事不该有第二份实现 —— 它归包里那
+ * 一个，本仓只负责组装与收摊。
  *
  * ## 组装根为什么不需要再判一次「要不要重建」
  *
@@ -55,7 +55,7 @@ export interface ServerLayerOptions {
 }
 
 export interface ServerLayer {
-  /** `invokeService(service, method, ...)` 的动态分发（分发键与旧实现完全一致） */
+  /** `invokeService(service, method, ...)` 的动态分发（六个分发键即 render 的调用面） */
   manager: ServicesManager;
   /** 连上服务端并开始收事件（必须早于第一次 `chat.send`） */
   start: () => Promise<void>;

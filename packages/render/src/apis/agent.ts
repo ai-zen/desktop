@@ -1,5 +1,5 @@
 /**
- * agent api — Agent 列表（对应 main 的 AgentRepository，入口 Agent 单来源）。
+ * agent api — Agent 列表（对应 main 的 ServerAgentService，入口 Agent 单来源）。
  */
 
 import type { AgentOption } from "@ai-zen/desktop-shared";

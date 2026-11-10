@@ -1,6 +1,5 @@
 <template>
   <el-aside width="280px" class="sidebar">
-    <!-- 工作空间 + 会话树 -->
     <div class="section">
       <div class="section-title">
         <span>工作空间</span>
@@ -59,7 +58,6 @@
         </template>
       </el-tree>
 
-      <!-- 无 workspace 空态 -->
       <div v-if="workspaceStore.workspaces.length === 0" class="tree-empty">
         暂无工作空间
       </div>
@@ -208,7 +206,6 @@ function openSettings() {
 
 const activeWorkspaceId = computed(() => workspaceStore.activeWorkspaceId);
 
-// 新建 workspace
 const showAddWorkspace = ref(false);
 const wsForm = reactive({ name: "", cwd: "" });
 
@@ -226,7 +223,6 @@ const deleteTargetType = ref<"workspace" | "conversation">("workspace");
 const deleteTargetWorkspaceId = ref("");
 const deleteTargetName = ref("");
 
-// 新建对话
 const showNewChat = ref(false);
 
 // 右键菜单（workspace / conversation 共用）
@@ -411,7 +407,7 @@ async function pickWorkspaceDir() {
 }
 
 async function confirmAddWorkspace() {
-  // 名称/目录均选填：名称空由服务端兜底为文件夹名，目录空默认桌面
+  // 名称/目录均选填：名称空用目录名兜底、目录空用默认桌面（两者都在 main 的 services.ts 补齐）
   await workspaceStore.create({
     name: wsForm.name.trim(),
     cwd: wsForm.cwd.trim(),

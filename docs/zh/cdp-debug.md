@@ -74,6 +74,6 @@ ws.onmessage = (event) => {
 ## 注意事项
 
 - 推荐优先使用 `.ai-zen/tools/` 中的 CDP 工具集（会被 AI Agent 自动发现）
-- CDP 仅在 `NODE_ENV=development` 或 `pnpm start` 时开启（端口 9222）
-- 端口 9222 可能被占用，可在 `package.json` 中修改
+- 调试端口由启动命令传入：`pnpm dev`（`scripts/dev.mjs` 转给 electron）与 `packages/main/package.json` 的 `start` 都用 `--remote-debugging-port`
+- 端口默认 `9222`，被占用时用环境变量 `CDP_PORT` 换一个（`CDP_PORT=9333 pnpm dev`）；在代码里 `app.commandLine.appendSwitch` 无效
 - 使用完记得关闭 Electron 进程，避免端口占用

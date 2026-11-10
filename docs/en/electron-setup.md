@@ -1,16 +1,9 @@
 ---
 title: Environment Setup
-description: Handling Electron binary download failures, path.txt notes, CDP debug port and pnpm layout notes
+description: Handling Electron binary download failures and path.txt notes
 ---
 
 # Electron Environment Setup Notes
-
-## First-time Electron installation
-
-```bash
-cd packages/main
-pnpm add -D electron
-```
 
 ## If the Electron binary download fails
 
@@ -49,27 +42,3 @@ executablePath = fs.readFileSync(pathFile, 'utf-8');
 const fullPath = path.join(__dirname, 'dist', executablePath);
 // → "dist/electron.exe\n"  ❌ path has a trailing newline, file not found!
 ```
-
-## CDP Debug Port
-
-To enable Chrome DevTools Protocol you need to pass `--remote-debugging-port` in the **command-line arguments**:
-
-```bash
-electron --remote-debugging-port=9222 dist/main.mjs
-```
-
-> **⚠️ Note:** Using `app.commandLine.appendSwitch("remote-debugging-port", "9222")` in code is **ineffective**; the argument must be passed at startup.
-
-The current `packages/main/package.json` already has:
-```json
-"start": "electron --remote-debugging-port=9222 dist/main.mjs"
-```
-
-## pnpm Layout Notes
-
-This project uses a pnpm workspace; the Electron package is located at:
-```
-node_modules/.pnpm/electron@{version}/node_modules/electron/
-```
-
-`packages/main/node_modules/.bin/electron.cmd` points to the `cli.js` in that path.
