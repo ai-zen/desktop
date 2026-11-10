@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run"
   },
   "dependencies": {
     "@ai-zen/agents-core": "^4.1.0",
@@ -24,6 +25,7 @@
     "typescript": "^5.3.3",
     "unplugin-vue-components": "^32.1.0",
     "vite": "^8.1.5",
+    "vitest": "^5.1.0",
     "vue-tsc": "^2.2.0"
   }
 }

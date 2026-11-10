@@ -34,22 +34,42 @@
  * 瞬时提示）——只差翻译：服务端只给 `code + params`，文案由本端出（词典在 `notices.ts`，
  * 全桌面端就这一份）。
  *
- * ## 仍然没有 render 落点的那几条
+ * ## 子 Agent 的视图：另开一条 `agents` 通道（整份替换）
  *
- * `session.subAgent.*`：render 侧没有子 Agent 栏目，它们的增量不进主对话 —— 把子 Agent 的
- * 正文拼进主回答，等于凭空多出一段文字（子 Agent **出错**这件事有通知，走 `subAgentFailed`）。
+ * 子 Agent 的增量（`message.delta` 带 `subAgentId`）**不进主对话**：那是另一层对话，拼进
+ * 主回答等于凭空多出一段文字。但它也不能被丢掉 —— 用户要能切到某个子 Agent 看它自己的
+ * 完整对话（TUI 已经这么做：消息列表下方一条「主对话 / 子AGENT1 / 子AGENT2」栏目）。所以
+ * 这里给每条会话维护一份「本轮子 Agent 视图」，每次变化推一条 `type: "agents"`，载荷是
+ * **整份**列表（为什么不做增量事件，见 `ChatStreamEvent` 的那个成员）。
  *
- * 同一组里 **`session.question` 是唯一的例外**：它不是「推给用户看的信息」，而是「服务端
- * 在等一个回答」。没人答，服务端就白等到 5 分钟超时 —— 所以桌面端收到就立刻按「跳过」答
- * 回去（见 {@link ChatEventBridge.onQuestion}）。
+ * 三件事只在这一层做，而且各只有一处：
+ *   - **分流**：带 `subAgentId` 的增量送进那个子 Agent 自己的拼接状态，主会话那一份一个字
+ *     都不碰（主会话此刻该停在「等待 xxx 返回」，不该被别人的正文推着长）；
+ *   - **对齐**：`started` 一到就拉一次 `session.subAgent.snapshot`（它可能已经跑了一会儿、
+ *     已经有内容了），合并只能走共享包的 `mergeStreamedSnapshot` —— 快照的往返可能比第一
+ *     批增量还慢，直接赋值会让屏幕上已经流出来的正文凭空短一截；
+ *   - **回收**：`turn.end` / `session.idChanged` 清空（子 Agent 只活当前这一轮，与 TUI 同
+ *     一口径），清空本身也推一条 `agents: []`，render 据此把栏目收回去。
+ *
+ * ## `session.question`：不问用户也必须有人答
+ *
+ * 它不是「推给用户看的信息」，而是「服务端在等一个回答」。没人答，服务端就白等到 5 分钟
+ * 超时 —— 所以桌面端收到就立刻按「跳过」答回去（见 {@link ChatEventBridge.onQuestion}）。
  */
 
 import {
   EVENT_METHODS,
   SESSION_EVENTS,
   SESSION_METHODS,
+  // 「本地流式增量 vs 服务端快照」的合并规则：共享包里的唯一实现，本仓不许再写一份
+  // （两个前端在同一个时序压力下做同一件事，抄两份就会在「宁可重复也不吞字」上分叉）
+  mergeStreamedSnapshot,
   type GlobalNoticeEvent,
   type MessageDeltaEvent,
+  type StreamedAssistant,
+  type SubAgentEndedEvent,
+  type SubAgentSnapshotResult,
+  type SubAgentStartedEvent,
   type SessionAnswerResult,
   type SessionIdChangedEvent,
   type SessionMessageAppendedEvent,
@@ -65,7 +85,7 @@ import {
 // 只要类型：`import type` 在产物里被整体擦除，main 因此不必为了一个 role 字符串把
 // agents-core（连带 openai）拉进运行期 —— 握手/事件这条路上一个模型库也不该被加载
 import type { AgentNS } from "@ai-zen/agents-core";
-import type { ChatStreamEvent } from "@ai-zen/desktop-shared";
+import type { ChatStreamEvent, SubAgentView } from "@ai-zen/desktop-shared";
 import type { ServerConnection } from "./connection.js";
 import { noticeText } from "./notices.js";
 
@@ -96,6 +116,21 @@ interface TurnSlot {
   toolCalls: AgentNS.ToolCall[];
 }
 
+/**
+ * 一条会话「当前这一轮」的子 Agent 栏目（`turn.end` / `session.idChanged` 之后整份丢弃）。
+ *
+ * 为什么要两份状态（视图 + 流式拼接）：`SubAgentView.messages` 是**推给 render 的那一份**
+ * （流式期间由增量拼、快照到了就整份换成合并后的结果），而 `streams` 是「本地已经拼出来
+ * 多少」—— 它只喂给共享包的 `mergeStreamedSnapshot`，决定合并方向。合成一份的话，快照
+ * 到达那一刻就没有「本地那份 vs 服务端那份」可比较了。
+ */
+interface SubAgentSlot {
+  /** 顺序 = `session.subAgent.started` 的到达顺序 = 服务端给的 `index` 顺序 */
+  views: SubAgentView[];
+  /** `subAgentId` → 那一份临时 assistant 消息（一个子 Agent 一次委派只拼一条） */
+  streams: Map<string, StreamedAssistant>;
+}
+
 export interface ChatEventBridgeOptions {
   connection: ServerConnection;
   /** 推给 render（桌面端是 `webContents.send("chat:push")`；用例里是一个收集函数） */
@@ -112,6 +147,15 @@ export class ChatEventBridge {
   private readonly sends = new Map<string, string>();
   /** 换过 id 的会话：新 id → render 认识的旧 key（见 {@link onIdChanged}） */
   private readonly aliases = new Map<string, string>();
+  /**
+   * 本轮的子 Agent 栏目（键同样是 render 认识的 key，见 {@link keyOf}）。
+   *
+   * 与 `turns` 分开存而不是塞进 `TurnSlot`：两者的生命周期判断点不同 —— 轮次槽位按
+   * `turnId` 换，栏目只按 `turn.end` / `idChanged` 清（子 Agent 的事件里也带 `turnId`，
+   * 但用它与主会话的槽位绑在一起，会让「子 Agent 比主会话先到」这类正常时序多出一个
+   * 隐式依赖，收益为零）。
+   */
+  private readonly agents = new Map<string, SubAgentSlot>();
   private readonly offs: Array<() => void> = [];
 
   constructor(private readonly options: ChatEventBridgeOptions) {}
@@ -130,6 +174,8 @@ export class ChatEventBridge {
       client.on(SESSION_EVENTS.delta, (event) => this.onDelta(event)),
       client.on(SESSION_EVENTS.toolCalls, (event) => this.onToolCalls(event)),
       client.on(SESSION_EVENTS.messageAppended, (event) => this.onMessageAppended(event)),
+      client.on(SESSION_EVENTS.subAgentStarted, (event) => this.onSubAgentStarted(event)),
+      client.on(SESSION_EVENTS.subAgentEnded, (event) => this.onSubAgentEnded(event)),
       client.on(SESSION_EVENTS.turnEnd, (event) => this.onTurnEnd(event)),
       client.on(SESSION_EVENTS.idChanged, (event) => this.onIdChanged(event)),
       client.on(SESSION_EVENTS.titleChanged, (event) => this.onTitleChanged(event)),
@@ -197,14 +243,23 @@ export class ChatEventBridge {
     this.options.push({ conversationId: key, type: "start" });
   }
 
-  /** 增量 → 占位 assistant 消息（正文 / 推理拼在一起，其余字段只有快照里才有） */
+  /**
+   * 增量 → 占位 assistant 消息（正文 / 推理拼在一起，其余字段只有快照里才有）。
+   *
+   * 带 `subAgentId` 的那一支不是「主对话的增量」，而是**另一个对话**（子 Agent）的增量：
+   * 送进它自己的拼接状态（见 {@link applySubAgentDelta}），**不碰**主会话这份槽位。
+   * 混在一起的后果不是「多一行」，而是主回答里凭空长出一段子 Agent 的正文，而主会话
+   * 本身的拼接状态被推着往前走（本来该停在「等待 xxx 返回」）。
+   */
   private onDelta(event: MessageDeltaEvent): void {
-    // 带 subAgentId 的增量属于子 Agent：render 没有子对话这个概念（见文件头）
-    if (event.subAgentId) return;
+    const key = this.keyOf(event.sessionId);
+    if (event.subAgentId) {
+      this.applySubAgentDelta(key, event.subAgentId, event.text, event.reasoning);
+      return;
+    }
     // 只带 usage 的流末 chunk（正文与推理都空）不该在转录里多出一条空消息
     if (!event.text && !event.reasoning) return;
 
-    const key = this.keyOf(event.sessionId);
     const slot = this.slotOf(key, event.turnId);
     slot.text += event.text;
     slot.reasoning += event.reasoning;
@@ -276,7 +331,67 @@ export class ChatEventBridge {
     this.options.push({ conversationId: key, type: "message", id: message.id, message });
   }
 
+  /**
+   * 一个子 Agent 开工 → 栏目里多一条 `running`，并立刻拉一次快照补已有内容。
+   *
+   * ## `id` / `index` 都用服务端给的
+   *
+   * `index` 是**展示序号**（本轮内从 1 起，栏目标签「子AGENT1」直接印它），`subAgentId` 是
+   * **稳定标识**（选中态与 v-for key 靠它）。客户端不自己数：它要在「中途接上连接」「切到
+   * 某一栏」时都对得上，而那时本地一个数都没数过 —— 自己数出来的序号会在这些时刻与服务端
+   * 错开一位，用户看到的是「栏目标题与内容不是同一个子 Agent」。
+   *
+   * ## 为什么立刻拉一次快照
+   *
+   * `started` 只说明「它已经在跑」：服务端此刻可能已经有内容（子任务的用户消息、上一轮工具
+   * 调用、甚至已经吐了几段正文）。只等增量的话，中途切过来看到的是半截。这次拉取是**补
+   * 内容**，不是拉状态：`index` / `status` 已经由事件给过，同一份事实不在这条路上读第二遍。
+   *
+   * ## 失败为什么静默
+   *
+   * 这次拉取只补内容：拉不到时增量照样拼、`ended` 照样改状态、`turn.end` 照样清空 ——
+   * 用户看不到任何"缺一块"的迹象。而连接真断了有别的信号（`turn.end` 的快照失败会走
+   * `error`，收尾的 `send` 也会失败）。在这里再推一条错误，只会让一次成功的委派凭空多一句
+   * 红字。所以 `.catch(() => {})` 吞的是「这次补内容没成功」，不是「吞掉一个错误」。
+   */
+  private onSubAgentStarted(event: SubAgentStartedEvent): void {
+    const key = this.keyOf(event.sessionId);
+    const slot = this.agentSlotOf(key);
+    slot.views.push({
+      id: event.subAgentId,
+      index: event.index,
+      status: "running",
+      messages: [],
+    });
+    // 先推「它开跑了」：标签不该等一个往返才出现（此刻内容是空的，增量与快照一到就填）
+    this.pushAgents(key, slot);
+    void this.syncSubAgent(event.sessionId, event.subAgentId).catch(() => {});
+  }
+
+  /**
+   * 一个子 Agent 收尾 → 只改状态（正文由增量与快照负责，这里不再拉一次）。
+   *
+   * `failed` 是**终态**，不能被后来的 `done` 覆盖：core 在 `finally` 里分发 `sub-agent-end`，
+   * 出错的那一次也照样会走一遍 —— 无脑覆盖会把用户看到的 ✖ 擦成 ✓，让人以为一个真的挂了
+   * 的子任务成功了。服务端今天已经用「只把仍在 running 的置为 done」挡了一层，协议也把
+   * `failed` 写成终态，客户端这一层仍然照着判：这条规则的两个实现（服务端的事件、客户端的
+   * 视图）说的是同一件事，少一处就有一处会漂。
+   */
+  private onSubAgentEnded(event: SubAgentEndedEvent): void {
+    const key = this.keyOf(event.sessionId);
+    const slot = this.agents.get(key);
+    const view = slot?.views.find((item) => item.id === event.subAgentId);
+    // 没有这一栏就没有状态可改：`ended` 属于一个客户端没见过的子 Agent（`turn.end` 已经
+    // 把栏目清掉了，或者这条连接的 `started` 早于订阅）—— 凭空补一条出来是在编造内容
+    if (!slot || !view) return;
+    if (!(view.status === "failed" && event.status === "done")) view.status = event.status;
+    this.pushAgents(key, slot);
+  }
+
   private onTurnEnd(event: TurnEndEvent): void {
+    // 子 Agent 只活当前这一轮：收尾就把栏目清掉（与 TUI 同一口径）。清在补快照**之前**
+    // —— 那份快照只描述主会话，栏目不该被它带着复活（也不会：快照到达时列表已经空了）。
+    this.clearSubAgents(this.keyOf(event.sessionId));
     void this.finishTurn(event).catch((error: unknown) => {
       // 快照拿不到（连接断了 / 会话刚被收掉）：没有权威消息可给，但 render 正等着收尾。
       // 走它认识的错误通道 —— `error` 会把流式态收掉，否则界面永久停在「生成中」。
@@ -332,6 +447,10 @@ export class ChatEventBridge {
   private onIdChanged(event: SessionIdChangedEvent): void {
     const key = this.keyOf(event.from);
     this.aliases.set(event.sessionId, key);
+    // 换了 id = 换了一段会话（迁移 / 另存为）：上一段里的子 Agent 不该跟着过来。
+    // 服务端此刻也把它们清掉了（`adopt` → `clearSubAgents`），客户端清一次才能与它同步
+    // —— 不清的话，栏目会停在一段已经不存在于服务端的对话上，点进去永远拉不到快照。
+    this.clearSubAgents(key);
     void this.options.connection
       .call<SessionSnapshotResult>(SESSION_METHODS.snapshot, { sessionId: event.sessionId })
       .then((snapshot) => {
@@ -436,6 +555,135 @@ export class ChatEventBridge {
   // ==================================================================
   // 内部
   // ==================================================================
+
+  /**
+   * 子 Agent 的增量 → 拼到**它自己**的那条临时消息上。
+   *
+   * 与主会话的占位消息同一套拼接策略（临时消息给屏幕滚、快照到达再合并纠正），但状态**完全
+   * 不共享**：主会话的 `TurnSlot`（正文 / 推理 / 工具调用）一个字段都不碰。共享的后果很具体
+   * —— 主回答里凭空多出一段子 Agent 的文字，而且主会话的占位消息会被别人的增量推着长，用户
+   * 看到的是「主 Agent 在说话，说的却是子 Agent 的内容」。
+   *
+   * 一个子 Agent 一次委派**只拼一条**临时消息（与 TUI 同一策略）：这期间它可能有多轮
+   * assistant（工具调用把一段输出切成几段），拆成多条会让输出在栏目里断成好几截。
+   */
+  private applySubAgentDelta(
+    key: string,
+    subAgentId: string,
+    text: string,
+    reasoning: string,
+  ): void {
+    const slot = this.agents.get(key);
+    const view = slot?.views.find((item) => item.id === subAgentId);
+    // 没有 `started` 就没有这一栏：`index` 是服务端在 `started` 里给的，客户端编不出来
+    // （中途接上连接时就是这种情形，那种场景的内容由快照负责补齐）
+    if (!slot || !view) return;
+
+    let stream = slot.streams.get(subAgentId);
+    if (!stream) {
+      const message: AgentNS.Message = {
+        // 占位 id 与主对话同一手法（服务端不给流式消息 id）：同一个子 Agent 的后续增量必然
+        // 落回这一条，而快照到达后会被服务端那条真实 id 换掉
+        id: `${key}:sub:${subAgentId}`,
+        role: ASSISTANT_ROLE,
+        content: "",
+      };
+      stream = { message, text: "", reasoning: "" };
+      slot.streams.set(subAgentId, stream);
+      view.messages.push(message);
+    }
+    stream.text += text;
+    stream.reasoning += reasoning;
+    // 就地改这两个字段：推出去的拷贝取自这里，屏幕读的也是同一份
+    stream.message.content = stream.text;
+    if (stream.reasoning) stream.message.reasoning_content = stream.reasoning;
+    this.pushAgents(key, slot);
+  }
+
+  /**
+   * 拉一次子 Agent 快照并合并进栏目（`session.subAgent.snapshot`）。
+   *
+   * ## 合并只能用共享包里的 `mergeStreamedSnapshot`
+   *
+   * 这次往返可能比第一批增量还慢（子任务越小越明显）：`view.messages = snapshot.messages`
+   * 会把这几片已经流出来的正文换回快照那一刻的旧内容 —— 屏幕上是「答案忽然短了一截」，而且
+   * 本轮不会再补上。这条竞态的规则（取信息多的那份、宁可重复也不吞字）只该有一份实现，
+   * 它在 `@ai-zen/agents-client` 里，两个前端共用；在本仓再写一遍就会在边界上分叉。
+   *
+   * ## 快照只用来补内容
+   *
+   * `index` / `status` 不从这里读：它们已经由 `started` / `ended` 给过。同一份事实有两个
+   * 来源时，两边说法不同就得二选一 —— 那是又一处判定，收益为零。
+   */
+  private async syncSubAgent(sessionId: string, subAgentId: string): Promise<void> {
+    const snapshot = await this.options.connection.call<SubAgentSnapshotResult>(
+      SESSION_METHODS.subAgentSnapshot,
+      // 用服务端给的 id（不是 `keyOf`）：这条请求认的是服务端自己的会话键
+      { sessionId, subAgentId },
+    );
+    const key = this.keyOf(sessionId);
+    const slot = this.agents.get(key);
+    const view = slot?.views.find((item) => item.id === subAgentId);
+    // 往返期间这一轮收了尾（`turn.end` 清空了栏目）：这份内容属于一段已经过去的子 Agent，
+    // 落到一个不存在的栏目上就是凭空复活一个标签（点进去也再也拉不到第二次快照）
+    if (!slot || !view) return;
+
+    const merged = mergeStreamedSnapshot(
+      snapshot.messages as AgentNS.Message[],
+      slot.streams.get(subAgentId) ?? null,
+    );
+    view.messages = merged.messages;
+    // 之后的增量继续拼在合并后那一条上（共享包已经把 `stream.message` 指过去了）；
+    // 它返回 `null` = 服务端已经收下这段，本地那份作废，下一片增量重新起一条
+    if (merged.stream) slot.streams.set(subAgentId, merged.stream);
+    else slot.streams.delete(subAgentId);
+    this.pushAgents(key, slot);
+  }
+
+  /**
+   * 清空这条会话的子 Agent 栏目（`turn.end` / `session.idChanged`）。
+   *
+   * 子 Agent 是「内循环里工具调用的产物」，**只活在当前一轮**：一轮结束后主 Agent 已经给出
+   * 最终答案，留着栏目就是留一份永远不会再更新的残影（而且下一轮的第一个子 Agent 会顶着上
+   * 一轮的序号出现）。服务端在同一时刻做着同一件事（`settleTurn` → `clearSubAgents`），两边
+   * 口径必须一致，否则「服务端说没有、界面还挂着」。
+   *
+   * 没有栏目可清时**不推空事件**：那等于每轮给 render 送一条什么也不改变的通知。
+   */
+  private clearSubAgents(key: string): void {
+    const slot = this.agents.get(key);
+    if (!slot) return;
+    this.agents.delete(key);
+    // 空数组 = 「这一轮的子 Agent 都没了」（语义见 `ChatStreamEvent` 的 `agents` 成员）
+    this.options.push({ conversationId: key, type: "agents", agents: [] });
+  }
+
+  /**
+   * 把整份栏目推给 render（**整份替换**语义）。
+   *
+   * 每条事件都带一份**拷贝**：render 收到的是序列化之后的东西（IPC 结构化克隆），而本进程
+   * 里 `stream.message` 还在被就地改 —— 不拷贝的话，同一进程里的消费者（用例）会看到「历史
+   * 事件自己变了」，一份本该定格在某一刻的载荷跟着流继续长。
+   */
+  private pushAgents(key: string, slot: SubAgentSlot): void {
+    this.options.push({
+      conversationId: key,
+      type: "agents",
+      agents: slot.views.map((view) => ({
+        ...view,
+        messages: view.messages.map((message) => ({ ...message })),
+      })),
+    });
+  }
+
+  /** 取（或开）这条会话本轮的子 Agent 栏目（`turn.end` / `idChanged` 之后整份丢弃） */
+  private agentSlotOf(key: string): SubAgentSlot {
+    const existing = this.agents.get(key);
+    if (existing) return existing;
+    const slot: SubAgentSlot = { views: [], streams: new Map() };
+    this.agents.set(key, slot);
+    return slot;
+  }
 
   /**
    * 推这条占位 assistant 消息（**整条替换**语义）。

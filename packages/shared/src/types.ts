@@ -82,6 +82,34 @@ export interface ConfigSettings {
   dataDir: string;
 }
 
+// ==================== 子 Agent 视图 ====================
+
+/**
+ * 子 Agent 的状态：`running` 是进行态，`done` / `failed` 是终态。
+ *
+ * 取值与服务端 `session.subAgent.*` 那两条事件逐字一致（协议不另造词汇）：`started` 只会
+ * 带来 `running`，`ended` 带来 `done` / `failed`，快照也回这三个值之一。
+ */
+export type SubAgentStatus = "running" | "done" | "failed";
+
+/**
+ * 一个子 Agent 自己的对话（= 栏目标签 `子AGENT{n}` 点进去看到的那一屏）。
+ *
+ * 三处事实**都来自服务端**，客户端一个都不自己算：
+ *   - `id`：`session.subAgent.started` 的 `subAgentId`（稳定标识，选中态与 v-for key 靠它；
+ *     每轮会重来，所以它不带展示含义）；
+ *   - `index`：同一个事件里的 `index`（本轮内从 1 起，栏目标签直接印它）。客户端不数：
+ *     它要在「切到某个子 Agent」「中途接上连接」时都对得上，而那时本地没数过；
+ *   - `status`：`started` 给 `running`、`ended` 与 `session.subAgent.snapshot` 给终态。
+ */
+export interface SubAgentView {
+  id: string;
+  index: number;
+  status: SubAgentStatus;
+  /** 它到目前为止的对话（流式期间由增量拼出来，之后以 `session.subAgent.snapshot` 为准） */
+  messages: AgentNS.Message[];
+}
+
 // ==================== 推送事件 DTO ====================
 
 /** chat:push 单通道推送（discriminated union）
@@ -124,7 +152,35 @@ export type ChatStreamEvent =
    * 空串不是它的替身：空串的意思是「有一个会话，它的 key 是空字符串」，与「没有会话」是
    * 两件事 —— render 按 key 取状态槽位，空串会凭空开出一个谁都不认识的假槽位。
    */
-  | { type: "notice"; level: "info" | "warn" | "error"; text: string; conversationId?: string };
+  | { type: "notice"; level: "info" | "warn" | "error"; text: string; conversationId?: string }
+  /**
+   * 这段会话**当前这一轮**的子 Agent 栏目，一有变化就推**整份**。
+   *
+   * ## 为什么是整份替换，而不是「新增 / 更新 / 删除」三条增量事件
+   *
+   * 子 Agent 的对话很短（一次委派的完整上下文通常就几条消息），而 render 那边要对的是
+   * 「用户切到某一栏看到的那一屏」。整份替换让 render **不需要任何合并逻辑**：收到就把手上
+   * 那份换掉，字段就是 `SubAgentView`（id / index / status / messages），没有 id 对应的
+   * upsert、没有「这条是新的还是改的」的判断。增量事件的复杂度会摊到每一个消费方（桌面端
+   * 今天一个，将来还会有别的），而省下来的带宽在一屏几条消息的量级上毫无意义。
+   *
+   * 这与主对话那条 `message` 事件的取舍完全同源：那条也是「推这条消息此刻的完整内容」，
+   * 让 render 按 id 整条替换 —— 一处只有一个合并口径，就不会出现「两套合并规则各说各话」。
+   *
+   * ## 空数组 = 这一轮的子 Agent 都没了
+   *
+   * 子 Agent 只活在当前一轮（`turn.end` 之后服务端把它们连同展示序号一起清掉，客户端同一
+   * 口径）。所以 `agents: []` 的意思是「把栏目收回去」，不是「这段会话没有子 Agent 这个
+   * 概念」。render 收到空数组就清空栏目、退回主对话 —— 不能让一个标签停在一段已经过去的
+   * 对话上。换会话 id（迁移 / 另存为）同样清空。
+   *
+   * ## 顺序
+   *
+   * 数组顺序 = `session.subAgent.started` 的到达顺序 = 服务端给的 `index` 顺序（栏目标签
+   * 从左到右）。render 直接照数组渲染，不重排 —— 重排就得知道「序号是谁给的」，而那是
+   * 服务端的展示序号，不是客户端可以推的东西。
+   */
+  | { conversationId: string; type: "agents"; agents: SubAgentView[] };
 
 /** 窗口最大化状态变更 */
 export interface WindowStateEvent {

@@ -1,5 +1,5 @@
 /**
- * 事件翻译用例：服务端的 10 条事件怎么变成 render 的 `ChatStreamEvent`。
+ * 事件翻译用例：服务端的 12 条事件怎么变成 render 的 `ChatStreamEvent`。
  *
  * 这里断言的是**render 会看到什么**（`server.pushed` 的顺序与形状），不是服务端内部状态
  * —— 翻译层唯一的验收口径就是这条通道。
@@ -16,7 +16,14 @@ import type { AgentNS } from "@ai-zen/agents-core";
 import { SESSION_EVENTS } from "@ai-zen/agents-client";
 import type { HandoffMode, SessionSaveAsResult } from "@ai-zen/agents-client";
 import { noticeText } from "./notices.js";
-import { startTestServer, waitFor, AUTO_TITLE, type TestServer, type TestServerOptions } from "./test-harness.js";
+import {
+  FakeSubAgent,
+  startTestServer,
+  waitFor,
+  AUTO_TITLE,
+  type TestServer,
+  type TestServerOptions,
+} from "./test-harness.js";
 
 let server: TestServer;
 let workspaceId: string;
@@ -70,6 +77,13 @@ function toolCallEvents(): MessageEvent[] {
 }
 
 /**
+ * `role: "user"` / `role: "assistant"` 的字面值（`as` 断言成 core 的枚举，与 `events.ts` /
+ * `test-harness.ts` 同一口径：不为一个字符串把整个模型库拉进依赖图）。
+ */
+const USER_ROLE = "user" as AgentNS.Role;
+const ASSISTANT_ROLE = "assistant" as AgentNS.Role;
+
+/**
  * `role: "tool"` 的字面值（`as` 断言成 core 的枚举，与 `events.ts` / `test-harness.ts`
  * 同一口径：不为一个字符串把整个模型库拉进依赖图）。
  */
@@ -104,6 +118,35 @@ function upsertLikeRender(): Map<string, AgentNS.Message> {
  * 内就回来了，与这个数差四个数量级。
  */
 const ASK_TIMEOUT_MS = 300_000;
+
+/**
+ * `agents` 事件（类型收窄：下面的断言要直接读 `agents` 列表）。
+ *
+ * 它是**整份替换**语义的事件：最后一条就是此刻屏幕上那一份栏目，所以断言几乎都取 `.at(-1)`
+ * —— 与 `message` 那条的「按 id upsert」不同，这里不需要把多条事件拼成一份。
+ */
+type AgentsEvent = Extract<ChatStreamEvent, { type: "agents" }>;
+
+function agentsEvents(): AgentsEvent[] {
+  return server.pushed.filter((event): event is AgentsEvent => event.type === "agents");
+}
+
+/** 屏幕上那一份栏目（最后一条 `agents` 事件；还没有事件时是 `undefined`） */
+function latestAgents(): AgentsEvent["agents"] | undefined {
+  return agentsEvents().at(-1)?.agents;
+}
+
+/**
+ * 一个可自己放行的闸门：`wait` 交给被测方，`open()` 由用例在合适的时机扳一下。
+ *
+ * 用例用它把 `session.subAgent.snapshot` 的**回程**推迟到「第一批增量已经上屏」之后 ——
+ * 真事里那条竞态（快照比增量还慢）靠碰运气凑不出来，而它恰好是合并规则的唯一场景。
+ */
+function latch(): { wait: Promise<void>; open: () => void } {
+  let open!: () => void;
+  const wait = new Promise<void>((resolve) => (open = resolve));
+  return { wait, open };
+}
 
 /**
  * 让服务端真的问一次「用哪种方式交接」，返回它最后拿到的选择。
@@ -557,5 +600,211 @@ describe("通知：服务端推来的通知不再被丢掉", () => {
     });
     // 不能拿空串糊：`conversationId: ""` 在 render 那边等于「有一个 key 为空的会话」
     expect(notice).not.toHaveProperty("conversationId");
+  });
+});
+
+/**
+ * 子 Agent 的视图（`type: "agents"`）：用户要能切到某个子 Agent，看它自己的完整对话。
+ *
+ * 这一组盯的是 main 这一侧的三件事：**分流**（子 Agent 的增量不进主对话）、**对齐**（快照
+ * 与本地增量合并，已经上屏的正文不被摸短）、**回收**（只活当前这一轮）。判据与别处同一口径：
+ * render 会收到什么（`server.pushed`）+ 服务端确实收到了哪些请求（`subAgentSnapshotCalls`）。
+ *
+ * 服务端那一侧的现象在这里都是真的：`sub-agent-start` / `chunk-parsed` / `error` 由假件按
+ * core 的形状发出去，`session.subAgent.started` / `.ended` / `session.subAgent.snapshot` 全部
+ * 由真 `SessionManager` 产生 —— 用例只负责按真件的时刻扳一下。
+ */
+describe("子 Agent：另开一条 agents 通道（整份替换）", () => {
+  it("started → 出现一条 running 视图，id / index 都是服务端给的（客户端不自己数）", async () => {
+    await send("第一轮");
+    const first = server.agent.startSubAgent();
+
+    const view = await waitFor(() => latestAgents()?.[0], "子 Agent 的视图");
+    // 三件事一次说清：`index` 来自 `started`（不是客户端数的）、状态开门就是 running、
+    // 内容此刻还是空的（它由增量与快照负责填）
+    expect(view).toEqual({ id: "sub-1", index: 1, status: "running", messages: [] });
+
+    // `started` 一到就**立刻**拉了一次快照：它可能已经跑了一会儿、已经有内容了。
+    // 服务端收到过这条请求才是这条规矩的判据（屏幕上什么都没变，客户端那一侧看不见）
+    const call = await waitFor(() => server.subAgentSnapshotCalls[0], "started 之后的快照请求");
+    expect(call).toEqual({ sessionId: conversationId, subAgentId: "sub-1" });
+    expect(first.messages).toEqual([]);
+
+    // 第二轮：展示序号归零（用户看到的又是「子AGENT1」），而 id **不**归零（它是稳定标识）。
+    // 服务端就是这么给的（`subAgentSeq` 归零、`subAgentIdSeq` 不归零）。这一条咬的是那些
+    // 「按 id 序号 / 一个跨轮不复位的计数器推标签序号」的实现 —— 它们在这里会得出 2，
+    // 而服务端说的是 1（同一个子 Agent 在标题上被叫成「子AGENT2」）。
+    server.agent.endSubAgent(first);
+    server.agent.finish();
+    await waitFor(() => agentsEvents().at(-1)?.agents.length === 0, "turn.end 清空栏目");
+
+    await send("第二轮");
+    server.agent.startSubAgent();
+    const second = await waitFor(
+      () => agentsEvents().map((event) => event.agents[0]).find((item) => item?.id === "sub-2"),
+      "第二轮的子 Agent 视图",
+    );
+    // id 递增了、index 还是 1：一位来自 id 序号、一位来自本轮展示序号，两个都是服务端给的
+    expect(second).toMatchObject({ id: "sub-2", index: 1, status: "running" });
+  });
+
+  it("带 subAgentId 的增量进子 Agent、不进主对话（主回答不被别人的正文推着长）", async () => {
+    await send("查两件事");
+    // 主 Agent 此刻停在「等工具返回」，占位消息里只有它自己说的那一句
+    server.agent.emitDelta("主线在等");
+    await waitFor(() => eventsOf("message")[0], "主对话的占位消息");
+
+    const sub = server.agent.startSubAgent();
+    await waitFor(() => latestAgents()?.[0], "子 Agent 的视图");
+
+    sub.emitDelta("子");
+    sub.emitDelta("答案");
+
+    const view = await waitFor(
+      () => latestAgents()?.[0]?.messages.at(-1)?.content === "子答案" && latestAgents()?.[0],
+      "子 Agent 的正文",
+    );
+    // 一个子 Agent 只拼一条临时消息（这期间它可能有多轮 assistant，拆开就断了）
+    expect(view.messages).toHaveLength(1);
+    expect(view.messages[0]).toMatchObject({ role: "assistant", content: "子答案" });
+
+    // 主对话那一侧一个字都没被动过：所有 `message` 事件里都没有子 Agent 的文字，
+    // 最后一条仍是主 Agent 自己那句话（拼进去 = 主回答里凭空多出一段别人的正文）
+    const mainBodies = server.pushed
+      .filter((event): event is MessageEvent => event.type === "message")
+      .map((event) => String(event.message.content));
+    expect(mainBodies.some((content) => content.includes("子答案"))).toBe(false);
+    expect(mainBodies.at(-1)).toBe("主线在等");
+  });
+
+  it("快照晚于增量到达：正文取更全的那份（直接赋值会把已经上屏的字摸短）", async () => {
+    // 把快照的回程扣住不放：真事里它就是可能比第一批增量还慢
+    let snapshotCaptured!: () => void;
+    const captured = new Promise<void>((resolve) => (snapshotCaptured = resolve));
+    const hold = latch();
+    await openServer({
+      holdSubAgentSnapshot: () => {
+        snapshotCaptured();
+        return hold.wait;
+      },
+    });
+
+    await send("查一件事");
+
+    // 子 Agent 已经跑了一会儿：服务端那一刻的快照里有一条用户消息 + 半句正文
+    const sub = new FakeSubAgent();
+    sub.pushMessage(USER_ROLE, "子任务");
+    sub.pushMessage(ASSISTANT_ROLE, "答");
+    server.agent.startSubAgent(sub);
+
+    // 快照已在服务端**定格**（那一刻还没有任何增量），回程还扣着
+    await captured;
+
+    // 增量先到，并且比快照那份更全（"答" → "答案"）
+    sub.emitDelta("答");
+    sub.emitDelta("案");
+    const streamed = await waitFor(
+      () => latestAgents()?.[0]?.messages.at(-1)?.content === "答案" && latestAgents()?.[0],
+      "增量先上屏",
+    );
+    // 此刻只有本地拼出来的那一条：快照还在路上（这就是那条竞态本身）
+    expect(streamed.messages).toHaveLength(1);
+
+    hold.open();
+
+    // 快照回来之后：它那份内容补上了（用户消息在），而正文是**更全**的那份
+    const merged = await waitFor(
+      () => latestAgents()?.[0]?.messages.length === 2 && latestAgents()?.[0],
+      "快照与增量合并之后的栏目",
+    );
+    expect(merged.messages[0]).toMatchObject({ role: "user", content: "子任务" });
+    // 直接赋值的话这里会是快照那一刻的「答」—— 屏幕上的答案凭空短一截，而本轮不会再补上
+    expect(merged.messages[1]).toMatchObject({ role: "assistant", content: "答案" });
+  });
+
+  it("ended 只改状态，且 failed 不被后来的 done 覆盖", async () => {
+    await send("查一件事");
+    const sub = server.agent.startSubAgent();
+    await waitFor(() => latestAgents()?.[0], "子 Agent 的视图");
+
+    // 子 Agent 出错：服务端标 failed 并发 `session.subAgent.ended{failed}`
+    sub.fail(new Error("模型 500"));
+    const failed = await waitFor(
+      () => latestAgents()?.[0]?.status === "failed" && latestAgents()?.[0],
+      "failed 状态",
+    );
+    // 只改状态：栏目还在、序号还在（它没被这条事件清掉，正文也不归它管）
+    expect(failed).toMatchObject({ id: "sub-1", index: 1, status: "failed" });
+
+    // core 在 `finally` 里还会广播一次 `sub-agent-end`（出错的那一次也走这条路）。服务端今天
+    // 已经用「只把仍在 running 的置为 done」挡了一层，但协议把 `failed` 写成**终态**，客户端
+    // 这一层自己也要挡住 —— 所以这条 done 直接从事件出口发出去，验的就是客户端。
+    const before = agentsEvents().length;
+    server.hub.publish({
+      event: SESSION_EVENTS.subAgentEnded,
+      sessionId: conversationId,
+      turnId: 1,
+      subAgentId: "sub-1",
+      status: "done",
+    });
+
+    const after = await waitFor(
+      () => (agentsEvents().length > before ? agentsEvents().at(-1) : undefined),
+      "那条 done 引起的推送",
+    );
+    // 无脑覆盖会把 ✖ 擦成 ✓：用户会以为一个真的挂了的子任务成功了
+    expect(after?.agents[0]).toMatchObject({ id: "sub-1", status: "failed" });
+  });
+
+  it("turn.end 清空栏目：推一条空数组（子 Agent 只活当前这一轮）", async () => {
+    await send("第一轮");
+    server.agent.startSubAgent();
+    const shown = await waitFor(
+      () => (latestAgents()?.length === 1 ? latestAgents() : undefined),
+      "栏目里有一条",
+    );
+    expect(shown).toHaveLength(1);
+
+    server.agent.finish();
+
+    // 空数组 = 「这一轮的子 Agent 都没了」：render 据此把栏目收回去，退回主对话
+    const cleared = await waitFor(
+      () => (agentsEvents().at(-1)?.agents.length === 0 ? agentsEvents().at(-1) : undefined),
+      "turn.end 之后的清空事件",
+    );
+    expect(cleared?.conversationId).toBe(conversationId);
+    expect(cleared?.agents).toEqual([]);
+  });
+
+  it("换过 id 的会话：agents 仍以 render 认识的那个 conversationId 上报", async () => {
+    await send("第一轮");
+    server.agent.emitDelta("答");
+    server.agent.finish();
+    await waitFor(() => eventsOf("done").length > 0, "第一轮收尾");
+
+    // 另存为：活会话换键（与「换 id」那组用例同一套构造）
+    await server.call<SessionSaveAsResult>("session.saveAs", {
+      sessionId: conversationId,
+      id: "chat_renamed",
+    });
+    await waitFor(() => eventsOf("migrated")[0], "migrated 事件");
+
+    // 新 id 上跑第二轮，子 Agent 在这一轮开跑（服务端事件里的 sessionId 已是 chat_renamed）
+    const startsBefore = eventsOf("start").length;
+    await server.call("session.send", { sessionId: "chat_renamed", content: "迁移之后" });
+    await waitFor(() => eventsOf("start").length > startsBefore, "新 id 上的 start");
+
+    server.agent.startSubAgent();
+    await waitFor(() => latestAgents()?.[0], "新 id 上的子 Agent 视图");
+
+    const event = agentsEvents().at(-1)!;
+    // 落回 render 认识的那个 key：报新 id 的话，这条栏目会贴到一段 render 从没见过、也永远
+    // 不会选中过的会话上 —— 画面上等于什么都没发生（`keyOf` 与其它事件同一口径）
+    expect(event.conversationId).toBe(conversationId);
+    // 而拉快照用的是**服务端**的会话 id（服务端只认自己的键）：两件事别混为一谈
+    expect(server.subAgentSnapshotCalls.at(-1)).toEqual({
+      sessionId: "chat_renamed",
+      subAgentId: "sub-1",
+    });
   });
 });

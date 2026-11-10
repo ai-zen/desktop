@@ -16,6 +16,24 @@
         <span class="chat-title">{{ conversationStore.activeConversation?.name }}</span>
       </div>
 
+      <!-- Agent 栏目：主对话 + 当前这一轮的各子 Agent。
+           位置在会话标题下方、消息列表上方 —— 它切换的就是紧跟着的那块消息列表，
+           所以要紧贴被它控制的那块区域（TUI 放在列表下方，是因为它的输入框在底部）。
+           没有子 Agent 时整条栏目不存在（主对话就是全部），连高度也不占。 -->
+      <div v-if="agentTabs.length > 0" class="agent-tabs">
+        <span
+          v-for="tab in agentTabs"
+          :key="tab.id"
+          class="agent-tab"
+          :class="{ 'is-active': tab.id === chatStore.activeAgentId }"
+          @click="chatStore.selectAgent(activeConversationId, tab.id)"
+        >
+          <!-- 状态圆点只给子 Agent：主对话忙不忙由输入区的停止按钮表示（与 TUI 同一取舍） -->
+          <span v-if="tab.status" class="status-dot" :class="`is-${tab.status}`"></span>
+          {{ tab.label }}
+        </span>
+      </div>
+
       <!-- 消息列表（QQ/微信式：DOM 常驻 + 首屏最近 N 条 + 上翻分页加载历史）
            items 带稳定 key（= 消息 id），prepend 更早消息时已有消息 key 不变
            → DOM 常驻，折叠状态天然保持；
@@ -37,8 +55,9 @@
           @retry="chatStore.retry"
         />
 
-        <!-- 正在生成标识（v-show：DOM 常驻，仅切换 display，保持子节点顺序稳定） -->
-        <div v-show="chatStore.streaming" class="streaming-hint">
+        <!-- 正在生成标识（v-show：DOM 常驻，仅切换 display，保持子节点顺序稳定）。
+             只在主对话视图显示：子 Agent 的忙碌由它标签上的圆点表示（与 TUI 同一取舍） -->
+        <div v-show="chatStore.streaming && !chatStore.activeAgentId" class="streaming-hint">
           <span class="dot"></span>
           正在思考...
         </div>
@@ -100,11 +119,13 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from "vue";
 import { ChatDotRound, Promotion, VideoPause } from "@element-plus/icons-vue";
+import type { SubAgentView } from "@ai-zen/desktop-shared";
 import MessageBubble from "./MessageBubble.vue";
 import { useUiStore } from "../../stores/ui.js";
 import { useWorkspaceStore } from "../../stores/workspace.js";
 import { useConversationStore } from "../../stores/conversation.js";
 import { useChatStore } from "../../stores/chat.js";
+import { MAIN_AGENT_VIEW_ID, nextAgentViewId } from "../../stores/agentView.js";
 import { useMessageWindow } from "../../composables/useMessageWindow.js";
 import { useAutoScroll } from "../../composables/useAutoScroll.js";
 
@@ -134,9 +155,44 @@ const currentModelId = computed(() => {
   return conversationStore.activeConversation?.modelId ?? uiStore.models[0]?.id ?? "";
 });
 
+/**
+ * 消息列表当前显示的那一份：主对话或选中的子 Agent。
+ *
+ * 只认 store 的 `viewMessages`（唯一判据）：下面的渲染窗口、滚动、打字机跟随等每一个
+ * watch 都读它，判断散在多处迟会有一处漏改。
+ */
+const viewMessages = computed(() => chatStore.viewMessages);
+
+/** 一个栏目标签 */
+interface AgentTabItem {
+  /** `""` = 主对话，否则是子 Agent id（与 store 的 `activeAgentId` 同一口径） */
+  id: string;
+  label: string;
+  /** 缺省 = 不画圆点（主对话） */
+  status?: SubAgentView["status"];
+}
+
+/**
+ * 栏目条目：主对话 + 各子 Agent。
+ *
+ * 标签文字直接印服务端给的 `index`，本地不数 —— 切到某个子 Agent、或中途接上连接时
+ * 本地都没数过它，自己数就一定对不上。没有子 Agent 时返回空数组 = 栏目不存在（主对话就是全部）。
+ */
+const agentTabs = computed<AgentTabItem[]>(() => {
+  if (chatStore.agents.length === 0) return [];
+  return [
+    { id: MAIN_AGENT_VIEW_ID, label: "主对话" },
+    ...chatStore.agents.map((agent) => ({
+      id: agent.id,
+      label: `子AGENT${agent.index}`,
+      status: agent.status,
+    })),
+  ];
+});
+
 // ==================== 渲染窗口 / 滚底策略（由 composables 提供） ====================
 const { items, hasOlder, loadingOlder, resetToTail, loadOlder } =
-  useMessageWindow(() => chatStore.messages, scroller, {
+  useMessageWindow(() => viewMessages.value, scroller, {
     initialLoad: INITIAL_LOAD,
     pageSize: PAGE_SIZE,
     maxLoaded: MAX_LOADED,
@@ -151,7 +207,7 @@ let initializing = false;
 
 /** 完成初始化：窗口对齐最近 INITIAL_LOAD 条 + 滚底 */
 function finalizeInitialization() {
-  if (!initializing || chatStore.messages.length === 0) return;
+  if (!initializing || viewMessages.value.length === 0) return;
   initializing = false;
   resetToTail();
   alignToBottom(); // markdown/代码块异步渲染高度延迟稳定，多次延迟滚底对齐真底
@@ -173,6 +229,19 @@ function beginConversation() {
 
 watch(activeConversationId, () => beginConversation());
 
+// ==================== 时序：切换查看的 Agent ====================
+// 渲染窗口（loadedStart）与 scrollTop 都是**上一个视图**的量：窗口起点指向旧数组的第 n 条，
+// 滚动位置也停在旧内容处。切过去不重置，子 Agent 那几条会被窗口切掉、或视口停在空处，
+// 看起来就像「这个子 Agent 什么都没说」。所以切视图 = 窗口对齐新视图尾部 + 滚到底。
+// 也包括「选中项失效退回主对话」那条（store 修正 activeAgentId 后这里同样触发）。
+watch(
+  () => chatStore.activeAgentId,
+  () => {
+    resetToTail();
+    alignToBottom();
+  },
+);
+
 // ==================== 用户上翻：暂停自动滚底 ====================
 // 用户主动向上滚动（上翻历史）后一段时间内，流式增量 / done 替换消息数组
 // 触发的 followIfNearBottom 不执行 —— 避免「底部附近滚两下就被拽回底部」。
@@ -180,11 +249,11 @@ let userScrollingUp = false;
 let scrollUpResetTimer = 0;
 let lastScrollTop = 0;
 
-// 消息数组引用替换（activate 首载 / done 完成）：
+// 消息数组引用替换（activate 首载 / done 完成 / 子 Agent 栏目整份替换）：
 // - initializing（切会话首载）→ finalizeInitialization()
 // - 已完成初始化（done 替换）→ 若在底部附近重新对齐（用户上翻中则跳过）
 watch(
-  () => chatStore.messages,
+  () => viewMessages.value,
   (msgs) => {
     if (initializing) {
       if (msgs.length === 0) return; // 仍在加载（槽位未填充），保持 initializing
@@ -197,7 +266,7 @@ watch(
 
 // 消息条数变化（user 事件 push / 流式 append）：追加时仅在底部附近跟随滚底
 watch(
-  () => chatStore.messages.length,
+  () => viewMessages.value.length,
   () => {
     if (!initializing && !userScrollingUp) followIfNearBottom();
   },
@@ -206,7 +275,7 @@ watch(
 // 流式增量：最后一条 content 变长时，若在底部附近则跟随（打字机滚底）
 watch(
   () => {
-    const last = chatStore.messages.at(-1);
+    const last = viewMessages.value.at(-1);
     return typeof last?.content === "string" ? last.content.length : 0;
   },
   () => {
@@ -270,10 +339,35 @@ async function handleStop() {
 }
 
 function onInputKeydown(e: KeyboardEvent) {
+  if (e.key === "Tab") {
+    handleTabKey(e);
+    return;
+  }
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     handleSend();
   }
+}
+
+/**
+ * Agent 栏目切换：输入框为空时的 `Tab` 在「主对话 → 子1 → 子2 → … → 主对话」之间循环。
+ *
+ * 为什么只在输入框为空时才拦：有文字时 Tab 是浏览器的焦点导航，也是键盘用户离开输入框的
+ * 唯一通道 —— 为了切栏目把它吞掉，就等于把这块区域封死。有文字时一个键都不碰，交回默认行为。
+ *
+ * 为什么必须 `preventDefault`：textarea 里 Tab 的默认行为是把焦点移走，不拦的话按下 Tab
+ * 焦点就跑了，循环切换看上去只生效一次。
+ *
+ * 为什么没有子 Agent 时也不拦：那时栏目根本不存在，Tab 没有任何可切的东西。
+ */
+function handleTabKey(e: KeyboardEvent) {
+  if (inputText.value.length > 0) return;
+  if (agentTabs.value.length === 0) return;
+  e.preventDefault();
+  chatStore.selectAgent(
+    activeConversationId.value,
+    nextAgentViewId(chatStore.agents, chatStore.activeAgentId),
+  );
 }
 
 onMounted(() => {
@@ -337,6 +431,55 @@ onMounted(() => {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+}
+
+// ==================== Agent 栏目（主对话 / 子 Agent 切换） ====================
+.agent-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--el-border-color);
+  background-color: var(--el-bg-color);
+}
+
+.agent-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+  cursor: pointer;
+  user-select: none;
+
+  // 高亮规则只有一条：活动项 = 深色背景 + 加粗；非活动项**没有背景**（否则整条都像被选中）
+  &.is-active {
+    background-color: var(--el-fill-color-dark);
+    font-weight: 600;
+    color: var(--el-text-color-primary);
+  }
+
+  // 状态圆点：三种状态同形不同色（运行中蓝 / 完成绿 / 失败红），不新增图标库
+  .status-dot {
+    flex: none;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+
+    &.is-running {
+      background-color: var(--el-color-primary);
+    }
+
+    &.is-done {
+      background-color: var(--el-color-success);
+    }
+
+    &.is-failed {
+      background-color: var(--el-color-danger);
+    }
   }
 }
 

@@ -35,6 +35,8 @@ import {
   type ModelLevel,
   type SessionAnswerParams,
   type SessionAnswerResult,
+  type SubAgentSnapshotParams,
+  type SubAgentSnapshotResult,
 } from "@ai-zen/agents-server";
 import { SocketServerClient, type ClientInfo } from "@ai-zen/agents-client";
 // 只要类型：`AgentNS` 在本文件里全是类型位置。里面那几个 role/status 字面量走下面的
@@ -66,12 +68,99 @@ const TOOL_ROLE = "tool" as AgentNS.Role;
 const COMPLETED_STATUS = "completed" as AgentNS.MessageStatus;
 
 /**
+ * core 风格的最小事件面（`events.on` / `events.off` + 一个 `fire`）：假 Agent 与假子 Agent 共用。
+ *
+ * `on` / `off` 是 core 的 `Agent.events` 真有的两个方法（服务端只挂这两个）；`fire` 是假件
+ * 才有的那一半 —— 真件里由 core 在恰当时刻广播，这里由用例决定「什么时候推哪一片」。
+ * 子 Agent 的那条流（`chunk-parsed` / `error`）与主 Agent 走同一个形状：服务端给子 Agent
+ * 挂的就是这两个监听（`SessionManager` 的 `onSubStart`）。
+ */
+class EventBus {
+  private readonly handlers = new Map<string, Set<(...args: any[]) => void>>();
+
+  readonly events = {
+    on: (event: string, handler: (...args: any[]) => void) => {
+      if (!this.handlers.has(event)) this.handlers.set(event, new Set());
+      this.handlers.get(event)!.add(handler);
+    },
+    off: (event: string, handler: (...args: any[]) => void) => {
+      this.handlers.get(event)?.delete(handler);
+    },
+  };
+
+  fire(event: string, ...args: unknown[]): void {
+    for (const handler of this.handlers.get(event) ?? []) handler(...args);
+  }
+}
+
+/**
+ * 假子 Agent：一个子 Agent 能提供的最小面（`messages` + `events`）。
+ *
+ * 形状照抄真件的 `SubAgentLike`（`SessionManager` 从 `sub-agent-start` 的载荷里只取这两样）：
+ * 服务端给它挂 `chunk-parsed` / `error` 两个监听，并在 `session.subAgent.snapshot` 里把它
+ * **自己的** `messages` 原样交出去。所以这里要的正是「一个消息表 + 一条事件流」。
+ */
+export class FakeSubAgent extends EventBus {
+  messages: AgentNS.Message[] = [];
+  private messageSeq = 0;
+
+  /**
+   * 推一片增量（与主 Agent 的 `emitDelta` 同形：`chunk-parsed` 两参，第一个是那条正在拼的
+   * assistant 消息，第二个才是 OpenAI 风格的 delta chunk）。
+   */
+  emitDelta(text: string, reasoning = ""): void {
+    const receiver = this.streamingMessage();
+    receiver.content = `${receiver.content ?? ""}${text}`;
+    if (reasoning) receiver.reasoning_content = `${receiver.reasoning_content ?? ""}${reasoning}`;
+    this.fire("chunk-parsed", receiver, {
+      choices: [
+        {
+          delta: {
+            ...(text ? { content: text } : {}),
+            ...(reasoning ? { reasoning_content: reasoning } : {}),
+          },
+        },
+      ],
+    });
+  }
+
+  /** 子 Agent 出错（真件里是它自己的 `error` 事件）：服务端据此把它标成 `failed` */
+  fail(error: unknown): void {
+    this.fire("error", error);
+  }
+
+  /** 追加一条自己历史里的消息（子任务的用户消息 / 上一轮工具结果这类：只有快照里有） */
+  pushMessage(role: AgentNS.Role, content: string): AgentNS.Message {
+    const message: AgentNS.Message = { id: this.nextId(role), role, content };
+    this.messages.push(message);
+    return message;
+  }
+
+  private streamingMessage(): AgentNS.Message {
+    const last = this.messages[this.messages.length - 1];
+    if (last?.role === ASSISTANT_ROLE) return last;
+    const message: AgentNS.Message = {
+      id: this.nextId("assistant"),
+      role: ASSISTANT_ROLE,
+      content: "",
+    };
+    this.messages.push(message);
+    return message;
+  }
+
+  private nextId(kind: string): string {
+    this.messageSeq += 1;
+    return `sub-${kind}_${this.messageSeq}`;
+  }
+}
+
+/**
  * 假 Agent：能跑一轮的最小面。
  *
  * 用例通过 {@link emitDelta} / {@link finish} 驱动「这一轮」的进展 —— 这正是真件里 SDK
  * 事件的那几个时刻（`open` / `chunk-parsed` / `finally`）。
  */
-export class FakeAgent implements AgentLike {
+export class FakeAgent extends EventBus implements AgentLike {
   messages: AgentNS.Message[] = [];
   lastUsage: unknown = undefined;
   modelLevel: ModelLevel = "agent";
@@ -89,19 +178,8 @@ export class FakeAgent implements AgentLike {
   /** 每一轮 `send()` 的入参，供断言「发的是什么」 */
   readonly sent: unknown[] = [];
 
-  private readonly handlers = new Map<string, Set<(...args: any[]) => void>>();
   private readonly pending: Array<() => void> = [];
   private messageSeq = 0;
-
-  readonly events = {
-    on: (event: string, handler: (...args: any[]) => void) => {
-      if (!this.handlers.has(event)) this.handlers.set(event, new Set());
-      this.handlers.get(event)!.add(handler);
-    },
-    off: (event: string, handler: (...args: any[]) => void) => {
-      this.handlers.get(event)?.delete(handler);
-    },
-  };
 
   /** 真件在 `send()` 里追加 user 消息；这里照做，否则快照里看不到用户说的话 */
   send(input: unknown): Promise<unknown> {
@@ -119,10 +197,6 @@ export class FakeAgent implements AgentLike {
   }
 
   use(_plugin: unknown): void {}
-
-  fire(event: string, ...args: unknown[]): void {
-    for (const handler of this.handlers.get(event) ?? []) handler(...args);
-  }
 
   /** 推一片增量（真件的形状：`chunk-parsed` 两参，第二个才是 delta chunk） */
   emitDelta(text: string, reasoning = ""): void {
@@ -232,6 +306,24 @@ export class FakeAgent implements AgentLike {
     });
   }
 
+  /**
+   * 一个子 Agent 开工（真件的 `sub-agent-start`）。
+   *
+   * 载荷就是 core 的 `SubAgentContext` 里服务端真正读的那两样：`{ agent, subAgent }`
+   * （`SessionManager` 的 `onSubStart` 只解构 `subAgent`）。真件里这个对象还带
+   * `toolCallContext`，但服务端一个字段都不从那里取 —— 在这里编一个半截的上下文，只会让
+   * 「假件比真件多的东西」变成下一个人要猜的负担。
+   */
+  startSubAgent(subAgent: FakeSubAgent = new FakeSubAgent()): FakeSubAgent {
+    this.fire("sub-agent-start", { agent: this, subAgent });
+    return subAgent;
+  }
+
+  /** 一个子 Agent 跑完了（真件的 `sub-agent-end`，SDK 在子 Agent 收尾时广播） */
+  endSubAgent(subAgent: FakeSubAgent): void {
+    this.fire("sub-agent-end", { agent: this, subAgent });
+  }
+
   /** 本轮结束（真件的 `finally`）；`session.settleTurn` 由它触发 */
   finish(): void {
     this.fire("finally");
@@ -284,6 +376,13 @@ export interface TestServer {
   answerCalls: SessionAnswerParams[];
   /** `session.answer` 的**回执**（`answered:false` = 来晚了；抛错的那次不会进这里） */
   answerResults: SessionAnswerResult[];
+  /**
+   * `session.subAgent.snapshot` 的**入参**记录（每次调用一条，按先后）。
+   *
+   * 「`started` 一到就去拉一次快照」在客户端那一侧只有一个往返可看，屏幕上什么都没变 ——
+   * 所以判据只能是「服务端确实收到过这条请求」。
+   */
+  subAgentSnapshotCalls: SubAgentSnapshotParams[];
   /** 走原始协议（准备数据 / 验服务端侧事实时用，例如 `saveAs`、`snapshot`） */
   call: <T>(method: string, params?: unknown) => Promise<T>;
   /**
@@ -323,6 +422,14 @@ export interface TestServerOptions {
    * 「客户端答得快还是会话关得快」，写成竞态就不再是判据。
    */
   failAnswerWith?: () => Error;
+  /**
+   * 让 `session.subAgent.snapshot` 的**回程**变慢：返回一个 promise，用例自己决定何时放行。
+   *
+   * 用它确定地复现真事里那条竞态：快照的往返可能比第一批增量还慢（子任务越小越明显）。
+   * 请求**那一刻**的结果先取出来并定格（真件里那一帧就是那一刻的副本），只是送回客户端的
+   * 时间被人为推后 —— 于是「先推增量、快照后到且更短」这件事一定会发生，不用凑时序。
+   */
+  holdSubAgentSnapshot?: () => Promise<void>;
 }
 
 /**
@@ -354,6 +461,7 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
   const agentInputs: CreateAgentInput[] = [];
   const answerCalls: SessionAnswerParams[] = [];
   const answerResults: SessionAnswerResult[] = [];
+  const subAgentSnapshotCalls: SubAgentSnapshotParams[] = [];
   const manager = new SessionManager({
     // 组装根会传自己的 hub，这样**全局通知**也走同一条推送线（见 `SessionManagerOptions.hub`）
     hub,
@@ -424,6 +532,23 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
     return result;
   };
 
+  /**
+   * 子 Agent 快照：记下入参，并可选择地把**回程**推迟到用例放行（见 `holdSubAgentSnapshot`）。
+   *
+   * 结果先取出来再 `structuredClone` 定格：真件里这一帧就是「服务端处理请求那一刻」的副本
+   * （`messages` 数组当场复制、立刻序列化上线），之后子 Agent 继续吐字也不会让它变。用例把
+   * 回程推后之后，这个定格才真的能被观察到（否则慢下来的那一帧会带去更长的新内容）。
+   */
+  const subAgentSnapshotHandler = handlers[SESSION_METHODS.subAgentSnapshot]!;
+  handlers[SESSION_METHODS.subAgentSnapshot] = async (params, connection) => {
+    subAgentSnapshotCalls.push(params as SubAgentSnapshotParams);
+    const result = structuredClone(
+      await subAgentSnapshotHandler(params, connection),
+    ) as SubAgentSnapshotResult;
+    if (options.holdSubAgentSnapshot) await options.holdSubAgentSnapshot();
+    return result;
+  };
+
   const daemon = new Daemon({
     aiZenDir: dir,
     port: 0,
@@ -456,6 +581,7 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
     agentInputs,
     answerCalls,
     answerResults,
+    subAgentSnapshotCalls,
     call: async <T>(method: string, params?: unknown) => await client.call<T>(method, params),
     hub,
     stop: async () => {

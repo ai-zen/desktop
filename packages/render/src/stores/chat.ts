@@ -1,9 +1,13 @@
 /**
- * chat store — 按会话隔离的聊天状态（消息/流式/错误/重试）。
+ * chat store — 按会话隔离的聊天状态（消息/流式/错误/重试 + 子 Agent 栏目）。
  *
  * 每个 conversation 拥有独立的 byConversation[id] 槽位，切换会话只是切换视角，
  * 各会话的流式状态互不干扰（修复：原全局单 messages/streaming 在切换时互相覆盖，
  * 导致进行中消息断裂、streaming 卡死）。
+ *
+ * 槽位里除了主对话，还存了**当前这一轮**的子 Agent 栏目（`agents` + `activeAgentId`）：
+ * 主对话那条 `message` / `done` 事件的语义一字未动，栏目是并行的另一份数据，只影响
+ * 「消息列表读哪一份」（见 getter `viewMessages`）。
  *
  * 订阅 chat:push 事件，由 App.vue 在初始化时绑定到 applyEvent。
  */
@@ -12,10 +16,11 @@ import { defineStore } from "pinia";
 // 通知用 toast 弹（与设置页同一种提示）：element-plus 已在 render 的 dependencies 里
 import { ElMessage } from "element-plus";
 import { AgentNS } from "@ai-zen/agents-core";
-import type { ChatStreamEvent } from "@ai-zen/desktop-shared";
+import type { ChatStreamEvent, SubAgentView } from "@ai-zen/desktop-shared";
 import * as api from "../apis/index.js";
 import { useWorkspaceStore } from "./workspace.js";
 import { useConversationStore } from "./conversation.js";
+import { MAIN_AGENT_VIEW_ID, resolveActiveAgentId } from "./agentView.js";
 
 interface ConversationChatState {
   messages: AgentNS.Message[];
@@ -23,6 +28,14 @@ interface ConversationChatState {
   error: string;
   /** 最近一次发送失败的内容（重试用） */
   lastFailedContent: string;
+  /**
+   * 当前这一轮的子 Agent 栏目（数组顺序 = 服务端给的 `index` 顺序 = 标签顺序）。
+   *
+   * 只活当前一轮：`agents: []` 意味着这一轮结束（或换了会话 id），栏目收回。
+   */
+  agents: SubAgentView[];
+  /** 现在看的是谁：`""`（`MAIN_AGENT_VIEW_ID`）= 主对话，否则是某个子 Agent 的 id */
+  activeAgentId: string;
 }
 
 function emptyState(): ConversationChatState {
@@ -31,6 +44,8 @@ function emptyState(): ConversationChatState {
     streaming: false,
     error: "",
     lastFailedContent: "",
+    agents: [],
+    activeAgentId: MAIN_AGENT_VIEW_ID,
   };
 }
 
@@ -57,7 +72,7 @@ export const useChatStore = defineStore("chat", {
   }),
 
   getters: {
-    /** 当前激活会话的消息（兼容旧用法） */
+    /** 当前激活会话的消息（兼容旧用法；子 Agent 视图请用 `viewMessages`） */
     messages: (state): AgentNS.Message[] =>
       state.byConversation[state.activeConversationId]?.messages ?? [],
     streaming: (state): boolean =>
@@ -66,6 +81,26 @@ export const useChatStore = defineStore("chat", {
       state.byConversation[state.activeConversationId]?.error ?? "",
     lastFailedContent: (state): string =>
       state.byConversation[state.activeConversationId]?.lastFailedContent ?? "",
+
+    /** 当前会话本轮的子 Agent 栏目（空数组 = 没有栏目，视图层据此决定栏目是否渲染） */
+    agents: (state): SubAgentView[] =>
+      state.byConversation[state.activeConversationId]?.agents ?? [],
+    /** 当前选中项：`""` = 主对话 */
+    activeAgentId: (state): string =>
+      state.byConversation[state.activeConversationId]?.activeAgentId ?? MAIN_AGENT_VIEW_ID,
+    /**
+     * 消息列表**当前该显示的那一份**：选中主对话 = 主对话消息，选中子 Agent = 它自己的消息。
+     *
+     * 抽成 getter 而不是让视图自己 if：视图里 `useMessageWindow` / `useAutoScroll` 的每一个
+     * watch 都要读它，散在模板和脚本里两处判断迟早会有一处漏改。
+     */
+    viewMessages: (state): AgentNS.Message[] => {
+      const st = state.byConversation[state.activeConversationId];
+      if (!st) return [];
+      if (st.activeAgentId === MAIN_AGENT_VIEW_ID) return st.messages;
+      // 选中项失效由 applyEvent 的 `agents` 分支当场修正，这里只是取值安全
+      return st.agents.find((agent) => agent.id === st.activeAgentId)?.messages ?? st.messages;
+    },
   },
 
   actions: {
@@ -86,6 +121,11 @@ export const useChatStore = defineStore("chat", {
         streaming: state.streaming,
         error: "",
         lastFailedContent,
+        // 栏目不随重载保留：`chat.getState` 只给主对话的实时消息，没有子 Agent 的快照
+        // （栏目只活当前一轮，服务端那边由 `agents: []` 收尾）。沿用旧栏目等于把上一轮/上一次
+        // 会话的标签挂回来 —— 点进去是永远不再更新的残影，还可能顶着一批早已失效的消息。
+        agents: [],
+        activeAgentId: MAIN_AGENT_VIEW_ID,
       };
     },
 
@@ -140,6 +180,16 @@ export const useChatStore = defineStore("chat", {
       if (st?.lastFailedContent) {
         return this.send(st.lastFailedContent);
       }
+    },
+
+    /**
+     * 切换当前会话要看哪个子 Agent（`""` = 主对话；栏目标签的点击与 Tab 都走这里）。
+     *
+     * 只改**看哪一份消息**，不改发送目标：消息永远发给主对话（与 TUI 同一取舍）。
+     */
+    selectAgent(conversationId: string, agentId: string) {
+      if (!conversationId) return;
+      this.ensure(conversationId).activeAgentId = agentId;
     },
 
     /** 中止当前会话的生成（停止按钮；main 保留已生成部分，done 事件负责收尾） */
@@ -239,6 +289,19 @@ export const useChatStore = defineStore("chat", {
           st.streaming = false;
           convStore.setRunning(evt.conversationId, false);
           this.refreshList(evt.conversationId);
+          break;
+
+        // 子 Agent 栏目：**整份替换**（每次变化推全量，render 不做 diff/upsert）。
+        //
+        // 替换后必须立刻修正选中项：`agents: []`（这一轮结束）与「换了一批新 id」都会让原来
+        // 选中的子 Agent 消失，不修正的话会话就停在一段已经不存在的子对话上 —— 界面看不出异常
+        // （没有标签高亮，消息列表却还是那一份旧数据），用户只能靠再点一次「主对话」自救。
+        // 修正规则（选中项还在就保持）抽在 agentView.ts 里，纯函数、可测。
+        //
+        // 只碰栏目，不动 `messages` / `streaming` / `error`：主对话那条线不受子 Agent 影响。
+        case "agents":
+          st.agents = evt.agents;
+          st.activeAgentId = resolveActiveAgentId(st.agents, st.activeAgentId);
           break;
       }
     },
