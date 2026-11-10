@@ -23,12 +23,17 @@ import {
   ConfigService,
   Daemon,
   FileSessionStore,
+  SESSION_METHODS,
   SessionManager,
   createAgentHandlers,
   createConfigHandlers,
   createSessionHandlers,
   type AgentLike,
+  type CreateAgentInput,
+  type MethodHandler,
   type ModelLevel,
+  type SessionAnswerParams,
+  type SessionAnswerResult,
 } from "@ai-zen/agents-server";
 import { SocketServerClient, type ClientInfo } from "@ai-zen/agents-client";
 // 只要类型：`AgentNS` 在本文件里全是类型位置。里面那几个 role/status 字面量走下面的
@@ -188,6 +193,18 @@ export interface TestServer {
   layer: ServerLayer;
   /** 门面推给 render 的全部事件（按到达顺序） */
   pushed: ChatStreamEvent[];
+  /**
+   * 会话层交给 Agent 装配的入参（每次 `createAgent` 一条，按先后）。
+   *
+   * 里面有 `resolveMode`：真件里 SDK 的自动迁移插件在上下文到阈值时调它，服务端因此向
+   * 客户端提问（`session.question`）。假 Agent 不会自己跑到那一步，用例只能从这里取那**
+   * 一个函数**来发起提问 —— 见 `events.test.ts` 的 `askHandoffMode`。
+   */
+  agentInputs: CreateAgentInput[];
+  /** `session.answer` 的**入参**记录（服务端 handler 里记的：这是「客户端真的答了」的证据） */
+  answerCalls: SessionAnswerParams[];
+  /** `session.answer` 的**回执**（`answered:false` = 来晚了；抛错的那次不会进这里） */
+  answerResults: SessionAnswerResult[];
   /** 走原始协议（准备数据 / 验服务端侧事实时用，例如 `saveAs`、`snapshot`） */
   call: <T>(method: string, params?: unknown) => Promise<T>;
   stop: () => Promise<void>;
@@ -201,6 +218,20 @@ export interface TestServerOptions {
    * 开着它，就会在拆服务端时与那次写档撞上（服务端会对着已经关掉的会话推通知）。
    */
   autoTitle?: boolean;
+  /**
+   * 等客户端回答 `session.question` 的时限（缺省是服务端的 5 分钟）。
+   *
+   * 用例把它**调大**才有意义：提问方在几毫秒内就回来了，说明答案来自客户端而不是超时兜底。
+   * 调小则用来「让一个答失败的问题自己收场」，用例不必等。
+   */
+  askTimeoutMs?: number;
+  /**
+   * 让 `session.answer` 抛错（返回那个错，不返回就不抛）。
+   *
+   * 用它在**确定性**的时机复现「回答失败」：真事里那种失败（会话刚被收掉）取决于
+   * 「客户端答得快还是会话关得快」，写成竞态就不再是判据。
+   */
+  failAnswerWith?: () => Error;
 }
 
 /**
@@ -226,17 +257,23 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
 
   const agent = new FakeAgent();
   let seq = 0;
+  /** 会话层每次交给 Agent 装配的入参（含 `resolveMode`，见 `TestServer.agentInputs`） */
+  const agentInputs: CreateAgentInput[] = [];
+  const answerCalls: SessionAnswerParams[] = [];
+  const answerResults: SessionAnswerResult[] = [];
   const manager = new SessionManager({
     // 假件必须照抄真件这一处：SDK 的 `createAgent` 递给 Agent 的是**解析之后**的定义
     // （三级里赢了的那一档已经写进 `definition.modelId`，`modelLevel` 说清是哪一档）。
     // 服务端的 `SessionListEntry.effectiveModelId` 正是从这里取的（`modelIdOf`），
     // 假件不跟着入参走，「有会话级覆盖」就永远测不出覆盖值
     createAgent: async (input) => {
+      agentInputs.push(input);
       agent.definition.modelId = input.modelId ?? MODEL_ID;
       agent.modelLevel = input.modelId ? "session" : "agent";
       return agent;
     },
     nextSessionId: () => `chat_${++seq}`,
+    ...(options.askTimeoutMs !== undefined ? { askTimeoutMs: options.askTimeoutMs } : {}),
     storeFor: (workspaceId) =>
       new FileSessionStore({ rootDir: join(dir, "workspaces", workspaceId) }),
     // 真件由组装根注入（`createAutoTitle`）；这里只验「服务端起了名之后客户端怎么翻」
@@ -260,24 +297,43 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
     },
   });
 
+  const handlers: Record<string, MethodHandler> = {
+    ...createSessionHandlers({
+      manager,
+      workspacesRoot: join(dir, "workspaces"),
+      defaultWorkspacePath: projectDir,
+    }),
+    ...createAgentHandlers({
+      // 只有 `agent.model.set` 用它（写定义 + 清思考参数）；这一阶段没有 render 面
+      // 调它，用例也不需要它真去改定义，所以给一个记录用的最小实现
+      factory: { setModel: async ({ agentId, modelId }) => ({ agentId, modelId }) },
+      config,
+    }),
+    ...createConfigHandlers({ config }),
+  };
+
+  /**
+   * 在服务端这一侧记下 `session.answer`（并可选地弄坏它）。
+   *
+   * 为什么记在这里而不是看提问方的返回值：「跳过」的兜底值也是 `null`，光看
+   * `askHandoffMode` 回来的是 `null` 分辨不出「客户端答了」与「等到超时了」。**服务端
+   * 收到过这条请求**（`answerCalls`）且**认领了它**（`answered: true`）才是那个判据。
+   */
+  const answerHandler = handlers[SESSION_METHODS.answer]!;
+  handlers[SESSION_METHODS.answer] = async (params, connection) => {
+    answerCalls.push(params as SessionAnswerParams);
+    const failure = options.failAnswerWith?.();
+    if (failure) throw failure;
+    const result = (await answerHandler(params, connection)) as SessionAnswerResult;
+    answerResults.push(result);
+    return result;
+  };
+
   const daemon = new Daemon({
     aiZenDir: dir,
     port: 0,
     version: "0.0.0-test",
-    handlers: {
-      ...createSessionHandlers({
-        manager,
-        workspacesRoot: join(dir, "workspaces"),
-        defaultWorkspacePath: projectDir,
-      }),
-      ...createAgentHandlers({
-        // 只有 `agent.model.set` 用它（写定义 + 清思考参数）；这一阶段没有 render 面
-        // 调它，用例也不需要它真去改定义，所以给一个记录用的最小实现
-        factory: { setModel: async ({ agentId, modelId }) => ({ agentId, modelId }) },
-        config,
-      }),
-      ...createConfigHandlers({ config }),
-    },
+    handlers,
   });
   await daemon.start();
 
@@ -302,6 +358,9 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
     daemon,
     layer,
     pushed,
+    agentInputs,
+    answerCalls,
+    answerResults,
     call: async <T>(method: string, params?: unknown) => await client.call<T>(method, params),
     stop: async () => {
       layer.dispose();

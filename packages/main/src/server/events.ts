@@ -22,10 +22,13 @@
  *
  * ## 没有 render 落点的那几条（协议有、这一阶段不用）
  *
- * `session.notice` / `global.notice` / `session.question` / `session.subAgent.*`：render
- * 侧既没有通知栏、也没有子 Agent 栏目（`ChatStreamEvent` 里没有对应类型，而 D1 不许改
- * render）。所以它们的增量不进主对话 —— 把子 Agent 的正文拼进主回答，等于凭空多出一段
- * 文字。自动迁移的「用哪种方式交接」因此也没人回答：服务端等超时后用它自己的 `fallback`。
+ * `session.notice` / `global.notice` / `session.subAgent.*`：render 侧既没有通知栏、也没有
+ * 子 Agent 栏目（`ChatStreamEvent` 里没有对应类型，而 D1 不许改 render）。所以它们的增量
+ * 不进主对话 —— 把子 Agent 的正文拼进主回答，等于凭空多出一段文字。
+ *
+ * 同一组里 **`session.question` 是唯一的例外**：它不是「推给用户看的信息」，而是「服务端
+ * 在等一个回答」。没人答，服务端就白等到 5 分钟超时 —— 所以桌面端收到就立刻按「跳过」答
+ * 回去（见 {@link ChatEventBridge.onQuestion}）。
  */
 
 import {
@@ -33,8 +36,10 @@ import {
   SESSION_EVENTS,
   SESSION_METHODS,
   type MessageDeltaEvent,
+  type SessionAnswerResult,
   type SessionIdChangedEvent,
   type SessionPhaseEvent,
+  type SessionQuestionEvent,
   type SessionSnapshotResult,
   type SessionTitleChangedEvent,
   type TurnEndEvent,
@@ -100,6 +105,7 @@ export class ChatEventBridge {
       client.on(SESSION_EVENTS.turnEnd, (event) => this.onTurnEnd(event)),
       client.on(SESSION_EVENTS.idChanged, (event) => this.onIdChanged(event)),
       client.on(SESSION_EVENTS.titleChanged, (event) => this.onTitleChanged(event)),
+      client.on(SESSION_EVENTS.question, (event) => this.onQuestion(event)),
     );
     await client.call(EVENT_METHODS.watch);
   }
@@ -248,6 +254,52 @@ export class ChatEventBridge {
       .catch((error: unknown) => {
         // 同上：拿不到新会话的快照时，画面只能靠已知内容停住，但错误必须说出去
         this.options.push({ conversationId: key, type: "error", message: messageOf(error) });
+      });
+  }
+
+  /**
+   * 服务端在自动迁移之前问「用哪种方式交接」→ 立刻按**跳过**回答（`choice: null`）。
+   *
+   * ## 为什么必须答
+   *
+   * 服务端发出 `session.question` 之后会**一直等**：等不到答案，它自己等满
+   * `ASK_TIMEOUT_MS`（5 分钟）才用 `fallback` 收场。而桌面端没有提问 UI
+   * （`ChatStreamEvent` 里没有这一类，本期不许改 render），也就是说这 5 分钟里没有任何人
+   * 看得见这个问题 —— 用户那边的感受是「界面像是死了 5 分钟，然后什么也没发生」（服务端
+   * 那条「本次没迁移」的通知同样没有落点）。不答，就是把服务端的一段等待变成用户面前的
+   * 一段假死。
+   *
+   * ## 为什么答的是「跳过」
+   *
+   * `choice: null`（跳过）与服务端这条退路的取值**是同一个答案**：这个问题的 `fallback`
+   * 就是 `null`（本次不迁移）。所以这里没有替用户做决定 —— 只是把那个超时提前表达出来，
+   * 最终结果与服务端等满 5 分钟后自己走 `fallback` 一字不差，唯一差别是不烧那 5 分钟。
+   * 反过来，如果这里答 `self`（自动迁移），那才是替用户做了决定：谁来写交接文档（保真 vs
+   * 便宜、要不要现在就走）是用户的，服务端已按产品决定废掉了「无人可问时默认 `self`」
+   * （见 `SessionManager.askHandoffMode` 的注释），桌面端不该把它复活。
+   *
+   * ## 将来
+   *
+   * 加了提问 UI 之后，这里要改成**弹窗**（把 `kind` / `options` 交给用户，用户点了才
+   * `session.answer`），而不是继续自动跳过 —— 「桌面端答不了」是今天的限制，不是产品语义。
+   *
+   * ## 失败不报人看
+   *
+   * `session.answer` 可能失败：连接断了、会话刚被收掉（`unknown-session`）、或者来晚了
+   * （服务端回 `answered: false`）。这些都不是用户可感知的错误 —— 服务端那边本来就会走
+   * `fallback`，结果与「答成功了」完全一样。所以这里**只吞掉**：不推 `error`（那会给一次
+   * 本来就没事的自动迁移凭空弹一条红字），也不重试（重试只会撞上同一条「来晚了」）。
+   */
+  private onQuestion(event: SessionQuestionEvent): void {
+    void this.options.connection
+      .call<SessionAnswerResult>(SESSION_METHODS.answer, {
+        // 用服务端给的 id（不是 `keyOf`）：回答这条请求认的是服务端自己的会话键
+        sessionId: event.sessionId,
+        questionId: event.questionId,
+        choice: null,
+      })
+      .catch(() => {
+        // 见上面「失败不报人看」：服务端自己会走 fallback，这条路不该出现在 render 里
       });
   }
 
