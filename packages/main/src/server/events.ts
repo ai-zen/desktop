@@ -8,18 +8,22 @@
  * 的翻译只该有一处实现，否则「谁负责把增量拼成消息」「谁负责在收尾时补快照」会散在
  * 调用点各写一遍，漂起来就是"有的会话能滚、有的会话空白"。
  *
- * ## 四个必须在这里做掉的翻译（对应协议缺口的降级）
+ * ## 必须在这里做掉的翻译（对应协议缺口的降级）
  *
  * 1. **没有「开始」事件** —— 从 `session.phase` 出现非 `null` 推出「这一轮开始了」，
  *    每个 `turnId` 只派发一次 `user` + `start`；
  * 2. **`message.delta` 只有 `text` / `reasoning`** —— 拼进一条**占位** assistant 消息，
  *    消息 id 是客户端生成的（服务端不给 id），`turn.end` 之后由快照全量替换成真实 id；
  *    工具调用的**组装态**走另一条事件 `session.toolCalls`（见 {@link ChatEventBridge.onToolCalls}），
- *    它那份扁平载荷要在这里回收成 SDK 的嵌套形（见 {@link toSdkToolCalls}）。工具**结果**
- *    仍然只有收尾那次快照里有 —— 协议没有「结果增量」这条事件；
- * 3. **`turn.end` 只带 `ok` / `error` 不带消息** —— 收尾补一次 `session.snapshot`，
- *    用全量替换（`done`）把工具结果与消息 status 一次补齐；
- * 4. **`session.phase` 的文案没处放** —— `ChatStreamEvent` 里没有 stage 字段，所以阶段
+ *    它那份扁平载荷要在这里回收成 SDK 的嵌套形（见 {@link toSdkToolCalls}）；
+ * 3. **`session.messageAppended` 的 `message` 是 `unknown`** —— 它是服务端手里那条**已经
+ *    定型**的完整消息（今天是工具结果），客户端只把它回收成 `AgentNS.Message` 再原样搬给
+ *    render，**不拼装、不补字段、不编 id**（见 {@link ChatEventBridge.onMessageAppended}）；
+ * 4. **`turn.end` 只带 `ok` / `error` 不带消息** —— 收尾补一次 `session.snapshot`，
+ *    用全量替换（`done`）把消息 status（`completed` / `aborted` / `error`）与服务端对历史的
+ *    清洗一次补齐。第 3 条已经把工具结果提前送到屏幕上，但**收尾仍以快照为准**：一条被取消
+ *    的轮次里没定型的工具结果，只有快照里才有；
+ * 5. **`session.phase` 的文案没处放** —— `ChatStreamEvent` 里没有 stage 字段，所以阶段
  *    只用来判「有没有在跑」（派发 `start`、给侧栏的 `running` 提供口径），文案不进 render。
  *
  * ## 通知（`session.notice` / `global.notice`）：翻成人话再推
@@ -48,6 +52,7 @@ import {
   type MessageDeltaEvent,
   type SessionAnswerResult,
   type SessionIdChangedEvent,
+  type SessionMessageAppendedEvent,
   type SessionNoticeEvent,
   type SessionPhaseEvent,
   type SessionQuestionEvent,
@@ -124,6 +129,7 @@ export class ChatEventBridge {
       client.on(SESSION_EVENTS.phase, (event) => this.onPhase(event)),
       client.on(SESSION_EVENTS.delta, (event) => this.onDelta(event)),
       client.on(SESSION_EVENTS.toolCalls, (event) => this.onToolCalls(event)),
+      client.on(SESSION_EVENTS.messageAppended, (event) => this.onMessageAppended(event)),
       client.on(SESSION_EVENTS.turnEnd, (event) => this.onTurnEnd(event)),
       client.on(SESSION_EVENTS.idChanged, (event) => this.onIdChanged(event)),
       client.on(SESSION_EVENTS.titleChanged, (event) => this.onTitleChanged(event)),
@@ -222,6 +228,54 @@ export class ChatEventBridge {
     this.pushAssistant(key, slot);
   }
 
+  /**
+   * 一条**已经定型**的工具结果消息 → `type: "message"`，原样搬给 render。
+   *
+   * ## 为什么**不需要**本地拼装
+   *
+   * 服务端推过来的是那一刻就定型了的那条消息**本身**（`role: "tool"` + `tool_call_id` +
+   * `name` + 正文 + `status`），与收尾快照里的是同一份东西。客户端在这一层唯一要做的是把
+   * 协议的 `unknown` 回收成 SDK 形状（见下），然后原样推给 render —— 一旦在这里「顺手补
+   * 点什么」（拼进占位消息、给正文加前缀、按工具调用把结果挂到卡片上），同一条消息就有了
+   * 第二份表示，收尾对账时还得判「哪一份才是真的」。
+   *
+   * ## 为什么它不会和占位 assistant 消息打架
+   *
+   * 占位消息是**客户端编 id** 的那一条（`{@link ChatEventBridge.pushAssistant}` 里的
+   * `${key}:assistant:${turnId}`，正文在流、由 `message.delta` 一路拼），而工具结果带的是
+   * **服务端真实 id**。render 的 `type: "message"` 是按 id 就地 upsert（`stores/chat.ts`：
+   * 有则替换、无则追加末尾），两个 id 不同，于是它们**各自占一个气泡**：正文一条、结果一条。
+   * 也正因为 id 来自服务端，收尾那次 `done`（快照全量替换）不会把这条结果当成「多出来的
+   * 本地消息」丢掉 —— 快照里那一条的 id 与这里推的完全相同。
+   *
+   * ## 顺序可能不是消息表里的顺序，别假设它跟在某条后面
+   *
+   * 服务端是「谁先跑完谁先推」（`tool-call-end` 每个工具各发一次）：并行时后开始的那个工具
+   * 可能先完成、先上线，于是这条消息的下标在消息表里排在**正在跑**的那条之后，到达时间却
+   * 更早。所以这里不按顺序做任何事（不插入指定位置、不假设上一条是谁）—— render 的追加
+   * 语义就是它的正确语义：用户看到的是「谁先跑完谁的结果先出现」，而不是一条被卡住不动的
+   * 队列。
+   *
+   * ## 消息**一定**有 id，所以这里没有兜底分支
+   *
+   * core 的 `Message` 构造函数保证 `id = options.id ?? generateMessageId()`
+   * （`packages/core/src/Message.ts`），落进 `agent.messages` 的每一条都带着 id；协议把它
+   * 交成 `unknown` 只是「不认识 SDK 的消息形状」，不是「可能没有 id」。为「万一是
+   * undefined」补一条自编 id 的分支，就是在制造第二份 id 真相：同一条消息在 `messageAppended`
+   * 里一个 id、在 `done` 的快照里另一个 id，render 按 id upsert 会把它画成两条 —— 一个
+   * 本不存在的情况硬生生变成一份重复的气泡。
+   *
+   * 会话 key 走 `keyOf`：换过 id 的会话（迁移 / 另存为）在 render 那边仍以旧 key 认识自己，
+   * 与 `message.delta` / `turn.end` / `notice` 同一口径。
+   */
+  private onMessageAppended(event: SessionMessageAppendedEvent): void {
+    const key = this.keyOf(event.sessionId);
+    // 回收成 SDK 形状是客户端这一层的事（协议刻意不认识它）：手法与收尾取快照那行
+    // `snapshot.messages as AgentNS.Message[]` 一致 —— 服务端给的就是 core 那条消息本身
+    const message = event.message as AgentNS.Message;
+    this.options.push({ conversationId: key, type: "message", id: message.id, message });
+  }
+
   private onTurnEnd(event: TurnEndEvent): void {
     void this.finishTurn(event).catch((error: unknown) => {
       // 快照拿不到（连接断了 / 会话刚被收掉）：没有权威消息可给，但 render 正等着收尾。
@@ -237,9 +291,13 @@ export class ChatEventBridge {
   /**
    * 一轮收尾：补一次快照，用**服务端那份**全量替换。
    *
-   * 为什么不把本地拼的那条流当作结果：工具调用参数、工具结果消息、消息 status
-   * （`completed` / `aborted` / `error`）与服务端对历史的清洗都只有服务端有。客户端拼
-   * 出来的只是「能让屏幕滚起来的近似」，收尾必须换成真件。
+   * 为什么不把本地拼的那条流当作结果：工具调用参数、消息 status（`completed` /
+   * `aborted` / `error`）与服务端对历史的清洗都只有服务端有。客户端拼出来的只是「能让屏幕
+   * 滚起来的近似」，收尾必须换成真件。
+   *
+   * 工具结果消息已经由 `messageAppended` 提前推过了（见 {@link onMessageAppended}），但这里
+   * 不做增量对账、照旧整份替换：那条路是「让用户早点看到」，快照才是「最终历史」，而两者
+   * 里的同一条消息 id 相同（服务端真实 id），替换不会画成两条。
    */
   private async finishTurn(event: TurnEndEvent): Promise<void> {
     const key = this.keyOf(event.sessionId);

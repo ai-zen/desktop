@@ -183,17 +183,53 @@ export class FakeAgent implements AgentLike {
     });
   }
 
-  /** 往消息里塞一条工具结果（只有服务端才知道的东西，用例用它验「收尾补快照」） */
-  pushToolResult(content: string): AgentNS.Message {
+  /**
+   * 往消息里塞一条工具结果（只有服务端才知道的东西）。
+   *
+   * 两种用法：单独用 = 验「收尾那次快照把它补齐」；配合 {@link endToolCall} = 验「工具跑完
+   * 那一刻就上屏」（服务端那一刻才推 `session.messageAppended`）。
+   */
+  pushToolResult(content: string, name?: string): AgentNS.Message {
     const message: AgentNS.Message = {
       id: this.nextId("tool"),
       role: TOOL_ROLE,
       content,
       tool_call_id: "call_1",
+      ...(name ? { name } : {}),
       status: COMPLETED_STATUS,
     };
     this.messages.push(message);
     return message;
+  }
+
+  /**
+   * 一个工具跑完了：把 core 那一刻的 `tool-call-end` 发出去（服务端据此推工具结果）。
+   *
+   * 形状照抄真件的 `markResult`（`packages/core/src/Agent.ts`，载荷类型
+   * `AgentNS.ToolCallEndContext`）：**三个字段** `{ agent, toolCall, result }`，而且
+   * `result.status` 在 fire **之前**就已经翻成终态。两处都不能省：
+   *
+   *   - 服务端推 `session.messageAppended` 的判据是「这条消息定型了吗」
+   *     （`FINISHED_STATUSES`），先 fire 后翻状态就等于让用例造一个真件里不存在的时序；
+   *   - `result` 就是刚定型的那条消息**本身**，服务端推上线时直接搬它（不重新包装）。
+   *     用例传的就是 {@link pushToolResult} 返回的那个对象 —— 它已经进了 `messages`，
+   *     与真件里「执行前先 append、跑完就地翻终态」是同一个位置。
+   *
+   * 为什么 `toolCall` 只填 `id` / `type` / `function.name`：`markResult` 把**任务本身**
+   * （`PendingTask.function`）递出去，这里没有真调用的入参可填，而服务端今天不读它 ——
+   * 但字段形状不能省，否则将来有人真的去读 `event.toolCall` 时，用例仍然是绿的。
+   */
+  endToolCall(message: AgentNS.Message, status: AgentNS.MessageStatus = COMPLETED_STATUS): void {
+    message.status = status;
+    this.fire("tool-call-end", {
+      agent: this,
+      toolCall: {
+        id: message.tool_call_id,
+        type: "function",
+        function: { name: message.name },
+      },
+      result: message,
+    });
   }
 
   /** 本轮结束（真件的 `finally`）；`session.settleTurn` 由它触发 */
