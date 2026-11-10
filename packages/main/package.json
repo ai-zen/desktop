@@ -6,19 +6,21 @@
   "scripts": {
     "build": "rolldown -c rolldown.config.mjs",
     "dev": "rolldown -c rolldown.config.mjs --watch",
-    "start": "electron --remote-debugging-port=9222 dist/main.mjs"
+    "start": "electron --remote-debugging-port=9222 dist/main.mjs",
+    "test": "vitest run"
   },
   "dependencies": {
-    "@ai-zen/agents-core": "^4.1.0",
-    "@ai-zen/agents-sdk": "^0.9.1",
-    "@ai-zen/desktop-shared": "workspace:*",
-    "ws": "^8.21.1"
+    "@ai-zen/agents-client": "link:../../../agents/packages/client",
+    "@ai-zen/agents-server": "link:../../../agents/packages/server",
+    "@ai-zen/desktop-shared": "workspace:*"
   },
   "devDependencies": {
-    "@types/ws": "^8.18.1",
+    "@ai-zen/agents-core": "link:../../../agents/packages/core",
+    "@ai-zen/agents-sdk": "link:../../../agents/packages/sdk",
     "cross-env": "^10.1.0",
     "electron": "^43.1.1",
     "rolldown": "^1.2.0",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "vitest": "^5.1.0"
   }
 }

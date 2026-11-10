@@ -1,104 +1,47 @@
 /**
- * DesktopApp — 主进程应用根（面向对象单根）。
+ * DesktopApp — 主进程应用根（面向对象单根），**瘦客户端**形态。
  *
- * 所有 main 端状态与行为收拢于此对象：
- *   - 基础设施：ConfigManager / Repositories / ProviderPool
- *   - 服务：Workspace / Conversation / Agent / Model / Chat（+ ServicesManager 分发）
- *   - 运行状态：主窗口引用、目录选择记忆
- * main.ts 只做入口：`new DesktopApp().start()`。
+ * 这个进程现在只做四件事：窗口、原生对话框、IPC 转发、把服务端事件转给 render。
+ * 会话执行（Agent / 模型 / 工具 / 存档）全部在常驻的 `agents-server` 那边，本进程
+ * 一条连接过去、按协议调方法（`server/` 这一层）。
  *
- * 组装是显式手写 DI（无反射/扫描）：依赖通过构造函数注入，跨服务协作
- * （删除会话 → 释放运行中 agent）用构造钩子显式声明，不隐藏。
+ * 组装是显式手写 DI（无反射/扫描）：`createServerLayer()` 拿走的全是**非 electron 的
+ * 事实**（配置根、握手身份、默认工作目录、事件出口），electron 的东西（`app.getPath`、
+ * `dialog`、`webContents.send`）只出现在本文件里，以参数/回调的形式递进去 —— 那条边界
+ * 就是「服务端门面能被 vitest + 真 daemon 直接验」的前提。
  */
 
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme } from "electron";
 import { join } from "path";
 import { fileURLToPath } from "url";
-import { mkdir } from "fs/promises";
-import { AgentRepository, ConfigManager } from "@ai-zen/agents-sdk";
-import { AGENTS_DIR, AI_ZEN_DIR, CONFIG_FILE, DB_FILE, DESKTOP_DIR } from "./config.js";
-import { Database } from "./storage/Database.js";
-import { WorkspaceRepository } from "./storage/WorkspaceRepository.js";
-import { ConversationRepository } from "./storage/ConversationRepository.js";
-import { WorkspaceService } from "./services/WorkspaceService.js";
-import { ConversationService } from "./services/ConversationService.js";
-import { AgentService } from "./services/AgentService.js";
-import { ModelService } from "./services/ModelService.js";
-import { ConfigService } from "./services/ConfigService.js";
-import { ChatService } from "./services/ChatService.js";
-import { ProviderPool } from "./services/ProviderPool.js";
-import { ServicesManager } from "./services/ServicesManager.js";
+import { AI_ZEN_DIR } from "./config.js";
+import { createServerLayer, type ServerLayer } from "./server/index.js";
 import type { ChatStreamEvent } from "@ai-zen/desktop-shared";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 
 export class DesktopApp {
-  // ==================== 基础设施 ====================
-  private readonly configManager = new ConfigManager(CONFIG_FILE);
-  private readonly agentRepository = new AgentRepository(AGENTS_DIR);
-  /** SQLite 数据库（worker 线程异步访问），单根创建、注入给各 Repository */
-  private readonly db = new Database(DB_FILE);
-  private readonly workspaceRepository = new WorkspaceRepository(this.db);
-  private readonly conversationRepository = new ConversationRepository(this.db);
-  private readonly providerPool = new ProviderPool(
-    this.configManager,
-    AGENTS_DIR,
-    AI_ZEN_DIR,
-  );
-
-  // ==================== 服务 ====================
-  private readonly agentService = new AgentService(this.agentRepository);
-  private readonly modelService = new ModelService(this.configManager);
-  private readonly configService = new ConfigService(this.configManager, AI_ZEN_DIR);
-  private readonly chatService: ChatService;
-  private readonly workspaceService: WorkspaceService;
-  private readonly conversationService: ConversationService;
-  private readonly servicesManager: ServicesManager;
+  // ==================== 服务端门面（唯一的业务出口） ====================
+  private readonly server: ServerLayer = createServerLayer({
+    aiZenDir: AI_ZEN_DIR,
+    clientInfo: { name: "@ai-zen/desktop", version: app.getVersion() },
+    // 用户不填工作目录时的默认值：桌面端就是"桌面"，这是 electron 的事实，注入进去
+    defaultCwd: () => app.getPath("desktop"),
+    push: (event) => this.pushChatEvent(event),
+  });
 
   // ==================== 运行状态 ====================
   private mainWindow: BrowserWindow | null = null;
   /** 目录选择器记住的上次位置（默认桌面） */
   private lastSelectedDir: string | null = null;
 
-  constructor() {
-    this.chatService = new ChatService({
-      workspaceRepo: this.workspaceRepository,
-      conversationRepo: this.conversationRepository,
-      providers: this.providerPool,
-      push: (evt) => this.pushChatEvent(evt),
-    });
-
-    // 删除会话/工作空间 → 释放其运行中的 agent（钩子注入，删除联动显式化）
-    this.conversationService = new ConversationService(
-      this.conversationRepository,
-      this.agentRepository,
-      this.configManager,
-      { onRemove: (_wsId, id) => this.chatService.release(id) },
-    );
-    this.workspaceService = new WorkspaceService(
-      this.workspaceRepository,
-      () => app.getPath("desktop"),
-      this.conversationRepository,
-      { onRemove: (id) => this.chatService.releaseWorkspace(id) },
-    );
-
-    this.servicesManager = new ServicesManager({
-      workspace: this.workspaceService,
-      conversation: this.conversationService,
-      agent: this.agentService,
-      model: this.modelService,
-      chat: this.chatService,
-      config: this.configService,
-    });
-  }
-
-  /** 启动：就绪 → 初始化 → 注册 IPC → 创建窗口 → 绑定生命周期 */
+  /** 启动：就绪 → 连服务端 → 注册 IPC → 创建窗口 → 绑定生命周期 */
   async start(): Promise<void> {
     await app.whenReady();
 
-    await this.ensureDataDirs();
-    // 初始化共享配置目录 + 默认 Agent / SubAgent（已有文件不覆盖）
-    await this.configManager.bootstrap();
+    // 连上服务端并开始收事件：必须早于任何 IPC 调用 —— 服务端在 `session.send` 的回执
+    // 之前就会推第一条阶段事件，订阅晚一步就会漏掉「这一轮开始了」
+    await this.server.start();
 
     // 窗口外观跟随系统设置 + 去掉默认菜单栏
     nativeTheme.themeSource = "system";
@@ -117,9 +60,9 @@ export class DesktopApp {
         app.quit();
       }
     });
-    // 退出前优雅关闭数据库 worker（断引用后 terminate，避免 exit 竞态）
+    // 退出前断开连接（服务端是常驻的，不跟着桌面端退出）
     app.on("will-quit", () => {
-      void this.db.close();
+      this.server.dispose();
     });
   }
 
@@ -163,17 +106,14 @@ export class DesktopApp {
     });
   }
 
-  private async ensureDataDirs(): Promise<void> {
-    await mkdir(DESKTOP_DIR, { recursive: true });
-  }
-
   // ==================== IPC ====================
   private registerIpc(): void {
-    // 业务服务动态分发
+    // 业务服务动态分发（分发键与旧实现完全一致：workspace / conversation / agent /
+    // model / chat / config）
     ipcMain.handle(
       "invokeService",
       (_event, service: string, method: string, ...args: unknown[]) =>
-        this.servicesManager.invokeService(service, method, ...args),
+        this.server.manager.invokeService(service, method, ...args),
     );
 
     // 窗口控制

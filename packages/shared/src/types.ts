@@ -19,7 +19,7 @@ export interface Conversation {
   id: string;
   workspaceId: string;
   agentId: string;
-  /** 对话级局部模型参数，覆盖 Agent 定义（优先级：对话 > Agent 定义 > 全局默认） */
+  /** 模型下拉框要显示的**当前模型**：桌面端往里放的是服务端三级解析后的生效值（不是「会话级覆盖」那一位，覆盖值为空时它仍有值） */
   modelId: string;
   name: string;
   /** 直接沿用 Core 消息模型（三层统一，无 adapter） */
@@ -32,7 +32,7 @@ export interface ConversationSummary {
   id: string;
   workspaceId: string;
   agentId: string;
-  /** 对话级局部模型参数 */
+  /** 同上：模型下拉框要显示的**当前模型**（桌面端填入服务端清单里的 `effectiveModelId`，解析不出来时才退回会话级覆盖值 / 空串） */
   modelId: string;
   name: string;
   messageCount: number;

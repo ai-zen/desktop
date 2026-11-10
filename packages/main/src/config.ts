@@ -1,21 +1,25 @@
 /**
- * main 路径常量 — 与 CLI 共享 ~/.ai-zen 根目录。
+ * main 的路径常量 —— 只剩一个：`AI_ZEN_DIR`。
  *
- * 目录结构：
- *   ~/.ai-zen/
- *   ├── config.json        ← 全局配置（端点、模型等，CLI/Desktop 共享）
- *   ├── agents/            ← Agent 定义（共享）
- *   └── desktop/           ← Desktop 运行时数据
- *       └── ai-zen.db      ← 主存储（SQLite：workspaces + conversations）
+ * ## 为什么只需要根目录
+ *
+ * 桌面端是瘦客户端：会话执行、Agent 定义、模型配置、工作区存档全在常驻的
+ * `agents-server` 那边，本进程不读写磁盘上的任何数据文件。它唯一需要的路径事实是
+ * **ai-zen 的数据根在哪**，然后整根递给 `server/` 那一层（`createServerLayer({ aiZenDir })`），
+ * 由它去做服务发现（`<AI_ZEN_DIR>/run/server.json`）和按需拉起服务端（`ensureServer`）
+ * —— 根目录下面有什么（存档、desktop 子目录等）是**服务端的事实**，客户端不解释它。
+ *
+ * ## 为什么可以没有子路径常量
+ *
+ * 以前这里还导出 `CONFIG_FILE` / `AGENTS_DIR` / `DESKTOP_DIR` / `DB_FILE`，那是「main 自己
+ * 跑 SDK + 本地 SQLite」时代的产物；那一层已整体删除，这些常量一个调用方都没有，留着
+ * 只会诱导新代码再往本地磁盘写。
+ *
+ * 环境变量 `AI_ZEN_DIR` 优先：用例要指向 `/tmp` 下的临时目录，桌面端跟着 Electron 的
+ * home 走 —— 两者都不该改代码。
  */
 
 import { app } from "electron";
 import { join } from "path";
 
 export const AI_ZEN_DIR = process.env.AI_ZEN_DIR || join(app.getPath("home"), ".ai-zen");
-export const CONFIG_FILE = join(AI_ZEN_DIR, "config.json");
-export const AGENTS_DIR = join(AI_ZEN_DIR, "agents");
-
-export const DESKTOP_DIR = join(AI_ZEN_DIR, "desktop");
-/** 主存储 SQLite 文件路径（由 DesktopApp 单根创建 Database 实例） */
-export const DB_FILE = join(DESKTOP_DIR, "ai-zen.db");
