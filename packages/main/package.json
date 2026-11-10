@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@ai-zen/agents-client": "link:../../../agents/packages/client",
+    "@ai-zen/agents-protocol": "link:../../../../agents/packages/protocol",
     "@ai-zen/agents-server": "link:../../../agents/packages/server",
     "@ai-zen/desktop-shared": "workspace:*"
   },

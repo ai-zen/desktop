@@ -20,6 +20,9 @@ importers:
       '@ai-zen/agents-client':
         specifier: link:../../../agents/packages/client
         version: link:../../../agents/packages/client
+      '@ai-zen/agents-protocol':
+        specifier: link:../../../../agents/packages/protocol
+        version: link:../../../../agents/packages/protocol
       '@ai-zen/agents-server':
         specifier: link:../../../agents/packages/server
         version: link:../../../agents/packages/server
