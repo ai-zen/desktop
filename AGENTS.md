@@ -108,10 +108,13 @@ cd packages/main && pnpm build
 ## 其他
 
 - 数据根目录：`~/.ai-zen/`（共享根，CLI/Desktop 共用）
-  - **桌面端不落盘**：工作区、会话存档、配置全在常驻 `agents-server` 那边（它的 `AI_ZEN_DIR`）。main 从盘上只读 `<AI_ZEN_DIR>/run/` 下的两件事：`server.json`（**默认**的地址来源：服务端此刻在哪个端口）与 `token`（凭证，服务端启动时读或生成，`0600`），见 `packages/main/src/server/index.ts`
-  - **连哪台、拿什么进门可以显式配 —— 但只有能力、没有界面**：`packages/main/src/config.ts` 的 `SERVER_CONFIG` 有 `serverUrl` / `serverToken` 两个字段，**默认都是 `undefined`**（= 走上面那条默认路：发现文件 + `run/token`）。给了 `serverUrl` 就**只连那个地址、不拉起**捆绑的 server（只打一条只说地址、不含凭证的 log）。本轮没有设置界面，用户目前只能改这个文件
+  - **数据文件仍然只归服务端**：工作区、会话存档、Agent 定义、模型配置全在常驻 `agents-server` 那边（它的 `AI_ZEN_DIR`），桌面端不碰。main 从盘上只读 `<AI_ZEN_DIR>/run/` 下的两件事：`server.json`（**默认**的地址来源：服务端此刻在哪个端口）与 `token`（凭证，服务端启动时读或生成，`0600`），见 `packages/main/src/server/index.ts`
+  - **唯一的本地写是连接配置**：`<AI_ZEN_DIR>/desktop/connection.json`（`0600` + 原子写，里面有凭证；读不到 / 坏 JSON / 字段不合法一律回退「本地」并照常启动）。这**不是**「桌面端开始落盘了」，而是**先有鸡先有蛋**：服务端手上有全部业务配置，可要问它，得先知道**连哪台** —— 把「连哪台」也存到服务端，等于要求用户先连上服务端才能选服务端。路径的唯一实现处是 `packages/main/src/connection/settings.ts`（`config.ts` 只剩 `AI_ZEN_DIR`，不拼这个子路径）。**除这一处，不新增任何往本地写数据的入口** —— 有意的例外，不是松绑
+  - **连哪台在设置页里切**（「设置」页开头的「服务端连接」那一节）：本地 = 发现文件 + 本机 `run/token`；远程 = 用户填的地址（`ws://` / `wss://` / `http://` / `https://`，支持 path，如 `wss://example.com/ai-zen`）与凭证（留空 = 用本机 `run/token`）。远程**只连、不拉起**捆绑的 server（本机拉起来的一定不在那个地址上；只留一条只说地址、不含凭证的 log）
+    - 这一节自带「测试连接」（只探测候选值：不落盘、不影响当前连接）与「保存并重连」（先落盘 → dispose 旧层 → 建新 → start，**立刻**生效、不必重启 App，进行中的回答会中断），与页面底部那个「保存」（把默认模型 / 默认 Agent / API Key 写给**服务端**，不换连接）分开
+    - 实现：`connection/{settings,controller}.ts` + 三条专用 IPC `connection:get` / `connection:save` / `connection:test`（**不进** `invokeService` 的 service 表 —— 那六个键是服务端的方法面）
   - 会话历史由服务端的 `<workspace>/workspace.json` + `<workspace>/sessions/*.json` 存档接管，main 侧没有本地库
   - 全局配置：`~/.ai-zen/config.json`（含 endpoints/models，DeepSeek apiKey 明文）——**由服务端读写**，桌面端只走 `config.get` / 窄方法
-- IPC 通道：`invokeService`（业务）+ `window:xxx`（窗口控制）+ `dialog:selectDirectory`（原生目录选择，默认桌面、记住上次位置）
+- IPC 通道：`invokeService`（业务）+ `connection:get/save/test`（连接设置，见上）+ `window:xxx`（窗口控制）+ `dialog:selectDirectory`（原生目录选择，默认桌面、记住上次位置）
 - 业务语义：工作空间 cwd **选填，默认桌面**（`app.getPath("desktop")` 兜底）；删 workspace 级联删会话，删会话不碰 workspace
 - 调试截图（`preview-*.png`）已加入 `.gitignore`，勿提交

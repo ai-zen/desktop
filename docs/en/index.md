@@ -18,7 +18,7 @@ AI-Zen Desktop is the **desktop workbench** of AI-Zen: built with Electron + Vue
 | Renderer process | Vue 3 + Vite + Pinia + Element Plus |
 | Streaming Markdown | markdown-it + highlight.js (languages registered on demand, synchronous rendering) |
 | Agent runtime | `@ai-zen/agents-sdk` (Provider / Agent / MCP capabilities) — running on the **resident server** side |
-| Data storage | the resident `agents-server` (workspaces and conversation archives live on its disk; Desktop keeps nothing locally) |
+| Data storage | the resident `agents-server` (workspaces and conversation archives live on its disk; Desktop's own persistence is just the one connection-settings file, `desktop/connection.json`) |
 
 ## Project Structure
 

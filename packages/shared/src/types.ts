@@ -82,6 +82,51 @@ export interface ConfigSettings {
   dataDir: string;
 }
 
+// ==================== 连接设置（本地 / 远程） ====================
+
+/**
+ * 连哪台服务端：`local` = 老路（地址读 `<AI_ZEN_DIR>/run/server.json`，凭证读 `<AI_ZEN_DIR>/run/token`）；
+ * `remote` = 用户显式填的那一台（可能在他自己机器上，也可能在隧道另一端）。
+ *
+ * ## 为什么只有两档，且 `local` 不叫 `loopback`
+ *
+ * 决策 D9 明文**不做静态的 loopback 判断**：隧道的入口恰恰是 `127.0.0.1:9999`（`ssh -L` /
+ * `kubectl port-forward` / tailscale serve 都长这样），从地址上分不出「本机 daemon」与
+ * 「隧道另一端」。所以 `local` 说的不是「地址在本机」，而是「按本机发现文件 + 本机凭证走」——
+ * 连的到底是谁，由服务端的回答决定。
+ */
+export type ConnectionMode = "local" | "remote";
+
+/**
+ * 用户在设置面板里能改的全部连接配置。落盘在 `<AI_ZEN_DIR>/desktop/connection.json`（`0600`）。
+ *
+ * ## `local` 模式下那两个值必须是 `undefined`，不是空字符串
+ *
+ * 客户端把空串当成「显式给了一个空值」（于是它不会退回发现文件 / 本机 `run/token`），只有
+ * `undefined` 才表示「按老路走」。这条口径在 main 侧由
+ * `connection/settings.ts` 的 `connectionConfigOf()` 保证，类型这里只说明事实。
+ */
+export interface ConnectionSettings {
+  /** `local` = 老路：地址读 `<AI_ZEN_DIR>/run/server.json`，凭证读 `<AI_ZEN_DIR>/run/token` */
+  mode: ConnectionMode;
+  /** 仅 `remote` 有意义：显式地址（`ws:` / `wss:` / `http:` / `https:`） */
+  serverUrl?: string;
+  /** 仅 `remote` 有意义：显式凭证。留空 = 退回 `<AI_ZEN_DIR>/run/token`（D9 的本地兜底） */
+  serverToken?: string;
+}
+
+/**
+ * 「测试连接」的结果。
+ *
+ * 成功那一支只有三件可看的事实：服务端自报的协议版本、版本串、以及这一次试连花了多久
+ * （用户判断「远端是不是慢得不能忍」的唯一依据）。失败那一支只有一句**人话** —— 它不是
+ * 错误码的搬运工，`unauthorized` 的四种成因已经被客户端包的 `explainUnauthorized` 翻过
+ * 一遍了（哪一种该去改什么，措辞只有那一份）。
+ */
+export type ConnectionProbe =
+  | { ok: true; protocol: number; version: string; elapsedMs: number }
+  | { ok: false; message: string };
+
 // ==================== 子 Agent 视图 ====================
 
 /**
@@ -211,6 +256,38 @@ export interface ElectronAPI {
   selectDirectory: () => Promise<string | null>;
   /** 窗口控制 */
   window: WindowControls;
+  /** 连接设置（本地 / 远程） */
+  connection: ConnectionControls;
+}
+
+/**
+ * 连接设置的**三条专用通道**（`connection:get` / `connection:save` / `connection:test`）。
+ *
+ * ## 为什么不走 `invokeService`
+ *
+ * `invokeService` 的六个分发键（workspace / conversation / agent / model / chat / config）
+ * 就是**服务端的方法表** —— render 的调用面与协议一一对应。而「连哪台服务端」在服务端还不
+ * 存在的时候就要回答（先有鸡先有蛋），它是**主进程自己**的事。混进那张表，第一个后果是
+ * 「六个键 = 服务端调用面」这条边界失效（下一个人会以为 `connection.get` 也是协议方法），
+ * 第二个是它根本没法被转发 —— 转发要一条连着的服务端，而它正是决定连哪条的那一个。
+ */
+export interface ConnectionControls {
+  /** 读当前配置：文件不存在 / 坏 JSON / 字段不合法都回 `{ mode: "local" }`，**绝不抛错** */
+  get: () => Promise<ConnectionSettings>;
+  /**
+   * 保存并**立即重建连接**（不要求重启 App）：先落盘、再换层。
+   *
+   * 落盘失败就抛、且**一个字段都不动连接**；校验 / 落盘 / 重建任何一步失败都 reject，
+   * 界面据此提示「没保存成功」—— 不允许出现「界面显示远程、实际还连着本地」。
+   */
+  save: (settings: ConnectionSettings) => Promise<{ settings: ConnectionSettings }>;
+  /**
+   * 用**候选值**试连一次：不落盘、不影响当前连接（面板上「测试连接」那个按钮）。
+   *
+   * 地址非法 / 连不上 / 凭证被拒都**不抛错**，一律折成 `{ ok: false, message }`：这条通道的
+   * 返回值就是给人看的一句话，抛错只会让界面多一条没头没尾的红字。
+   */
+  test: (candidate: { serverUrl: string; serverToken?: string }) => Promise<ConnectionProbe>;
 }
 
 declare global {

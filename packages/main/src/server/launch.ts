@@ -73,7 +73,8 @@ export async function spawnBundledServer({
  *
  * 三个参数全是为了「可观测」：
  *
- *   - `config` —— 组装根手上那份配置原样递进来（`config.ts` 的 `SERVER_CONFIG`）。本函数**只读
+ *   - `config` —— 组装根手上那份配置原样递进来（`ServerConnectionConfig`：`serverUrl` /
+ *     `serverToken` 的那两个字段，最终来自用户的连接设置 `ConnectionSettings`）。本函数**只读
  *     `serverUrl`**：凭证在这里没有任何用途，于是它也不可能被写进日志（用例钉着这一条）；
  *   - `spawn` —— 真正的拉进程动作，用例注入一个计数器，「跳过拉起」才有判据（否则它只
  *     表现为「什么都没发生」）；

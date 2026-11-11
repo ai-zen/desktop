@@ -18,7 +18,7 @@ AI-Zen Desktop 是 AI-Zen 的**桌面工作台**：以 Electron + Vue 3 构建�
 | 渲染进程 | Vue 3 + Vite + Pinia + Element Plus |
 | 流式 Markdown | markdown-it + highlight.js（按需注册语言，同步渲染） |
 | Agent 运行时 | `@ai-zen/agents-sdk`（Provider / Agent / MCP 能力）—— 跑在**常驻服务端**那边 |
-| 数据存储 | 常驻服务端 `agents-server`（工作区与会话存档都在它盘上，桌面端不落盘） |
+| 数据存储 | 常驻服务端 `agents-server`（工作区与会话存档都在它盘上；桌面端自己的持久化只有连接设置 `desktop/connection.json` 那一个文件） |
 
 ## 项目结构
 

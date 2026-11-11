@@ -9,29 +9,43 @@
  * 事实**（配置根、握手身份、默认工作目录、事件出口），electron 的东西（`app.getPath`、
  * `dialog`、`webContents.send`）只出现在本文件里，以参数/回调的形式递进去 —— 那条边界
  * 就是「服务端门面能被 vitest + 真 daemon 直接验」的前提。
+ *
+ * ## 「当前连着哪一层」不在本文件
+ *
+ * 以前这里是 `private readonly server = createServerLayer({…})`：字段初始化，永远一份，换连接
+ * 只能重启 App。现在换成 `ConnectionController`（`connection/controller.ts`）：它同样只拿
+ * 非 electron 的事实（全部注入），于是「先落盘再换层」那套顺序能拿假层单测咬死；本文件只负责
+ * 把 electron 的三个事实递进去，并在 IPC 里认领三条连接设置通道。
  */
 
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme } from "electron";
 import { join } from "path";
 import { fileURLToPath } from "url";
-import { AI_ZEN_DIR, SERVER_CONFIG } from "./config.js";
-import { createServerLayer, type ServerLayer } from "./server/index.js";
-import type { ChatStreamEvent } from "@ai-zen/desktop-shared";
+import { AI_ZEN_DIR } from "./config.js";
+import { ConnectionController } from "./connection/controller.js";
+import { readSettings, writeSettings } from "./connection/settings.js";
+import { createServerLayer } from "./server/index.js";
+import type { ChatStreamEvent, ConnectionSettings } from "@ai-zen/desktop-shared";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 
 export class DesktopApp {
   // ==================== 服务端门面（唯一的业务出口） ====================
-  private readonly server: ServerLayer = createServerLayer({
+  /**
+   * 「此刻连着哪一层」全在这一个对象里（D21）：`local` / `remote` 的切换是**换层**（dispose 旧
+   * 的 → 建新的 → start），不是改一个字段。`layer()` 给 IPC 转发，`save()` 换掉它。
+   */
+  private readonly connection = new ConnectionController({
     aiZenDir: AI_ZEN_DIR,
     clientInfo: { name: "@ai-zen/desktop", version: app.getVersion() },
     // 用户不填工作目录时的默认值：桌面端就是"桌面"，这是 electron 的事实，注入进去
     defaultCwd: () => app.getPath("desktop"),
     push: (event) => this.pushChatEvent(event),
-    // 「连哪台服务端 + 拿什么进门」：只从配置里读、原样透传（D9 / D14）。
-    // 今天两个都是 `undefined`（= 老路：发现文件 + 本机 token）；不做设置界面。
-    serverUrl: SERVER_CONFIG.serverUrl,
-    serverToken: SERVER_CONFIG.serverToken,
+    // 建层仍是 `server/` 那一层的事，本文件只做组装
+    createLayer: (options) => createServerLayer(options),
+    // 连接设置落在 `<AI_ZEN_DIR>/desktop/connection.json`（D17），路径拼法在 settings 里
+    readSettings: () => readSettings(AI_ZEN_DIR),
+    writeSettings: (settings) => writeSettings(AI_ZEN_DIR, settings),
   });
 
   // ==================== 运行状态 ====================
@@ -45,7 +59,7 @@ export class DesktopApp {
 
     // 连上服务端并开始收事件：必须早于任何 IPC 调用 —— 服务端在 `session.send` 的回执
     // 之前就会推第一条阶段事件，订阅晚一步就会漏掉「这一轮开始了」
-    await this.server.start();
+    await this.connection.start();
 
     // 窗口外观跟随系统设置 + 去掉默认菜单栏
     nativeTheme.themeSource = "system";
@@ -66,7 +80,7 @@ export class DesktopApp {
     });
     // 退出前断开连接（服务端是常驻的，不跟着桌面端退出）
     app.on("will-quit", () => {
-      this.server.dispose();
+      this.connection.dispose();
     });
   }
 
@@ -116,7 +130,20 @@ export class DesktopApp {
     ipcMain.handle(
       "invokeService",
       (_event, service: string, method: string, ...args: unknown[]) =>
-        this.server.manager.invokeService(service, method, ...args),
+        this.connection.layer().manager.invokeService(service, method, ...args),
+    );
+
+    // 连接设置（本地 / 远程）：三条**专用**通道，**不进** `invokeService` 的 service 表（D20）。
+    // 那六个分发键 = 服务端的方法表，而「连哪台服务端」在服务端还不存在的时候就要回答
+    // （先有鸡先有蛋）—— 混进去会让「六个键 = 服务端调用面」这条边界失效。
+    ipcMain.handle("connection:get", () => this.connection.get());
+    ipcMain.handle("connection:save", (_event, settings: ConnectionSettings) =>
+      this.connection.save(settings),
+    );
+    ipcMain.handle(
+      "connection:test",
+      (_event, candidate: { serverUrl: string; serverToken?: string }) =>
+        this.connection.test(candidate),
     );
 
     // 窗口控制

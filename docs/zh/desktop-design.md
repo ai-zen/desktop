@@ -29,8 +29,11 @@ packages/
 packages/main/src/
 ├── main.ts     入口：new DesktopApp().start()
 ├── app.ts      DesktopApp：窗口 / IPC / 原生对话框 / 事件推给 render
-├── config.ts   路径常量 AI_ZEN_DIR + 服务端连接配置 SERVER_CONFIG（默认 undefined）
+├── config.ts   路径常量 AI_ZEN_DIR（连接配置不在这个文件里）
 ├── preload.ts  contextBridge 暴露 window.electronAPI
+├── connection/ 连本地还是远程（桌面端唯一一处自己的持久化）
+│   ├── settings.ts    连接配置读写：`<AI_ZEN_DIR>/desktop/connection.json`（0600 + 原子写；读不到回 `{ mode: "local" }`）
+│   └── controller.ts  ConnectionController：当前连着哪一层 / 保存即重连 / 测试连接
 └── server/     服务端门面（可直接被 vitest + 真 daemon 验收）
     ├── index.ts            组装根：createServerLayer
     ├── call.ts             一次协议调用（每次取一条活着的连接，不缓存 client）
@@ -46,12 +49,14 @@ packages/main/src/
 - **`server/` 不碰 electron**。`createServerLayer` 只收四样非 electron 的事实（配置根、握手身份、默认工作目录、事件出口），所以它能被用例直接起起来；`app.getPath` / `dialog` / `webContents.send` 只出现在 `packages/main/src/app.ts` 里，以参数或回调递进去。
 - **`server/` 不碰数据文件**。会话清单、消息、工作区、配置全部经协议向服务端要。例外只有「连接本身」那两件，且都只读：地址（`run/server.json`，默认路径）与凭证（`run/token`），由 `ServerConnection` 在每次取用时现读；以及 `launch.ts` 把一个**进程**拉起来 —— 它自己不读不写任何数据文件。
 
+「不碰数据文件」说的是**数据**：会话、工作区、Agent 定义、模型配置仍然只由服务端拥有。桌面端自己确实写一个文件 —— `<AI_ZEN_DIR>/desktop/connection.json`（`connection/settings.ts`：`0600`、原子写、内含凭证；读不到 / 坏 JSON / 字段不合法一律回退 `{ mode: "local" }` 且照常启动）。它必须落在本机而不是服务端，理由是**先有鸡先有蛋**：服务端手上有「该连哪儿」的全部业务配置，可要问它，得先知道**连哪台**；把「连哪台」也存到服务端，就等于要求用户先连上服务端才能选服务端。所以这是**唯一**一处本地写，除这一处不新增任何往本地写数据的入口 —— 有意的例外，不是松绑。
+
 ## 4. 一条连接（`ServerConnection`）
 
 「连哪台、拿什么进门、断了怎么办」收在 `@ai-zen/agents-client` 的 `agents/packages/client/src/transport/connection.ts` 一份实现里，`packages/main/src/server/index.ts` 只组装它一次：
 
-- **连哪台**默认由服务发现文件回答（`<AI_ZEN_DIR>/run/server.json`）。服务端重启后换端口，文件跟着换，本层不缓存端口也不记 pid。配置里给了 `serverUrl`（`config.ts` 的 `SERVER_CONFIG`）时地址就来自那里，这条默认路让位 —— 本层同样不缓存、也不解释它（地址的形状只在客户端包的 `wire/server-url.ts` 里定义一次）。
-- **拿什么进门**：凭证默认读 `<AI_ZEN_DIR>/run/token`（服务端启动时读或生成，`0600`），显式 `serverToken` 优先。这两份值桌面端只**透传**，解析、优先级、`unauthorized` 时那句人话全在客户端包的 `resolve-target.ts` 一处。
+- **连哪台**默认由服务发现文件回答（`<AI_ZEN_DIR>/run/server.json`）。服务端重启后换端口，文件跟着换，本层不缓存端口也不记 pid。用户在设置页选了**远程**时，地址就来自连接设置里的 `serverUrl`（落盘见 `connection/settings.ts`），这条默认路让位 —— 本层同样不缓存、也不解释它（地址的形状只在客户端包的 `wire/server-url.ts` 里定义一次）。
+- **拿什么进门**：凭证默认读 `<AI_ZEN_DIR>/run/token`（服务端启动时读或生成，`0600`），连接设置里的显式 `serverToken` 优先。这两份值桌面端只**透传**，解析、优先级、`unauthorized` 时那句人话全在客户端包的 `resolve-target.ts` 一处。
 - **没有服务端时怎么拉起来**：`startServerProcess` 注入成 `server/launch.ts` —— 拉起**随包分发**的那份（`dist/server.mjs`，由 `rolldown.config.mjs` 的 `server` 入口打成一个自包含文件），用 Electron 自带的 Node 跑（`ELECTRON_RUN_AS_NODE=1`）。客户机上可能连 Node.js / npm 都没有，所以这里不走 `npx`（那是 CLI 的做法 —— 它假设机器上有 npm）。
 
 注意「优先用已经在跑的」不是本层的能力，而是 `ensureServer` 的顺序：先读发现文件、`ping` 一次，通了就直接连，拉进程只发生在没有活着的服务端时。给了显式地址则**一次都不拉**：本机拉起来的那一份一定不在那个地址上，`launch.ts` 只留一条只说地址、不含凭证的 log。
@@ -61,9 +66,21 @@ packages/main/src/
 
 `packages/main/src/server/call.ts` 是这一层与连接之间的唯一接缝：`protocolCall(connection)` 每次 `await connection.client()` 再 `call(method, params)`，本身不持有任何状态 —— 没有第二个地方能偷偷存下一份会过期的 client。
 
+### 切本地 / 远程：设置页那一节
+
+「连哪台」不是构造时一锤定音的入参，用户能在**设置页**里改：那一页开头是一节「**服务端连接**」，单选**本地** / **远程**；远程时填**地址**（`ws://` / `wss://` / `http://` / `https://`，支持 path，如 `wss://example.com/ai-zen`）与**凭证**（留空 = 用本机 `<AI_ZEN_DIR>/run/token`）。
+
+- **这一节自带按钮，与页面底部那个「保存」是两件事**。「测试连接」与「保存并重连」属于连接；底部那个「保存」把「默认模型 / 默认 Agent / API Key」写给**服务端**（连的还是同一台）。混成一个按钮的后果很具体：用户只想改默认模型，点一下却连到另一台机器上去了。
+- **「测试连接」只探测候选值**：不落盘、不影响当前连接。成功显示服务端自报的 `protocol` / `version` / 耗时；失败显示客户端翻好的人话（`explainUnauthorized` 的措辞，例如引导去核对凭证）。地址合法性只问客户端包的 `parseServerUrl`，桌面端不写第二份校验。
+- **「保存并重连」立刻换连接**：`ConnectionController.save()` 的顺序是 **先落盘 → `dispose()` 旧层 → 建新 → `start()`**，不需要重启 App。落盘失败就一个字段都不动连接（否则界面写着远程、实际还连着本地）；进行中的回答会中断，所以保存前有确认框。
+- **保存成功后界面重拉一切来自服务端的数据**（会话 / 工作区 / Agent / 模型列表）：换了服务端就是换了一整个世界，上一台的会话缓存留着只会让人点进一次永远失败的拉取。
+- **远程模式不在本机拉起服务端**：本机拉起来的一定不在那个地址上；本地模式才是「发现文件 + 按需拉起」。
+
+配置落在 `<AI_ZEN_DIR>/desktop/connection.json`（`0600`、原子写），三条**专用** IPC `connection:get` / `connection:save` / `connection:test` 承载这条路径（不进下面那张 service 表）。
+
 ## 5. 协议面
 
-对 render 只有一个入口：`electronAPI.invokeService(service, method, ...args)`，由 `ServicesManager` 查表分发到六个 Service。
+业务面的入口只有一个：`electronAPI.invokeService(service, method, ...args)`，由 `ServicesManager` 查表分发到六个 Service。另有几条**不属这张表**的通道：连接设置 `connection:get` / `save` / `test`（第 4 节）、窗口控制 `window:xxx`、原生目录选择 `dialog:selectDirectory` —— 它们回答的不是服务端的方法，而是主进程自己的事。
 
 | 分发键 | 实现 | 主要动作 |
 |--------|------|----------|
@@ -100,18 +117,18 @@ packages/render/src/
 ├── views/         guide/index.vue、main/{index,Sidebar,ChatPanel,MessageBubble,NewChatDialog}.vue、settings/index.vue
 ├── components/    TitleBar.vue、MarkdownContent.vue
 ├── composables/   useMessageWindow（分页窗口）、useAutoScroll（滚动策略）
-├── stores/        ui / workspace / conversation / chat / agentView
-└── apis/          base + workspace / conversation / chat / agent / model / config
+├── stores/        ui / workspace / conversation / chat / agentView / connection
+└── apis/          base + workspace / conversation / chat / agent / model / config + connection
 ```
 
-- **apis 只做转发**：`invokeService` 收敛成方法，错误统一成 `InvokeServerError`；`subscribeServiceEvent("chat:push", …)` 是唯一的事件入口。
+- **apis 只做转发**：`invokeService` 收敛成方法，错误统一成 `InvokeServerError`；`subscribeServiceEvent("chat:push", …)` 是唯一的事件入口。`apis/connection.ts` 是三条连接通道的同一套转发（它不经过 `invokeService`）。
 - **store 是唯一数据入口**：视图不调 `invokeService` 字符串。`chat` 按 `byConversation[id]` 分槽，切换会话只换视角，各会话的流式状态互不干扰。
 - **子 Agent 栏目与主对话并行**：`agents` 是 `SubAgentView[]` 的整份替换（服务端一变化就推全量），render 不做 diff；选中态修正与 Tab 循环抽在 `packages/render/src/stores/agentView.ts`，纯函数、可测。
 - **通知是 toast，不是状态**：`type: "notice"` 直接弹 element-plus，不进 `ConversationChatState` —— 尤其不碰 `error`（那是「本轮失败」的错误条，`done` 会把它清空）。
 
 ## 8. 数据归属
 
-盘上的一切都归服务端（它的 `AI_ZEN_DIR`）：
+盘上的**数据**都归服务端（它的 `AI_ZEN_DIR`）；唯一的例外是桌面端自己那个连接配置文件（下面 `desktop/` 那一行）：
 
 ```
 <AI_ZEN_DIR>/
@@ -119,14 +136,16 @@ packages/render/src/
 ├── agents/                      入口 Agent 定义
 ├── sub-agents/                  子 Agent 定义
 ├── workspaces/<workspaceId>/    workspace.json + sessions/<id>.json（含 .meta.json 清单）
+├── desktop/                     桌面端自己写（就这一个文件）
+│   └── connection.json          连接设置（本地 / 远程 + 地址 + 凭证，0600；删掉即回到「本地」）
 └── run/                         服务端自己写：怎么找到它
     ├── server.json              服务发现：常驻服务端此刻在哪个端口
     └── token                    凭证（服务端启动时读或生成，0600）
 ```
 
-桌面端从盘上只读 `<AI_ZEN_DIR>/run/` 下的两件事：`server.json`（**默认**的地址来源）与 `token`（凭证）；配置里给了 `serverUrl` 时连 `server.json` 都不读。会话存活由服务端按空闲宽限期（`DEFAULT_SESSION_IDLE_TIMEOUT_MS`）回收，`session.close` 是「我不看这段了」的当场释放，两者都不删存档。
+桌面端在盘上只读 `<AI_ZEN_DIR>/run/` 下的两件事：`server.json`（**默认**的地址来源）与 `token`（凭证）；远程模式下地址来自连接设置，连 `server.json` 都不读。它**只写一处**：`<AI_ZEN_DIR>/desktop/connection.json`（连接设置，理由见第 3 节的「先有鸡先有蛋」；删掉这个文件就回到默认的「本地」）。会话存活由服务端按空闲宽限期（`DEFAULT_SESSION_IDLE_TIMEOUT_MS`）回收，`session.close` 是「我不看这段了」的当场释放，两者都不删存档。
 
-连接配置的两个字段（`packages/main/src/config.ts` 的 `SERVER_CONFIG`）今天都是 `undefined`：能连远端这件事在连接构造点已经成立（给了地址就只连、不拉起捆绑的 server），但**桌面端没有任何设置界面**，用户要改只能自己改配置文件。把这条只说成「分层上留了口子」而不是「支持远程连接」—— 后者会让人以为屏幕上有个地方能填地址。
+「连哪台」与「拿什么进门」就存在这个文件里（`{ mode, serverUrl?, serverToken? }`）：`local` 时两个值对连接层一律是 `undefined`（= 老路），`remote` 时才是用户填的那两个。改它的入口只有设置页那一节（第 4 节），不需要手改文件。
 
 ## 9. 模型解析只有一份实现
 
@@ -140,6 +159,8 @@ packages/render/src/
 ## 10. 测试形态
 
 `server/` 那一层可以被 vitest 直接验收：`packages/main/src/server/test-harness.ts` 起一个**真 daemon**（真端口、真帧、真 `SessionManager`）+ 一个**假 Agent**（用例自己决定什么时候推哪一片增量）。验的是协议映射本身，所以 Agent 的流式循环该是假件，socket 与发现文件必须是真的。用例读的是门面推出去的 `ChatStreamEvent` 序列 —— 翻译层唯一的验收口径就是这条通道。
+
+`connection/` 那一层走另一条路：`ConnectionController` 的依赖全部注入（建层工厂、配置读写、日志出口），用例拿**假层 + 计数器**就能把「先落盘 → dispose → 建新 → start」这条顺序咬死（落盘失败时 `dispose` 一次都不许被调），不必起真 daemon、也不必开窗口；`settings.ts` 的用例碰真磁盘（临时 `AI_ZEN_DIR`），验的是 `0600`、原子写与「读不炸」。当前两侧的规模：`packages/main` 9 个用例文件 / 111 条用例，`packages/render` 3 个文件 / 25 条（含 connection store 的「测试不刷数据、保存才刷」）。
 
 ## 11. 取舍
 

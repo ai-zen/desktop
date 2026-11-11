@@ -29,8 +29,11 @@ Dependency direction: `render → shared`, `main → shared + @ai-zen/agents-cli
 packages/main/src/
 ├── main.ts     entry: new DesktopApp().start()
 ├── app.ts      DesktopApp: window / IPC / native dialogs / events pushed to render
-├── config.ts   the path constant AI_ZEN_DIR + the server connection config SERVER_CONFIG (its two fields are undefined today)
+├── config.ts   the path constant AI_ZEN_DIR (the connection settings are not in this file)
 ├── preload.ts  contextBridge exposing window.electronAPI
+├── connection/ local or remote (the only persistence Desktop owns)
+│   ├── settings.ts    connection settings I/O: `<AI_ZEN_DIR>/desktop/connection.json` (0600 + atomic write; unreadable → `{ mode: "local" }`)
+│   └── controller.ts  ConnectionController: which layer is live / saving means reconnecting / testing a connection
 └── server/     the server facade (directly verifiable by vitest + a real daemon)
     ├── index.ts            assembly root: createServerLayer
     ├── call.ts             one protocol call (fetches a live connection each time, caches no client)
@@ -46,12 +49,14 @@ Two hard boundaries:
 - **`server/` never touches electron.** `createServerLayer` takes only four non-electron facts (config root, handshake identity, default working directory, event sink), so a test can start it directly; `app.getPath` / `dialog` / `webContents.send` appear only in `packages/main/src/app.ts`, passed in as arguments or callbacks.
 - **`server/` never touches data files.** Conversation lists, messages, workspaces and config all come from the server over the protocol. The only exceptions are the two facts the connection itself needs, both read-only: the address (`run/server.json`, the default path) and the credential (`run/token`), read fresh on every use by `ServerConnection`; plus `launch.ts` starting a **process**, which reads and writes no data files itself.
 
+"Never touches data files" is about **data**: conversations, workspaces, Agent definitions and model config are still owned solely by the server. Desktop does write exactly one file of its own — `<AI_ZEN_DIR>/desktop/connection.json` (`connection/settings.ts`: `0600`, atomic write, credential inside; unreadable / broken JSON / invalid fields all fall back to `{ mode: "local" }` and the app still starts). It has to live on this machine rather than on the server because of the **chicken and egg**: the server holds all the business config about where to connect, but asking it requires knowing **which server** first; storing "which server" on the server would mean a user must connect to a server before choosing a server. So this is the **only** local write, and no other entry point for writing data locally gets added — a deliberate exception, not a loosening.
+
 ## 4. One connection (`ServerConnection`)
 
 "Which server, which key, and what if the connection dies" lives in exactly one implementation: `agents/packages/client/src/transport/connection.ts` in `@ai-zen/agents-client`. `packages/main/src/server/index.ts` assembles it once:
 
-- **Which server** is answered by the discovery file (`<AI_ZEN_DIR>/run/server.json`) **by default**. A restarted server switches ports and rewrites the file; this layer caches no port and remembers no pid. When the config carries a `serverUrl` (`SERVER_CONFIG` in `config.ts`), the address comes from there instead and this default path steps aside — this layer still caches nothing and interprets nothing (the shape of an address is defined once, in the client package's `wire/server-url.ts`).
-- **Which key gets you in**: the credential defaults to `<AI_ZEN_DIR>/run/token` (read or created by the server at startup, `0600`); an explicit `serverToken` wins. Desktop only **passes both values through** — parsing, precedence and the plain sentence printed on `unauthorized` all live in one place, `resolve-target.ts` in the client package.
+- **Which server** is answered by the discovery file (`<AI_ZEN_DIR>/run/server.json`) **by default**. A restarted server switches ports and rewrites the file; this layer caches no port and remembers no pid. When the user picks **remote** in the settings page, the address comes from `serverUrl` in the connection settings (persisted by `connection/settings.ts`) instead, and this default path steps aside — this layer still caches nothing and interprets nothing (the shape of an address is defined once, in the client package's `wire/server-url.ts`).
+- **Which key gets you in**: the credential defaults to `<AI_ZEN_DIR>/run/token` (read or created by the server at startup, `0600`); an explicit `serverToken` from the connection settings wins. Desktop only **passes both values through** — parsing, precedence and the plain sentence printed on `unauthorized` all live in one place, `resolve-target.ts` in the client package.
 - **Launching one when none is running**: `startServerProcess` is injected as `server/launch.ts`, which starts the copy **shipped with the app** (`dist/server.mjs`, built as a self-contained file by the `server` entry in `rolldown.config.mjs`) on Electron's bundled Node (`ELECTRON_RUN_AS_NODE=1`). A customer machine may have neither Node.js nor npm, so this path cannot use `npx` — that is the CLI's route, and it assumes npm is there.
 
 Note that "prefer one that is already running" is not this layer's doing: it is `ensureServer`'s order — read the discovery file, `ping` once, use it if it answers. Spawning only happens when no live server exists. With an explicit address it never happens at all: whatever would be started on this machine is not listening on that address, so `launch.ts` only leaves one log line carrying the address and no credential.
@@ -61,9 +66,21 @@ All of these matter, and re-attaching after a reconnect is the easiest to miss: 
 
 `packages/main/src/server/call.ts` is the only seam between this layer and the connection: `protocolCall(connection)` awaits `connection.client()` and then `call(method, params)` on every invocation. It holds no state, so there is no second place that could stash a stale client.
 
+### Local / remote: the section in the settings page
+
+"Which server" is not an input fixed at construction time; the user can change it in the **settings page**. That page opens with a "**Server connection**" section: a radio for **local** / **remote**; when remote, an **address** (`ws://` / `wss://` / `http://` / `https://`, paths supported, e.g. `wss://example.com/ai-zen`) and a **credential** (left empty = use this machine's `<AI_ZEN_DIR>/run/token`).
+
+- **That section carries its own buttons, separate from the "Save" at the bottom of the page.** "Test connection" and "Save and reconnect" belong to the connection; the bottom "Save" writes "default model / default Agent / API Key" to the **server** (the one already connected). Merging them has a very concrete consequence: a user who only wanted to change the default model clicks once and ends up on another machine.
+- **"Test connection" only probes the candidate values**: nothing is written to disk, the current connection is untouched. Success shows the server's self-reported `protocol` / `version` / elapsed time; failure shows the plain sentence the client package already renders (`explainUnauthorized`'s wording, e.g. pointing at the credential). Address validity is asked of `parseServerUrl` only — Desktop writes no second validation.
+- **"Save and reconnect" swaps the connection immediately**: `ConnectionController.save()` runs **write to disk → `dispose()` the old layer → build the new one → `start()`**, with no app restart. A failed write touches no part of the connection (otherwise the UI says remote while the app is still on local); answers in flight are interrupted, hence the confirmation dialog before saving.
+- **After a successful save the UI refetches everything that comes from the server** (conversations / workspaces / Agents / model list): a different server is a different world, and keeping the previous machine's conversation cache only makes the user click into a fetch that can never succeed.
+- **Remote never starts a server on this machine**: whatever would be started here is not listening on that address. Local is the mode that does "discovery file + start on demand".
+
+The config lives in `<AI_ZEN_DIR>/desktop/connection.json` (`0600`, atomic write), carried by three **dedicated** IPC channels `connection:get` / `connection:save` / `connection:test` (they do not go into the service table below).
+
 ## 5. Protocol surface
 
-render has exactly one entry point: `electronAPI.invokeService(service, method, ...args)`, which `ServicesManager` looks up and dispatches to one of six Services.
+The business surface has exactly one entry point: `electronAPI.invokeService(service, method, ...args)`, which `ServicesManager` looks up and dispatches to one of six Services. A few channels deliberately stay **off** that table: the connection settings `connection:get` / `save` / `test` (section 4), window controls `window:xxx`, and the native directory picker `dialog:selectDirectory` — they answer questions that belong to the main process itself, not methods of the server.
 
 | Dispatch key | Implementation | Main actions |
 |--------------|----------------|--------------|
@@ -100,18 +117,18 @@ packages/render/src/
 ├── views/         guide/index.vue, main/{index,Sidebar,ChatPanel,MessageBubble,NewChatDialog}.vue, settings/index.vue
 ├── components/    TitleBar.vue, MarkdownContent.vue
 ├── composables/   useMessageWindow (paged window), useAutoScroll (scroll policy)
-├── stores/        ui / workspace / conversation / chat / agentView
-└── apis/          base + workspace / conversation / chat / agent / model / config
+├── stores/        ui / workspace / conversation / chat / agentView / connection
+└── apis/          base + workspace / conversation / chat / agent / model / config + connection
 ```
 
-- **apis only forwards**: `invokeService` is converged into methods and errors are normalized into `InvokeServerError`; `subscribeServiceEvent("chat:push", …)` is the single event entry point.
+- **apis only forwards**: `invokeService` is converged into methods and errors are normalized into `InvokeServerError`; `subscribeServiceEvent("chat:push", …)` is the single event entry point. `apis/connection.ts` is the same kind of forwarding for the three connection channels (it does not go through `invokeService`).
 - **stores are the only data entry**: views never call `invokeService` with a string. `chat` slots state by `byConversation[id]`, so switching conversations only switches the viewpoint and each conversation's streaming state stays independent.
 - **The sub-agent strip runs parallel to the main conversation**: `agents` is a wholesale replacement of `SubAgentView[]` (the server pushes the whole list on every change) and render does no diffing; selection repair and Tab cycling live in `packages/render/src/stores/agentView.ts` as pure, testable functions.
 - **Notices are toasts, not state**: `type: "notice"` pops an element-plus message and never enters `ConversationChatState` — especially not `error`, which is the "this turn failed" banner that `done` clears.
 
 ## 8. Where data lives
 
-Everything on disk belongs to the server (its `AI_ZEN_DIR`):
+Everything on disk is **data**, and data belongs to the server (its `AI_ZEN_DIR`); the only exception is Desktop's own connection-settings file (the `desktop/` line below):
 
 ```
 <AI_ZEN_DIR>/
@@ -119,14 +136,16 @@ Everything on disk belongs to the server (its `AI_ZEN_DIR`):
 ├── agents/                      entry Agent definitions
 ├── sub-agents/                  sub-agent definitions
 ├── workspaces/<workspaceId>/    workspace.json + sessions/<id>.json (with .meta.json listing)
+├── desktop/                     written by Desktop itself (this one file only)
+│   └── connection.json          connection settings (local / remote + address + credential, 0600; delete it to return to "local")
 └── run/                         written by the server: how to reach it
     ├── server.json              service discovery: which port the resident server is on
     └── token                    credential (read or created by the server, 0600)
 ```
 
-Desktop reads two things from disk here: `server.json` (the **default** source of the address) and `token` (the credential), both under `<AI_ZEN_DIR>/run/`; when the config carries a `serverUrl`, it does not even read `server.json`. Session lifetime is reclaimed by the server on an idle grace period (`DEFAULT_SESSION_IDLE_TIMEOUT_MS`); `session.close` releases a session immediately because the user stopped looking at it. Neither deletes the archive.
+Desktop reads two things from disk here: `server.json` (the **default** source of the address) and `token` (the credential), both under `<AI_ZEN_DIR>/run/`; in remote mode the address comes from the connection settings and `server.json` is not read at all. It **writes exactly one place**: `<AI_ZEN_DIR>/desktop/connection.json` (connection settings, see the chicken-and-egg note in section 3; deleting that file returns to the default "local"). Session lifetime is reclaimed by the server on an idle grace period (`DEFAULT_SESSION_IDLE_TIMEOUT_MS`); `session.close` releases a session immediately because the user stopped looking at it. Neither deletes the archive.
 
-Both fields of that connection config (`SERVER_CONFIG` in `packages/main/src/config.ts`) are `undefined` today: reaching another machine already works at the point where the connection is built (an explicit address means connect there and never start the bundled server), but **Desktop has no settings UI at all** — the only way for a user to set it is editing that file. This is a seam in the layering, not "remote connection support": the latter would suggest there is somewhere on screen to type an address.
+"Which server" and "which key" live in that file as `{ mode, serverUrl?, serverToken? }`: in `local` both values are `undefined` for the connection layer (= the old path), in `remote` they are what the user typed. The only way to change it is the settings-page section (section 4) — editing the file by hand is no longer needed.
 
 ## 9. Model resolution has exactly one implementation
 
@@ -140,6 +159,8 @@ The sidebar's model dropdown reads the latter; recomputing "override + definitio
 ## 10. Test shape
 
 The `server/` layer is verified directly by vitest: `packages/main/src/server/test-harness.ts` starts a **real daemon** (real port, real frames, real `SessionManager`) plus a **fake Agent** (the test decides when which delta is pushed). What is under test is the protocol mapping itself, so the Agent's streaming loop should be fake while the socket and discovery file must be real. Tests assert on the `ChatStreamEvent` sequence the facade pushes — that channel is the only acceptance surface the translation layer has.
+
+The `connection/` layer takes another road: every dependency of `ConnectionController` is injected (layer factory, settings I/O, log sink), so a test can pin the order "write to disk → dispose → build → start" with a **fake layer plus counters** (when the write fails, `dispose` must not be called even once) without starting a real daemon or opening a window; the `settings.ts` tests do touch a real disk (a temporary `AI_ZEN_DIR`) and verify `0600`, atomic writes and "never throws on a bad file". Current size: `packages/main` 9 test files / 111 cases, `packages/render` 3 files / 25 cases (including the connection store's "testing refetches nothing, saving refetches everything").
 
 ## 11. Trade-offs
 

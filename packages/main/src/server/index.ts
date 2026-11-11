@@ -30,13 +30,15 @@
  *
  * ## 地址与凭证：只**透传**，不解释（D9 / D14）
  *
- * 配置里若给了显式地址 / 凭证（`config.ts` 的 `SERVER_CONFIG`，今天两个都是 `undefined`），
+ * 调用方若给了显式地址 / 凭证（来源是用户的连接设置 `ConnectionSettings`，由
+ * `connection/controller.ts` 在**每次建层**时映射进来；`mode: "local"` 时两个都是 `undefined`），
  * 本层原样递给 `ServerConnection` 的 `serverUrl` / `serverToken`，一个字段都不改：解析、
  * 优先级与「本机 token 兜底」全在客户端的 `resolve-target.ts`（那是唯一一份）。
  *
  * 本层唯一多做的一件事是 D10：给了显式地址就**不拉起本机 server** —— 这件事交给
  * `./launch.ts` 的 `createStartBundledServer`（它会留下一条只说地址、不说凭证的日志）。
- * 桌面端不为这两个值做任何界面（D14：只接能力）。
+ * 「连本地还是远程」由 `ConnectionController` 换层实现（换一层 = 再调一次本函数）：
+ * 用户是怎么选的、什么时候重建，都是那个对象的事，本层不关心。
  */
 
 import type { ClientInfo } from "@ai-zen/agents-client";
@@ -66,13 +68,14 @@ export interface ServerLayerOptions {
   /** `chat:push` 的出口（桌面端 = `webContents.send`） */
   push: (event: ChatStreamEvent) => void;
   /**
-   * 显式服务端地址（`SERVER_CONFIG.serverUrl`）：给了就**只连、永不拉起**本机 server（D10）。
+   * 显式服务端地址：给了就**只连、永不拉起**本机 server（D10）。来源是用户的连接设置
+   * （`ConnectionSettings` → `connectionConfigOf()`）；`local` 模式下是 `undefined`。
    *
    * 不在这里解析它（不 parse、不补 `ws://`）：地址的形状只有一个定义处（客户端包的
    * `wire/server-url.ts`），本层多写一行就是一个能静默跑偏的第二份实现。
    */
   serverUrl?: string;
-  /** 显式凭证（`SERVER_CONFIG.serverToken`）：透传；不给就退回 `<aiZenDir>/run/token`（D9） */
+  /** 显式凭证：透传；不给就退回 `<aiZenDir>/run/token`（D9）。凭证**绝不进日志** */
   serverToken?: string;
 }
 
