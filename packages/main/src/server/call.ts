@@ -23,7 +23,7 @@
 import type { ServerConnection } from "@ai-zen/agents-client";
 
 /**
- * 一次协议调用：`method` 是协议里的方法名（来自 `SESSION_METHODS` 这类常量表），返回值由
+ * 一次协议调用：`method` 是协议里的方法名（`AnyMethod` 联合的一员），返回值由
  * 调用点用类型参数指定（协议漏了一个字段，那边编译不过）。
  */
 export type ProtocolCall = <T>(method: string, params?: unknown) => Promise<T>;

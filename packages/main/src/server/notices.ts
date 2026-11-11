@@ -3,7 +3,7 @@
  *
  * ## 为什么翻译在客户端，而且只在 main 这一份
  *
- * 服务端的通知只带机器码（`SESSION_NOTICE_CODES` / `SERVER_NOTICE_CODES`，见
+ * 服务端的通知只带机器码（`SessionNoticeCode` / `ServerNoticeCode`，见
  * `@ai-zen/agents-server/protocol` 的 `sessions.ts`），一句自然语言都不产 —— 一个服务端
  * 同时接中文终端与英文浏览器时，它只能挑一种语言撒谎。于是「这句 code 该怎么说」落在各
  * 客户端自己的词典里：CLI 那份在 `cli/src/session-notice.ts`，本文件是桌面端的那一份。
@@ -131,9 +131,9 @@ const SESSION_TEXTS: Record<SessionNoticeCode, NoticeTemplate> = {
 /**
  * 服务端通知（`server-notice`）的文案。
  *
- * 它与对话内通知分属**两张码表**（`SERVER_NOTICE_CODES` / `SESSION_NOTICE_CODES`）：这条
- * 事件的载荷里没有 `sessionId`，切到别的会话也不该消失 —— 事件表与码表的名字都跟
- * `SERVER_` 走（见协议里的 `SERVER_EVENTS` 注释）。
+ * 它与对话内通知分属**两个联合**（`ServerNoticeCode` / `SessionNoticeCode`）：这条
+ * 事件的载荷里没有 `sessionId`，切到别的会话也不该消失 —— 事件名与码的名字都跟
+ * `SERVER_` 走（见协议里的 `ServerEventName` 与 `ServerNoticeCode` 注释）。
  *
  * 这两条今天在服务端**还没有生产者**（协议先立住 code，等组装根接上 MCP 探活 / 存档探活），
  * 参数名沿用 CLI 那份模板的字段（`name` / `error`）—— 两边说的是同一条通知，不该各叫一个名。

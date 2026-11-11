@@ -69,9 +69,9 @@ render has exactly one entry point: `electronAPI.invokeService(service, method, 
 | `chat` | `ServerChatService` | `session.send` / `cancel` / `close` / `attach` + `snapshot` |
 | `config` | `ServerConfigService` | `config.get` / narrow setters for defaults / `config.save` |
 
-On the event side the protocol has three tables (`agents/packages/protocol/src/sessions.ts`): `AGENT_EVENTS` with 9 entries (the original names of core's `Agent.events`), `SESSION_EVENTS` with 7 (things the server derives or decides), `SERVER_EVENTS` with 1 (a server notice bound to no conversation). Event names are always kebab-case — `session-turn-end`, `session-title-changed`, `server-notice`.
+On the event side the contract has three unions (`agents/packages/server/src/protocol/sessions.ts`): `AgentEventName` with 8 entries (the original names of core's `Agent.events`), `SessionEventName` with 6 (things the server derives or decides), `ServerEventName` with 1 (a server notice bound to no conversation). Event names are always kebab-case — `session-turn-end`, `session-title-changed`, `server-notice`.
 
-Method and event names are referenced from constant tables in `@ai-zen/agents-client`, never written as literals: a protocol change then fails to compile here instead of returning a 500 at runtime.
+Method and event names are **literal union types** in `@ai-zen/agents-server/protocol`, never written as literals: a contract change then fails to compile here instead of returning a 500 at runtime.
 
 ## 6. Event translation (`packages/main/src/server/events.ts`)
 

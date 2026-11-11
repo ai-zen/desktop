@@ -69,9 +69,9 @@ packages/main/src/
 | `chat` | `ServerChatService` | `session.send` / `cancel` / `close` / `attach` + `snapshot` |
 | `config` | `ServerConfigService` | `config.get` / 窄方法写默认值 / `config.save` |
 
-事件面是协议里的三张表（`agents/packages/protocol/src/sessions.ts`）：`AGENT_EVENTS` 9 条（core `Agent.events` 的原名）、`SESSION_EVENTS` 7 条（服务端派生或自己决定的事）、`SERVER_EVENTS` 1 条（不绑会话的服务端通知）。事件名一律 kebab-case —— `session-turn-end`、`session-title-changed`、`server-notice`。
+事件面是契约里的三个联合（`agents/packages/server/src/protocol/sessions.ts`）：`AgentEventName` 8 条（core `Agent.events` 的原名）、`SessionEventName` 6 条（服务端派生或自己决定的事）、`ServerEventName` 1 条（不绑会话的服务端通知）。事件名一律 kebab-case —— `session-turn-end`、`session-title-changed`、`server-notice`。
 
-方法名与事件名都从 `@ai-zen/agents-client` 的常量表引用，不写字面量：改协议时这里编译不过，而不是运行期 500。
+方法名与事件名都是 `@ai-zen/agents-server/protocol` 里的**字面量联合类型**，不写字面量：改契约时这里编译不过，而不是运行期 500。
 
 ## 6. 事件翻译（`packages/main/src/server/events.ts`）
 
