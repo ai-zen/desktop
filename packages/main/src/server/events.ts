@@ -59,7 +59,6 @@
 
 import {
   AGENT_EVENTS,
-  ROLE,
   SERVER_EVENTS,
   SESSION_EVENTS,
   SESSION_METHODS,
@@ -82,9 +81,9 @@ import {
   type SessionTurnEndEvent,
   type SubAgentSnapshotResult,
 } from "@ai-zen/agents-client";
-// 只要类型：`import type` 在产物里被整体擦除，main 因此不必为了一个 role 字符串把
-// agents-core（连带 openai）拉进运行期 —— 握手/事件这条路上一个模型库也不该被加载
-import type { AgentNS } from "@ai-zen/agents-core";
+// 运行期要它的 `Role` 枚举：core 的产物运行期只加载 `@ai-zen/event-bus`（`openai` 在 core
+// 里只占类型位置），所以这条边不会把模型库拉进 main 的握手/事件路径
+import { AgentNS } from "@ai-zen/agents-core";
 import type { ChatStreamEvent } from "@ai-zen/desktop-shared";
 import type { ProtocolCall } from "./call.js";
 import { noticeText } from "./notices.js";
@@ -92,11 +91,11 @@ import { noticeText } from "./notices.js";
 /**
  * 占位 assistant 消息的 role。
  *
- * 值取自包里的 `ROLE`（`stream-merge.ts` 那份镜像，客户端侧**唯一**一份），只在这里断言成
- * core 的枚举类型：与 `AgentNS.Role` 比较要求两边同类型，而值导入 agents-core 会让 main
- * 在运行期加载整个模型库（`Role` 是字符串枚举，`Assistant` 的字面量就是 `"assistant"`）。
+ * 直接取 core 的枚举：`AgentNS.Role` 是运行期值，而 core 的产物运行期只加载
+ * `@ai-zen/event-bus`（`openai` 在 core 里只占类型位置），所以这一个字符串的代价是零。
+ * 抄一个字面量当镜像反而多出第二个定义 —— 枚举加一个角色、镜像照旧时，比较就会静默失效。
  */
-const ASSISTANT_ROLE = ROLE.Assistant as AgentNS.Role;
+const ASSISTANT_ROLE = AgentNS.Role.Assistant;
 
 /**
  * 一轮的「通道侧」记账 —— 状态机不管的那部分。
