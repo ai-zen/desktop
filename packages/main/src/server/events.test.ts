@@ -1313,7 +1313,13 @@ describe("子 Agent：另开一条 agents 通道（整份替换）", () => {
     // 落回 render 认识的那个 key：报新 id 的话，这条栏目会贴到一段 render 从没见过、也永远
     // 不会选中过的会话上 —— 画面上等于什么都没发生（`keyOf` 与其它事件同一口径）
     expect(event.conversationId).toBe(conversationId);
-    // 而拉快照用的是**服务端**的会话 id（服务端只认自己的键）：两件事别混为一谈
+    // 而拉快照用的是**服务端**的会话 id（服务端只认自己的键）：两件事别混为一谈。
+    // 等的是「那一次调用真的发出去了」—— 事件先到、快照请求后发，只等事件就断言 `at(-1)`
+    // 会读到上一条，那是这条用例偶发红的原因。
+    await waitFor(
+      () => server.subAgentSnapshotCalls.at(-1)?.sessionId === "chat_renamed",
+      "以服务端 id 拉子 Agent 快照",
+    );
     expect(server.subAgentSnapshotCalls.at(-1)).toEqual({
       sessionId: "chat_renamed",
       subAgentId: "sub-1",
