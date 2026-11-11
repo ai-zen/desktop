@@ -100,7 +100,7 @@
       </el-form>
       <template #footer>
         <el-button @click="showAddWorkspace = false">取消</el-button>
-        <el-button type="primary" @click="confirmAddWorkspace">确定</el-button>
+        <el-button type="primary" :loading="adding" @click="confirmAddWorkspace">确定</el-button>
       </template>
     </el-dialog>
 
@@ -118,7 +118,14 @@
       </el-form>
       <template #footer>
         <el-button @click="showRename = false">取消</el-button>
-        <el-button type="primary" :disabled="!renameName.trim()" @click="confirmRename">确定</el-button>
+        <el-button
+          type="primary"
+          :disabled="!renameName.trim()"
+          :loading="renaming"
+          @click="confirmRename"
+        >
+          确定
+        </el-button>
       </template>
     </el-dialog>
 
@@ -140,7 +147,7 @@
       </div>
       <template #footer>
         <el-button @click="showDelete = false">取消</el-button>
-        <el-button type="danger" @click="confirmDelete">删除</el-button>
+        <el-button type="danger" :loading="deleting" @click="confirmDelete">删除</el-button>
       </template>
     </el-dialog>
 
@@ -191,6 +198,7 @@ import {
   Folder,
   Setting,
 } from "@element-plus/icons-vue";
+import { ElMessage } from "element-plus";
 import NewChatDialog from "./NewChatDialog.vue";
 import { useWorkspaceStore } from "../../stores/workspace.js";
 import { useConversationStore } from "../../stores/conversation.js";
@@ -208,6 +216,8 @@ const activeWorkspaceId = computed(() => workspaceStore.activeWorkspaceId);
 
 const showAddWorkspace = ref(false);
 const wsForm = reactive({ name: "", cwd: "" });
+// 提交中的标记：确认按钮上 `:loading`，防连点重复提交（新建/重命名/删除各一个）
+const adding = ref(false);
 
 // 重命名（workspace / conversation 共用，按类型分发）
 const showRename = ref(false);
@@ -215,6 +225,7 @@ const renameTargetId = ref("");
 const renameTargetType = ref<"workspace" | "conversation">("workspace");
 const renameTargetWorkspaceId = ref("");
 const renameName = ref("");
+const renaming = ref(false);
 
 // 删除（workspace / conversation 共用，按类型分发）
 const showDelete = ref(false);
@@ -222,6 +233,7 @@ const deleteTargetId = ref("");
 const deleteTargetType = ref<"workspace" | "conversation">("workspace");
 const deleteTargetWorkspaceId = ref("");
 const deleteTargetName = ref("");
+const deleting = ref(false);
 
 const showNewChat = ref(false);
 
@@ -319,13 +331,34 @@ function onNodeCollapse(data: TreeNode) {
 }
 
 // ==================== 事件 ====================
+
+/**
+ * 切换激活工作空间（左键点节点、右键选中节点都走这里）。
+ *
+ * `setActive` 在 store 里还会顺手拉该工作空间的会话列表（`conversation.load`），那一步是会抛的
+ * —— 比如这个工作空间刚在别处被删掉、或者连接断了。以前调用点写的是 `void workspaceStore.setActive()`：
+ * 失败既不提示、也不在界面上留下任何痕迹（树上高亮已经切过去了，会话列表却是空的），
+ * 用户只会以为「这个空间里确实没有会话」。
+ *
+ * 所以这里收口成一个带提示的包装，调用点仍然是 `void`：点击处理函数保持同步返回，
+ * 失败由这个包装自己报，不会变成 unhandled rejection。
+ */
+async function activateWorkspace(id: string) {
+  try {
+    await workspaceStore.setActive(id);
+  } catch (err) {
+    // 说清是哪件事：切换过去了、但那个空间的会话没能读出来
+    ElMessage.error(`切换工作空间失败：${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 function onNodeClick(data: TreeNode) {
   if (data.type === "workspace") {
-    void workspaceStore.setActive(data.id);
+    void activateWorkspace(data.id);
   } else {
     // 会话：若跨 workspace，先把激活工作空间切过去
     if (data.workspaceId && data.workspaceId !== workspaceStore.activeWorkspaceId) {
-      void workspaceStore.setActive(data.workspaceId);
+      void activateWorkspace(data.workspaceId);
     }
     conversationStore.select(data.workspaceId ?? "", data.id);
   }
@@ -336,10 +369,10 @@ function onContextMenu(event: MouseEvent, data: TreeNode) {
   event.preventDefault();
   // 右键即选中该节点（与左键一致），操作目标 = 右键的节点
   if (data.type === "workspace") {
-    void workspaceStore.setActive(data.id);
+    void activateWorkspace(data.id);
   } else if (data.workspaceId) {
     if (data.workspaceId !== workspaceStore.activeWorkspaceId) {
-      void workspaceStore.setActive(data.workspaceId);
+      void activateWorkspace(data.workspaceId);
     }
     conversationStore.select(data.workspaceId, data.id);
   }
@@ -408,13 +441,23 @@ async function pickWorkspaceDir() {
 
 async function confirmAddWorkspace() {
   // 名称/目录均选填：名称空用目录名兜底、目录空用默认桌面（两者都在 main 的 services.ts 补齐）
-  await workspaceStore.create({
-    name: wsForm.name.trim(),
-    cwd: wsForm.cwd.trim(),
-  });
-  wsForm.name = "";
-  wsForm.cwd = "";
-  showAddWorkspace.value = false;
+  adding.value = true;
+  try {
+    await workspaceStore.create({
+      name: wsForm.name.trim(),
+      cwd: wsForm.cwd.trim(),
+    });
+    ElMessage.success("工作空间已创建");
+    // 清表单、关对话框只放在成功之后：失败时用户填的名称/目录还留着，改完直接再点确定
+    wsForm.name = "";
+    wsForm.cwd = "";
+    showAddWorkspace.value = false;
+  } catch (err) {
+    // 目录不存在 / 没权限这类原因由 main 那边给出来，直接转给用户看
+    ElMessage.error(`新建工作空间失败：${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    adding.value = false;
+  }
 }
 
 function openRename(data: TreeNode) {
@@ -426,17 +469,30 @@ function openRename(data: TreeNode) {
 }
 
 async function confirmRename() {
-  if (!renameName.value.trim()) return;
-  if (renameTargetType.value === "workspace") {
-    await workspaceStore.rename(renameTargetId.value, renameName.value.trim());
-  } else {
-    await conversationStore.rename(
-      renameTargetWorkspaceId.value,
-      renameTargetId.value,
-      renameName.value.trim(),
-    );
+  const name = renameName.value.trim();
+  // 名字为空就早退：模板里按钮已置灰，回车键仍可能进来。
+  // 早退发生在 `renaming` 置位之前 —— 别把按钮留在转圈里。
+  if (!name) return;
+
+  const type = renameTargetType.value;
+  const kind = type === "workspace" ? "工作空间" : "对话";
+  renaming.value = true;
+  try {
+    if (type === "workspace") {
+      await workspaceStore.rename(renameTargetId.value, name);
+    } else {
+      await conversationStore.rename(renameTargetWorkspaceId.value, renameTargetId.value, name);
+    }
+    ElMessage.success(`重命名${kind}成功`);
+    // 只有成功才关：失败时对话框留着、用户输入留着，改完名直接再点一次确定
+    showRename.value = false;
+  } catch (err) {
+    // store 是「先调 api、成功了才改本地状态」（apis 把错误收敛成 InvokeServerError，
+    // message 就是服务端那句话）。所以这里只需把「哪件事失败 + 原因」说给用户听。
+    ElMessage.error(`重命名${kind}失败：${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    renaming.value = false;
   }
-  showRename.value = false;
 }
 
 function openDelete(data: TreeNode) {
@@ -448,15 +504,32 @@ function openDelete(data: TreeNode) {
 }
 
 async function confirmDelete() {
-  if (deleteTargetType.value === "workspace") {
-    await workspaceStore.remove(deleteTargetId.value);
-  } else {
-    await conversationStore.remove(
-      deleteTargetWorkspaceId.value,
-      deleteTargetId.value,
+  const type = deleteTargetType.value;
+  const name = deleteTargetName.value;
+  deleting.value = true;
+  try {
+    if (type === "workspace") {
+      await workspaceStore.remove(deleteTargetId.value);
+      // 工作空间删除会连带删掉它下面的全部会话：成功提示里点明，别让用户以为会话还留着
+      ElMessage.success(`工作空间「${name}」及其全部会话已删除`);
+    } else {
+      await conversationStore.remove(deleteTargetWorkspaceId.value, deleteTargetId.value);
+      ElMessage.success(`对话「${name}」已删除`);
+    }
+    // 只有成功才关（失败时对话框留着，用户看完原因可以直接重试）
+    showDelete.value = false;
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    // 工作空间这条要额外说清「会话也还都在」：这个对话框一开始就警告过会连带删除，
+    // 失败时同样得让人知道连带那部分没有发生。
+    ElMessage.error(
+      type === "workspace"
+        ? `删除工作空间失败（该空间及其会话都还在）：${reason}`
+        : `删除对话失败：${reason}`,
     );
+  } finally {
+    deleting.value = false;
   }
-  showDelete.value = false;
 }
 </script>
 

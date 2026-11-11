@@ -118,6 +118,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from "vue";
+import { ElMessage } from "element-plus";
 import { ChatDotRound, Promotion, VideoPause } from "@element-plus/icons-vue";
 import type { SubAgentView } from "@ai-zen/desktop-shared";
 import MessageBubble from "./MessageBubble.vue";
@@ -324,15 +325,35 @@ async function handleModelChange(modelId: string) {
 async function handleSend() {
   const text = inputText.value.trim();
   if (!text) return;
-  inputText.value = "";
+  // 先不清空输入框：要不要清由 `send` 的结果决定（失败时字必须还在，用户能直接再按一次）。
+  //
   // 发送 = 用户回到关注底部，清除上翻状态（否则流式增量不会滚底）
   userScrollingUp = false;
   if (scrollUpResetTimer) {
     clearTimeout(scrollUpResetTimer);
     scrollUpResetTimer = 0;
   }
-  await chatStore.send(text);
-  scrollToBottom();
+  const ok = await chatStore.send(text);
+  if (ok) {
+    // 只清掉**这次发出去的那一段**：等待期间用户可能又敲了新内容，那是他刚写的，
+    // 不能跟着一起消失。判据是「当前输入框（去掉首尾空白）是否仍等于发出去时的快照」。
+    // 不相等（用户改过/加过）就一个字符都不动 —— 宁可让旧那段多留一次（他看得见，自己删），
+    // 也不能赌一把清掉：清错就是又一次「输入被弄丢」。
+    if (inputText.value.trim() === text) inputText.value = "";
+    // 只有真发出去了才滚底：没发出去时消息列表不会有任何变化，滚底等于把用户正在回看的
+    // 历史位置平白挪走（他多半正打算复制/重看那段再重写）。
+    scrollToBottom();
+  } else if (!chatStore.error) {
+    // `ok === false` 有两类，必须分开对待：
+    //   ① invoke 失败 —— catch 里写过 `st.error`，界面上已经有红色错误条 + 消息气泡上的
+    //      重试入口，再弹一条 toast 只是噪声（同一件事说两遍，还得手动关）；
+    //   ② 早退（没有活动工作区/会话）—— `send` 在 `st.error = ""` 之前就 return 了，
+    //      什么都没提交、界面上一点痕迹都没有，不说一句用户会以为发上去了。
+    // 所以判据是 `st.error` 空不空：有错 = ①，此时不吭声；没错 = ②，补一条提醒。
+    // 发送按钮理论上在这种时候就不该可用，但这句是最后一道保险（键盘 Enter 也能走到这）。
+    ElMessage.warning("当前没有打开的对话，消息没有发出去");
+  }
+  // 失败/早退一律不动输入框（上面什么都没做）：字还在，用户按一次发送就能重发。
 }
 
 /** 停止生成：让服务端取消本轮，保留已生成部分，done 事件结束流式态 */

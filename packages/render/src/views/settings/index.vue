@@ -91,6 +91,20 @@
           </el-select>
         </el-form-item>
 
+        <!--
+          盘上那个默认模型已经不在服务端的模型清单里（被删了 / 换了名字）：下拉框只会显示空白，
+          而 main 的 `update()` 对空串是「不写」（服务端窄方法只收非空 id），点「保存」什么都不会
+          改，盘上仍是那个旧 id。不说一声，「空白」就会被当成「已保存」。
+        -->
+        <el-alert
+          v-if="modelNotice"
+          class="settings-warning"
+          type="warning"
+          :title="modelNotice"
+          :closable="false"
+          show-icon
+        />
+
         <el-form-item label="默认 Agent">
           <el-select v-model="form.defaultAgent" class="wide">
             <el-option
@@ -101,6 +115,16 @@
             />
           </el-select>
         </el-form-item>
+
+        <!-- 同默认模型：Agent 那一份清单里没有这个 id，就是用户看到空白的原因 -->
+        <el-alert
+          v-if="agentNotice"
+          class="settings-warning"
+          type="warning"
+          :title="agentNotice"
+          :closable="false"
+          show-icon
+        />
 
         <el-divider content-position="left">API Key</el-divider>
 
@@ -116,6 +140,21 @@
             :placeholder="`${ep.baseUrl} 的 API Key`"
           />
         </el-form-item>
+
+        <!--
+          一条汇总提示（不是每个端点一条）：哪些端点在服务端那一侧已经不存在 / 新加了出来。
+          「不存在」的那几个，用户填在框里的 API Key 是**写不进去**的（main 按 id 匹配，匹配不上
+          就 `continue`）—— 所以保存前先把这句话说出来，保存后 `reload()` 把表单拉回盘上的
+          样子，这条提示跟着自然消失（它是 computed，不靠谁去清标记）。
+        -->
+        <el-alert
+          v-if="endpointMismatchNotice"
+          class="settings-warning"
+          :type="staleEndpoints.length ? 'warning' : 'info'"
+          :title="endpointMismatchNotice"
+          :closable="false"
+          show-icon
+        />
 
         <el-divider content-position="left">数据目录</el-divider>
 
@@ -144,6 +183,15 @@ import type { ConfigSettings, ConnectionSettings } from "@ai-zen/desktop-shared"
 const uiStore = useUiStore();
 const connectionStore = useConnectionStore();
 const saving = ref(false);
+
+/**
+ * 最近一次从服务端读到的端点 id 清单（`reload()` 刷、保存前那次只读探测也刷）。
+ *
+ * 它代表的不是「表单里有什么」，而是「服务端那一侧有什么」—— 两者一对就能看出面板开着的
+ * 这段时间里，别的客户端（CLI / 另一台桌面端）动过哪些端点。只存 id：提示只需要名字和数量，
+ * 比对只需要 id。
+ */
+const serverEndpointIds = ref<string[]>([]);
 
 const form = reactive<ConfigSettings>({
   endpoints: [],
@@ -310,9 +358,74 @@ async function saveConnection() {
   }
 }
 
+/**
+ * 默认模型「盘上那个还在不在」—— 这就是用户在框里看到空白的原因。
+ *
+ * 判据就是同一下拉框的选项来源（`uiStore.models`）：框里能出现的每一行都来自这份清单，
+ * 所以「盘上的 id 不在这份清单里」= 框里必然空白。空串也是同一种事（服务端没有默认模型），
+ * 而且空串**保存不上去**（main 那边 `if (input.defaultModel)` 直接跳过），所以要说明白。
+ *
+ * 清单为空时（`loadOptions()` 还没回来 / 失败）不下结论：那时我们根本不知道服务端有哪几个
+ * 模型，说「已不存在」就是新的谎话。
+ */
+const modelNotice = computed(() => {
+  if (!form.defaultModel) return "当前没有默认模型，请先选一个（空值不会被保存）";
+  if (!uiStore.models.length) return "";
+  if (!uiStore.models.some((m) => m.id === form.defaultModel)) {
+    return "当前默认模型已不存在，请重新选一个";
+  }
+  return "";
+});
+
+/** 同 `modelNotice`，只是对着 Agent 那一份清单说话 */
+const agentNotice = computed(() => {
+  if (!form.defaultAgent) return "当前没有默认 Agent，请先选一个（空值不会被保存）";
+  if (!uiStore.agents.length) return "";
+  if (!uiStore.agents.some((a) => a.id === form.defaultAgent)) {
+    return "当前默认 Agent 已不存在，请重新选一个";
+  }
+  return "";
+});
+
+/**
+ * 表单里有、服务端最新那份清单里没有的端点 —— 它们已在别处被删掉。
+ *
+ * 这几个端点的 API Key 是**写不进去**的：main 的 `update()` 按 id 在服务端那份配置里找
+ * 目标端点，找不到就 `continue`（有意为之：整份写回会把别人刚改的字段抹掉）。所以这些行里
+ * 用户正在敲的字，得当场告诉他是写不进去的，而不是等他点完保存再假装已保存。
+ */
+const staleEndpoints = computed(() =>
+  form.endpoints.filter((ep) => !serverEndpointIds.value.includes(ep.id)),
+);
+
+/** 服务端有、表单里没有的端点数（在别处新加的：不丢数据，但列表对不上） */
+const serverOnlyCount = computed(
+  () => serverEndpointIds.value.filter((id) => !form.endpoints.some((ep) => ep.id === id)).length,
+);
+
+/**
+ * 端点列表与服务端对不上的**一条**汇总提示（不是每个端点一条）。
+ *
+ * 它是 computed：`reload()` 一跑，表单和服务端那份清单就从同一次读里来，这句话自己就没了 ——
+ * 不需要谁去 `setFlag(false)`，也不会出现「提示还在、事实已经变了」。
+ */
+const endpointMismatchNotice = computed(() => {
+  if (staleEndpoints.value.length) {
+    const names = staleEndpoints.value.map((ep) => ep.name).join("、");
+    const count = staleEndpoints.value.length;
+    return `有 ${count} 个端点已在别处被删除（${names}），这些端点上的改动不会被保存`;
+  }
+  if (serverOnlyCount.value) {
+    return `服务端有 ${serverOnlyCount.value} 个端点不在本页列表里，保存后会跟着刷新出来`;
+  }
+  return "";
+});
+
 async function reload() {
   const cfg = await api.getConfigSettings();
   form.endpoints = cfg.endpoints;
+  // 「服务端那一侧」的端点清单只跟着这次读刷新：下面两条提示是拿表单跟它比出来的
+  serverEndpointIds.value = cfg.endpoints.map((ep) => ep.id);
   form.defaultModel = cfg.defaultModel;
   form.defaultAgent = cfg.defaultAgent;
   form.dataDir = cfg.dataDir;
@@ -326,16 +439,62 @@ async function reload() {
   }
 }
 
+/**
+ * 保存（页面底部那个按钮）：只发默认模型 / 默认 Agent / 各端点的 API Key。
+ *
+ * 这个按钮最容易骗人的地方在 main 的 `ServerConfigService.update()`：它有两处**静默丢弃** ——
+ *   1. 空串不写（`if (input.defaultModel)` / `if (input.defaultAgent)`）：服务端的窄方法
+ *      只收非空 id（空串是 `bad-params`）。于是「盘上那个模型已被删除 → 下拉框空白 → 点保存」
+ *      什么都不会写，盘上仍是那个旧 id；
+ *   2. 端点按 id 匹配（`if (!target) continue`）：面板开着期间被 CLI 等外部删掉的端点，
+ *      用户在那个已消失端点的框里改的 apiKey 直接丢掉。
+ *
+ * 两处语义都是**有意**的（窄方法只接受非空 id；整份写回会抹掉对方刚改的字段），不在这里改，
+ * 也不改发给 main 的数据形状。界面能做的是**说实话**：保存之后重新读一遍盘上的事实。
+ *
+ * 不重读就会让「静默丢弃」变成「界面**说谎**」—— 用户看到的是自己想填的值（空白的新模型、
+ * 在已删端点上敲的 Key），盘上是另一个值（旧 id、根本没有这个端点），而且只有点「恢复」
+ * 才看得出差别。
+ */
 async function save() {
   saving.value = true;
   try {
+    // 保存前先只读地看一眼服务端**此刻**的端点清单：这一屏是面板打开那一刻的快照，开着的
+    // 这段时间里别的客户端可能已经删掉 / 加过端点。读不到不要紧（就不比），不能因此让保存失败。
+    try {
+      const latest = await api.getConfigSettings();
+      serverEndpointIds.value = latest.endpoints.map((ep) => ep.id);
+    } catch {
+      // 一次只读探测的失败不是保存的失败：下面的写入照常进行
+    }
+    // 说在写之前：这几个端点的改动马上就会被 main 丢掉，等 `reload()` 把表单拉回盘上的样子，
+    // 那条提示（computed）就跟着消失了 —— 所以要在这里弹一次，用户才真的读到它。
+    if (endpointMismatchNotice.value) ElMessage.warning(endpointMismatchNotice.value);
+
     await api.updateConfigSettings({
       defaultModel: form.defaultModel,
       defaultAgent: form.defaultAgent,
       endpoints: form.endpoints,
     });
-    await uiStore.loadOptions();
+
     ElMessage.success("设置已保存");
+    try {
+      // 保存已经生效了：下面两行只是把界面拉回盘上的事实，重读失败只报「重读失败」，
+      // 绝不能把这次保存说成失败。
+      //
+      // 先 `loadOptions()`：`modelNotice` / `agentNotice` 是拿 `uiStore.models` / `agents`
+      // 的 id 清单判断「盘上那个默认值还在不在」的。模型刚被删掉时，清单不刷新，那条提示
+      // 就只能停在「不知道」上——而这正是最需要它开口的时刻。
+      await uiStore.loadOptions();
+      // 再 `reload()`：把默认模型 / Agent / 各端点（含 apiKey）按盘上那份重新灌进表单。
+      // 于是「框里空着」不再是「保存后的样子」，而是「服务端上没有这个模型」；已删端点的那一行
+      // 当场消失，也不会留着用户填的字装成已保存。
+      await reload();
+    } catch (err) {
+      ElMessage.error(
+        `已保存，但重读配置失败：${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : String(err));
   } finally {
@@ -418,6 +577,11 @@ onMounted(async () => {
 }
 
 .connection-probe {
+  margin-bottom: 18px;
+}
+
+// 表单里的提示条（默认模型 / 默认 Agent 已不存在、端点与服务端对不上）：与输入框同宽
+.settings-warning {
   margin-bottom: 18px;
 }
 </style>

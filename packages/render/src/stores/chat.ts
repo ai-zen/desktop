@@ -153,12 +153,27 @@ export const useChatStore = defineStore("chat", {
       return this.byConversation[conversationId];
     },
 
-    async send(content: string) {
+    /**
+     * 发送一条消息。
+     *
+     * 返回 `true` = 这一条**确实提交给了服务端**；`false` = 没发出去（没有活动工作区/会话
+     * 而早退，或 invoke 层抛错）。
+     *
+     * 为什么要这个布尔：调用方（`ChatPanel.vue` 的 `handleSend`）要用它决定**输入框里的字
+     * 留不留**。返回 `void` 时调用方无法区分「发出去了」和「根本没发」，只能先清空输入框 ——
+     * 一旦早退或失败，用户敲的那段字就凭空消失了（早退连 `lastFailedContent` 都没有，因为
+     * 根本没进 try，界面上连重试入口都不存在）。
+     *
+     * 注意这个布尔**不改变任何既有语义**：不抛错（界面靠 `st.error` + 消息气泡上的重试
+     * 按钮那套在工作），`st.error` / `st.lastFailedContent` / `st.streaming` 的含义一字未动。
+     */
+    async send(content: string): Promise<boolean> {
       const wsStore = useWorkspaceStore();
       const convStore = useConversationStore();
       const workspaceId = wsStore.activeWorkspaceId;
       const conversationId = convStore.activeConversationId;
-      if (!workspaceId || !conversationId) return;
+      // 早退：什么都没提交，明确告诉调用方「没发出去」
+      if (!workspaceId || !conversationId) return false;
 
       const st = this.ensure(conversationId);
       st.error = "";
@@ -171,15 +186,22 @@ export const useChatStore = defineStore("chat", {
         // 仅兜底 invoke 层异常（业务错误都走 error 事件）
         st.error = err instanceof Error ? err.message : String(err);
         st.streaming = false;
+        return false;
       }
+      return true;
     },
 
-    /** 重试最近一次发送失败的内容 */
-    retry() {
+    /**
+     * 重试最近一次发送失败的内容。
+     *
+     * 布尔值原样透传（`true` = 这次重试真的提交了），口径与 `send` 完全一致。
+     */
+    retry(): Promise<boolean> {
       const st = this.byConversation[this.activeConversationId];
       if (st?.lastFailedContent) {
         return this.send(st.lastFailedContent);
       }
+      return Promise.resolve(false);
     },
 
     /**
