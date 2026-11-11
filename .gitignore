@@ -1,5 +1,7 @@
 node_modules
 dist
+# electron-builder 的产物（packages/main/electron-builder.yml 的 directories.output）
+release
 *.local
 # .vscode
 .idea

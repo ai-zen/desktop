@@ -1,5 +1,7 @@
 {
   "name": "@ai-zen/desktop-main",
+  "version": "0.1.0",
+  "description": "AI-Zen Desktop 主进程（Electron 壳）",
   "private": true,
   "type": "module",
   "main": "dist/main.mjs",
@@ -7,16 +9,17 @@
     "build": "rolldown -c rolldown.config.mjs",
     "dev": "rolldown -c rolldown.config.mjs --watch",
     "start": "electron --remote-debugging-port=9222 dist/main.mjs",
+    "pack": "electron-builder --dir --publish never",
+    "dist": "electron-builder --publish never",
     "test": "vitest run"
   },
-  "dependencies": {
-    "@ai-zen/agents-core": "link:../../../agents/packages/core",
-    "@ai-zen/agents-sdk": "link:../../../agents/packages/sdk",
-    "@ai-zen/desktop-shared": "workspace:*"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@ai-zen/agents-client": "link:../../../agents/packages/client",
+    "@ai-zen/agents-core": "link:../../../agents/packages/core",
+    "@ai-zen/agents-sdk": "link:../../../agents/packages/sdk",
     "@ai-zen/agents-server": "link:../../../agents/packages/server",
+    "@ai-zen/desktop-shared": "workspace:*",
     "cross-env": "^10.1.0",
     "electron": "^43.1.1",
     "rolldown": "^1.2.0",

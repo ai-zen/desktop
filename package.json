@@ -5,10 +5,13 @@
     "build:main": "pnpm --filter @ai-zen/desktop-main build",
     "build:render": "pnpm --filter @ai-zen/desktop-render build",
     "build": "pnpm build:render && pnpm build:main",
-    "dev": "node scripts/dev.mjs"
+    "dev": "node scripts/dev.mjs",
+    "pack": "pnpm build && pnpm --filter @ai-zen/desktop-main run pack",
+    "dist": "pnpm build && pnpm --filter @ai-zen/desktop-main run dist"
   },
   "devDependencies": {
     "concurrently": "^10.0.4",
+    "electron-builder": "^26.18.0",
     "nodemon": "^3.1.14"
   }
 }

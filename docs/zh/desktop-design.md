@@ -145,3 +145,55 @@ packages/render/src/
 | 事件整份替换（`message` / `agents`） | 消费方不需要任何合并逻辑；增量事件把复杂度摊给每一个消费方 |
 | 未知通知码也要出文案 | 版本偏斜是常态，静默丢弃让用户看到「什么都没发生」 |
 | 词典在 main 而不是 render | 文案与「哪条事件变成哪个 code」是同一件事，而事件翻译已经全在 main |
+
+## 12. 打包与分发
+
+「随包分发的服务端」得要真的随包走：应用装好就能用，客户机上不需要 Node.js / npm。
+
+**工具**：electron-builder 26.18.0（仓库根 `package.json` 的 devDependency）。构建的项目目录是 `packages/main` —— 打包的对象是**应用**，而 asar 根部那份 `package.json` 就是它。
+
+**命令**（在仓库根执行）：
+
+```bash
+pnpm run pack   # 只出 unpacked 目录：release/linux-unpacked/
+pnpm dist       # 出可分发安装包：release/AI-Zen Desktop-<version>.AppImage
+```
+
+`pack` 与 pnpm 自带的 `pnpm pack`（打 npm tarball）撞名，所以必须写成 `pnpm run pack`；`pnpm dist` 不撞。
+
+**元数据分两处，各管一件事**：
+
+- `packages/main/package.json`：`version`（electron-builder 只认这里）、`description`、`type: module`、`main: dist/main.mjs`；
+- `packages/main/electron-builder.yml`：`appId` / `productName` / `executableName`、`files`、`directories.output`、`electronDist`、`linux.target`。
+
+`executableName` 必须显式写死：Linux 的可执行文件名默认取的是 **npm 包名**（`@ai-zen/desktop-main` → `@ai-zendesktop-main`），不是 `productName`。
+
+**产物**：
+
+```
+release/
+├── linux-unpacked/
+│   ├── ai-zen-desktop             Electron 可执行（同时也是服务端的 Node 解释器）
+│   └── resources/app.asar         3.2 MB，只有 dist/
+└── AI-Zen Desktop-0.1.0.AppImage  122 MB
+```
+
+asar 里就这五条，其余被 `files: [dist/**, !**/*.map]` 挡在门外：
+
+```
+/dist/main.mjs      主进程入口（ESM）
+/dist/server.mjs    随包分发的服务端（自包含，1.5 MB）
+/dist/preload.js    contextBridge
+/dist/static/…      render 产物（index.html + assets/）
+/package.json       type: module + main: dist/main.mjs
+```
+
+**`server.mjs` 为什么必须在 `main.mjs` 同目录**：`launch.ts` 用 `import.meta.url` 推同级路径（`dirname(main.mjs) + server.mjs`），它并不知道自己被打进了 asar。同目录这条约束在 asar 里同样成立 —— `ELECTRON_RUN_AS_NODE=1` 的 Electron 二进制也认 asar 路径，读得到、跑得起来，所以不需要 `asarUnpack`。
+
+**产物里为什么没有 `node_modules`**：`main.mjs` 除 `electron` 外全内联（`rolldown.config.mjs` 里 core / sdk / shared 都从 `external` 拿掉了），`server.mjs` 本来就是全内联。于是 `packages/main` 的依赖全是**构建期输入**，全在 `devDependencies`；electron-builder 收不到任何生产依赖，asar 里也就没有 `node_modules` —— 那几条跨仓的 `link:` 路径（`../../../agents/…`）因此完全不出现在产物里。
+
+**asar 根 `package.json` 的 `type` / `main` 不是装饰**：这两个字段是 Electron 认出 ESM 主进程的依据（Electron 43 支持 ESM 主进程，但入口得能被解析成 ESM）。electron-builder 会剥掉 `scripts` / `devDependencies`，这两个字段原样留下。
+
+**render 怎么被加载**：`app.ts` 按 `NODE_ENV === "development"` 二选一 —— 开发期 `loadURL("http://localhost:5173")`，否则 `loadFile(dist/static/index.html)`。打包后 `__dirname` 变成 `<…>/app.asar/dist`，`dist/static` 相对它没有位移，file:// 这条路照旧；资源引用靠 Vite 的 `base: "./"` 保持相对。
+
+**目前没有做的**：应用图标（用的 Electron 默认图标）、`author` / `desktopName`（只在出 deb 前才必须）、macOS 与 Windows 目标。

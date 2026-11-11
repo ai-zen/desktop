@@ -2,4 +2,7 @@ packages:
   - 'packages/*'
 allowBuilds:
   '@parcel/watcher': false
+  # electron-builder 的 Windows Squirrel 目标才用它，这里不打 Windows 安装包；
+  # 留着 true 会去跑它的构建脚本（要下东西），与本次分发形态无关
+  electron-winstaller: false
   vue-demi: true

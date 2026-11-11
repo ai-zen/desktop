@@ -1,0 +1,35 @@
+# electron-builder —— 「这个应用是什么」与「打成什么样」。
+#
+# 项目目录就是本包（`packages/main`）：打包要的是**应用**，而 asar 根部的 package.json
+# 正是这一份 —— 它的 `type: module` / `main: dist/main.mjs` 就是 Electron 认出 ESM 主进程的
+# 依据（见 docs 里「打包与分发」）。版本号也只有在这里才被 electron-builder 认可。
+
+appId: com.aizen.desktop
+productName: AI-Zen Desktop
+# Linux 的可执行文件名默认取 **npm 包名**（`@ai-zen/desktop-main` → `@ai-zendesktop-main`），
+# 不是 productName；显式钉住，产物里才会是 release/linux-unpacked/ai-zen-desktop
+executableName: ai-zen-desktop
+
+directories:
+  # 默认 `dist` 会落在构建产物上（rolldown 就写 `dist/`），挪到仓库根的 release/
+  output: ../../release
+
+# 打进 asar 的只有 dist/ 里的东西：main.mjs / server.mjs / preload.js / static/ 四件套，
+# 加上 asar 根部的 package.json（Electron 靠它认 ESM）。不带 node_modules：
+# main.mjs 除 electron 之外全内联（见 rolldown.config.mjs），没有需要运行时解析的依赖。
+# 同级的 4 个文件必须留在同一目录 —— server.mjs 的位置由 main.mjs 的 import.meta.url 算出。
+files:
+  - dist/**
+  - "!**/*.map"
+
+# 复用已经装在 node_modules 里的 Electron 二进制，不让 electron-builder 再下一份
+# （路径相对本目录；版本取自本包 package.json 的 devDependencies，这里是 43.1.1）
+electronDist: node_modules/electron/dist
+
+# 没有原生模块，不需要 node-gyp 那套
+npmRebuild: false
+
+linux:
+  target:
+    - AppImage
+  category: Development

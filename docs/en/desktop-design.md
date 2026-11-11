@@ -145,3 +145,55 @@ The `server/` layer is verified directly by vitest: `packages/main/src/server/te
 | Wholesale event replacement (`message` / `agents`) | Consumers need no merge logic; incremental events spread that complexity across every consumer |
 | Unknown notice codes still get text | Version skew is normal; silently dropping them shows the user "nothing happened" |
 | The dictionary lives in main, not render | Text and "which event becomes which code" are the same concern, and all event translation already sits in main |
+
+## 12. Packaging and distribution
+
+The server "shipped with the app" has to really ship with it: install the app and it works, with no Node.js / npm on the customer's machine.
+
+**Tool**: electron-builder 26.18.0 (a devDependency of the repo root `package.json`). The project directory being packaged is `packages/main` — what is packaged is the **app**, and the `package.json` at the asar root is exactly that one.
+
+**Commands** (run from the repo root):
+
+```bash
+pnpm run pack   # unpacked directory only: release/linux-unpacked/
+pnpm dist       # distributable installer: release/AI-Zen Desktop-<version>.AppImage
+```
+
+`pack` collides with pnpm's built-in `pnpm pack` (an npm tarball), so it must be typed as `pnpm run pack`; `pnpm dist` does not collide.
+
+**Metadata in two places, one concern each**:
+
+- `packages/main/package.json`: `version` (the only place electron-builder reads it from), `description`, `type: module`, `main: dist/main.mjs`;
+- `packages/main/electron-builder.yml`: `appId` / `productName` / `executableName`, `files`, `directories.output`, `electronDist`, `linux.target`.
+
+`executableName` must be pinned explicitly: on Linux the executable name defaults to the **npm package name** (`@ai-zen/desktop-main` → `@ai-zendesktop-main`), not to `productName`.
+
+**Output**:
+
+```
+release/
+├── linux-unpacked/
+│   ├── ai-zen-desktop             the Electron executable (also the server's Node interpreter)
+│   └── resources/app.asar         3.2 MB, containing dist/ only
+└── AI-Zen Desktop-0.1.0.AppImage  122 MB
+```
+
+The asar holds exactly these five entries; everything else is kept out by `files: [dist/**, !**/*.map]`:
+
+```
+/dist/main.mjs      main process entry (ESM)
+/dist/server.mjs    the server shipped with the app (self-contained, 1.5 MB)
+/dist/preload.js    contextBridge
+/dist/static/…      renderer output (index.html + assets/)
+/package.json       type: module + main: dist/main.mjs
+```
+
+**Why `server.mjs` must sit next to `main.mjs`**: `launch.ts` derives a sibling path from `import.meta.url` (`dirname(main.mjs) + server.mjs`) and knows nothing about being packed into an asar. Sibling-hood holds inside the asar too — the Electron binary run with `ELECTRON_RUN_AS_NODE=1` resolves asar paths as well, so it can read and execute that file, and no `asarUnpack` is needed.
+
+**Why there is no `node_modules` in the output**: `main.mjs` inlines everything but `electron` (core / sdk / shared were removed from `external` in `rolldown.config.mjs`), and `server.mjs` was self-contained from the start. Every dependency of `packages/main` is therefore a **build-time input**, and they all live in `devDependencies`; electron-builder finds no production dependencies, so the asar carries no `node_modules` — and the cross-repo `link:` paths (`../../../agents/…`) never appear in the output at all.
+
+**`type` / `main` in the asar-root `package.json` are not decoration**: those two fields are how Electron recognises an ESM main process (Electron 43 does support one, but the entry has to be resolvable as ESM). electron-builder strips `scripts` / `devDependencies` and keeps both fields as they are.
+
+**How render is loaded**: `app.ts` branches on `NODE_ENV === "development"` — `loadURL("http://localhost:5173")` while developing, otherwise `loadFile(dist/static/index.html)`. After packaging `__dirname` becomes `<…>/app.asar/dist`, and `dist/static` does not move relative to it, so the file:// path is unchanged; asset references stay relative thanks to Vite's `base: "./"`.
+
+**Not done yet**: an application icon (the Electron default is used), `author` / `desktopName` (only required once a deb is built), and the macOS / Windows targets.

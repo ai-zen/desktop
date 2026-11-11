@@ -20,6 +20,17 @@ const server = serverPackage();
 
 export default defineConfig([
   {
+    /**
+     * 主进程：**只有 electron 是外部**，`@ai-zen/{agents-core,agents-sdk,desktop-shared}` 全部内联。
+     *
+     * 分发形态决定这一条：打包后的应用里没有 `node_modules`（`electron-builder.yml` 的 `files`
+     * 只放 `dist/**`），asar 里的模块解析不走 pnpm 那套符号链接；而这三个包在本仓是 `link:`
+     * 到隔壁 `agents` 仓的**相对路径**，让打包器沿着真实路径去收，等于把另一个 git 仓的目录
+     * 结构焊进产物。内联之后 `dist/main.mjs` 除了 `electron` 什么都不用解析 —— 少一类「装机后
+     * 才炸」的失败。代价只是一份静态代码，没有运行时开销。
+     *
+     * 服务端入口（下面第三个）本来就是全内联，两边口径一致。
+     */
     input: "src/main.ts",
     output: {
       format: "esm",
@@ -27,7 +38,7 @@ export default defineConfig([
       sourcemap: true,
     },
     platform: "node",
-    external: ["electron", "@ai-zen/agents-core", "@ai-zen/agents-sdk", "@ai-zen/desktop-shared"],
+    external: ["electron"],
   },
   {
     input: "src/preload.ts",
