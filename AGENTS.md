@@ -76,8 +76,26 @@ exec_async({ command: "cd <项目根目录> && pnpm dev", detached: true });
 
 - 端口固定 `9222`，只有唯一实例能绑定
 - 页面标题 `AI-Zen Desktop`，URL `http://localhost:5173/`
-- 常用：`cdp_list_pages` / `cdp_evaluate` / `cdp_screenshot` / `cdp_get_dom`
+- **工具统一用 `electron-devtools`（见下）**。原先 `.ai-zen/tools` 那组自研 `cdp_*` 工具（`cdp_list_pages` / `cdp_evaluate` / `cdp_get_dom` / `cdp_get_css_vars` / `cdp_console` / `cdp_diagnose` / `cdp_screenshot`）**已删除**：它们的能力是这个 MCP 的子集。历史代码在 git 里可找回（`git log -- .ai-zen/tools`），但**不要再依赖那些工具名**
 - **调试截图原则（按模型区分）**：**非视觉模型不要截图**——截图对它无意义，只会产生垃圾文件；只有**视觉模型**才考虑截图（可作视觉上下文分析 UI）。当前项目是非视觉模型（DeepSeek），所以默认不截图；确需截图时用完即删，`preview-*.png` 属临时产物（已 gitignore，但也别留在工作区），留档图放到项目外（如系统临时目录），不要污染仓库目录
+
+### 首选 `electron-devtools`（chrome-devtools MCP，`.mcp.json` 里配好的）
+
+项目根 `.mcp.json` 注册了 `electron-devtools` = `chrome-devtools-mcp --browserUrl http://127.0.0.1:9222`，**直连** Electron 渲染进程（已实测：evaluate / a11y 快照 / 截图 / 控制台 / 网络 / emulate 深色 / 性能 trace 全部可用）。它与全局 `~/.ai-zen/mcp.json` 里那条启动 Edge 的 `chrome-devtools` **并存不冲突**。原先 `.ai-zen/tools` 的 `cdp_*` 已删除，其中唯一没有单调用等价物的 `cdp_diagnose`（一次性综合诊断报告）改用组合：`list_pages` + `take_snapshot` + `evaluate_script` + `get_css_styles` + `list_console_messages`。
+
+**唯一必须记住的顺序（错了必然报错）**：
+
+1. `list_pages` → 拿 **pageId**（从 `1` 起，**electron 重启/重连后会变**，每次重新拿）
+2. `take_snapshot` → 拿 **uid**（形如 `1_11`）。`click` / `fill` / `hover` / `get_css_styles` 都吃 uid，**没有本轮快照就报 `No snapshot found for page N`**
+3. 再动作 `click` / `fill` / `press_key`（真实 CDP 输入事件）→ 要确认结果就再 `take_snapshot`
+
+**语义差异（别按老习惯用）**：
+
+- 控制台/网络**不是「监听 N 秒」**：先做动作，再 `list_console_messages` / `list_network_requests`（默认只保留最近 3 次导航）；页面加载期的事件抓不到，要抓就 `navigate_page` reload 一次再看
+- 文件落盘（截图/快照/trace/heapsnapshot）被 `--workspace` 钉在项目目录内（`.mcp.json` 已配）；「截图用完即删」的规矩不变
+- `No page found` = pageId 过期（见第 1 条）；`ECONNREFUSED 127.0.0.1:9222` = 应用没带 `--remote-debugging-port=9222` 起或根本没起 —— 起来后会自动重连，但 **pageId 全变**
+- 只覆盖**渲染进程**；main 进程仍靠 `appendFileSync` 写文件日志（见「main 端调试经验」）
+- 验证暗色主题不必改代码：`emulate` 设 `colorScheme: "dark"`（实测 `prefers-color-scheme` 生效）
 
 ## 构建与类型检查
 
