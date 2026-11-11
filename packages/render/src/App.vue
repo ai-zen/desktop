@@ -7,7 +7,14 @@
       所以它排在「连接就绪」这一关之前。
     -->
     <SettingsView v-if="uiStore.currentView === 'settings'" />
-    <!-- 优先级 2：连接还没 ready（还没查到 / 正在连 / 连不上）→ 整屏交给连接状态屏 -->
+    <!--
+      优先级 2：**还没配过**（`unset`）→ 首启引导屏。
+
+      它必须排在连接状态屏之前：那边说的是「正在连 / 连不上」，而这里连一个目标都还没有
+      —— 摆一块只有「重试」按钮的屏，重试的对象根本不存在。
+    -->
+    <SetupView v-else-if="connectionStore.isUnset" />
+    <!-- 优先级 3：连接还没 ready（还没查到 / 正在连 / 连不上）→ 整屏交给连接状态屏 -->
     <StatusView v-else-if="!connectionStore.isReady" />
     <GuideView v-else-if="uiStore.currentView === 'guide'" />
     <MainView v-else />
@@ -21,8 +28,10 @@ import TitleBar from "./components/TitleBar.vue";
 import GuideView from "./views/guide/index.vue";
 import MainView from "./views/main/index.vue";
 import SettingsView from "./views/settings/index.vue";
+import SetupView from "./views/setup/index.vue";
 import StatusView from "./views/status/index.vue";
 import { onChatPush } from "./apis/chat.js";
+import { getConfigSettings } from "./apis/config.js";
 import { useUiStore } from "./stores/ui.js";
 import { useWorkspaceStore } from "./stores/workspace.js";
 import { useChatStore } from "./stores/chat.js";
@@ -62,6 +71,23 @@ const onChatPushHandler = (
  */
 async function init(): Promise<void> {
   await uiStore.loadOptions();
+
+  /**
+   * 凭据门：服务端上**一个能用的 API Key 都没有** → 把用户送到设置页的「API Key」那一节。
+   *
+   * 为什么是「送到设置页」而不是另做一屏：那一节本来就是「选端点 + 填密钥」的完整界面
+   * （含每个端点的注册链接与明文核对），再画一屏等于把同一件事实现两遍。这里只负责
+   * **在那个该被看见的时刻把它推到用户眼前**，否则症状是「连上了、界面全在，一发消息就报
+   * 没有 Key」—— 而报错的地方离要改的地方很远。
+   *
+   * 读不到配置（老服务端 / 通道出问题）就不拦：凭据缺失是一种**确定**的状态，猜不得。
+   */
+  const settingsConfig = await getConfigSettings().catch(() => null);
+  const hasApiKey = settingsConfig?.endpoints.some((endpoint) => endpoint.apiKey?.trim()) ?? true;
+  if (!hasApiKey) {
+    ElMessage.warning("还没有填写 API Key：请在下方「API Key」一节里选一个服务，填入密钥");
+    uiStore.setView("settings");
+  }
 
   await workspaceStore.load();
 

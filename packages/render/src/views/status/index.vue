@@ -48,12 +48,14 @@
       </template>
 
       <!--
-        `ready` 正常走不到这里：外层（`App.vue`）只在这一屏之前就放行了。
-        兜一句而不是留一个空白分支 —— 万一哪天放行条件改了，屏幕上不会是一块什么都没有的白。
+        `ready` / `unset` 正常走不到这里：外层（`App.vue`）在这之前就放行了（前者进主界面、
+        后者进首启引导屏）。兜一句而不是留一个空白分支 —— 万一哪天放行条件改了，屏幕上不会是
+        一块什么都没有的白。
       -->
       <template v-else>
         <p class="headline">
-          已连接 <strong>{{ label }}</strong>
+          <template v-if="status === 'unset'">还没选服务端</template>
+          <template v-else>已连接 <strong>{{ label }}</strong></template>
         </p>
       </template>
     </div>
@@ -80,7 +82,9 @@ const connectionStore = useConnectionStore();
 const status = computed(() => connectionStore.state?.status ?? null);
 
 /** 该显示的那一行字：main 已经抹好（本地 = "本机服务端"，远程 = 那个地址，不含凭证） */
-const label = computed(() => connectionStore.state?.label ?? "");
+const label = computed(() =>
+  connectionStore.state && "label" in connectionStore.state ? connectionStore.state.label : "",
+);
 
 /** `error` 态那一句人话（原样，不改写、不拼接） */
 const errorMessage = computed(() =>

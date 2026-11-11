@@ -32,7 +32,7 @@ packages/main/src/
 ├── config.ts   the path constant AI_ZEN_DIR (the connection settings are not in this file)
 ├── preload.ts  contextBridge exposing window.electronAPI
 ├── connection/ local or remote (the only persistence Desktop owns)
-│   ├── settings.ts    connection settings I/O: `<AI_ZEN_DIR>/desktop/connection.json` (0600 + atomic write; unreadable → `{ mode: "local" }`)
+│   ├── settings.ts    **only binds the path** (`<AI_ZEN_DIR>/desktop/connection.json`); read/write/validate/wording live in `connection-settings.ts` in `@ai-zen/agents-client` (shared with the CLI)
 │   └── controller.ts  ConnectionController: which layer is live / saving means reconnecting / testing a connection / three states + bounded retries
 └── server/     the server facade (directly verifiable by vitest + a real daemon)
     ├── index.ts            assembly root: createServerLayer
@@ -94,15 +94,19 @@ All of these matter, and re-attaching after a reconnect is the easiest to miss: 
 
 The config lives in `<AI_ZEN_DIR>/desktop/connection.json` (`0600`, atomic write), carried by five **dedicated** IPC channels `connection:get` / `connection:save` / `connection:test` / `connection:state` / `connection:reconnect` (they do not go into the service table below).
 
-### When it cannot connect: three states + bounded retries
+### Never configured: `unset` (first-run screen)
 
-The window comes up first (section 3), so "what state is this connection in right now" has to be a value that can be **asked for and pushed** — otherwise the `invokeService` calls render makes while mounting hit a connection that is not up yet and the screen is blank with no hint. The three states are maintained in exactly one place, `ConnectionController`, and render only gates the UI on them:
+"Never configured" is not a kind of "cannot connect" — it is a decision only the **user** can make. It needs its own state: falling back to `{ mode: "local" }` squashes "first launch" into "the user picked local", so the app starts a local server on its own and the onboarding screen can never appear (the same shape of bug as "two booleans cannot hold three credential sources" in `resolve-target.ts`). The first arm of `ConnectionState` is therefore `{ status: "unset" }`: `start()` builds **no layer** at all in that case, and render puts up `views/setup` (this machine / remote + address & token + test connection).
+
+### When it cannot connect: four states + bounded retries
+
+The window comes up first (section 3), so "what state is this connection in right now" has to be a value that can be **asked for and pushed** — otherwise the `invokeService` calls render makes while mounting hit a connection that is not up yet and the screen is blank with no hint. The states are maintained in exactly one place, `ConnectionController`, and render only gates the UI on them:
 
 - `connecting` — **covers** both "first attempt in flight" and "waiting for a retry". The two are told apart by `attempt` (`0` = the first attempt) and `nextRetryInMs` (how long until the next one);
 - `ready` — connected, carrying the server's **self-reported** `protocol` / `version` (from the handshake reply; when unavailable they are `0` / `""` — connected but unaware of which version it is, which is more honest than inventing a number);
 - `error` — the terminal state **after the retries failed too** (not "this attempt failed"), carrying one plain sentence in `message`.
 
-All three carry a `label`: `"本机服务端"` (the local server) for local, the address for remote. It is produced by main (render may neither compose an address nor guess the mode) and it **never contains the credential** — userinfo in an address is stripped first.
+Every state except `unset` carries a `label`: `"本机服务端"` (the local server) for local, the address for remote. It is produced by main (render may neither compose an address nor guess the mode) and it **never contains the credential** — userinfo in an address is stripped first.
 
 **Bounded retries**: after the first failure there are at most **3** more tries, backing off **1s / 2s / 5s**; if all three fail → `error`, and from then on only the user's manual "retry" (`connection:reconnect`) is left. Automatic retries run one batch, not forever: an unreachable remote should not make the main process knock every 5 seconds for the rest of the day, and "quietly retrying forever" looks exactly like "stuck" in the UI.
 
@@ -150,14 +154,14 @@ The translation layer does four things:
 packages/render/src/
 ├── main.ts        Vue entry (Pinia / ElementPlus)
 ├── App.vue        root: TitleBar + gating on connection state (settings → status → guide/main); subscribes to chat:push and connection:state
-├── views/         guide/index.vue, main/{index,Sidebar,ChatPanel,MessageBubble,NewChatDialog}.vue, settings/index.vue, status/index.vue
+├── views/         setup/index.vue (first-run), guide/index.vue, main/{index,Sidebar,ChatPanel,MessageBubble,NewChatDialog}.vue, settings/index.vue, status/index.vue
 ├── components/    TitleBar.vue, MarkdownContent.vue
 ├── composables/   useMessageWindow (paged window), useAutoScroll (scroll policy)
 ├── stores/        ui / workspace / conversation / chat / agentView / connection
 └── apis/          base + workspace / conversation / chat / agent / model / config + connection
 ```
 
-- **The UI is gated on connection state** (this is a layer in `App.vue`, not something each view decides for itself): the priority is `settings page → status screen while not ready → guide / main`. **The settings page is reachable even while disconnected** — it is the user's only way to rescue themselves (back to local / another address); the main interface (sidebar and conversation list included) only mounts once `ready`, so the app never shows "the window is up but blank and silent". The status screen speaks each state: `connecting` is "connecting to …" (during a retry wait it adds "retry N, in about X seconds"), `error` is that `message` plus "retry" and "go to settings".
+- **The UI is gated on connection state** (this is a layer in `App.vue`, not something each view decides for itself): the priority is `settings page → first-run setup screen (unset) → status screen while not ready → guide / main`. **The settings page is reachable even while disconnected** — it is the user's only way to rescue themselves (back to local / another address); the main interface (sidebar and conversation list included) only mounts once `ready`, so the app never shows "the window is up but blank and silent". The status screen speaks each state: `connecting` is "connecting to …" (during a retry wait it adds "retry N, in about X seconds"), `error` is that `message` plus "retry" and "go to settings".
 - **While disconnected the settings page only gives up half of itself**: "default model / default Agent / API Key / data directory" are all server facts, so they stay empty with a single note (no red banner, no log line — it is not a fault); the "server connection" section reads `connection:get` from main locally and stays fully usable.
 - **Data is fetched on `ready`**: `init()` (Agents / models / workspaces, then guide or main depending on whether any workspace exists) runs exactly once per `false → true` transition. A successful "save and reconnect" (connected) returns to the main interface; and if the user happens to be sitting on the settings page, a background auto-retry that succeeds does **not** yank them out of it — data loads as usual, only the view is left alone.
 - **apis only forwards**: `invokeService` is converged into methods and errors are normalized into `InvokeServerError`; `subscribeServiceEvent("chat:push", …)` is the single event entry point. `apis/connection.ts` is the same kind of forwarding for the five connection channels (it does not go through `invokeService`), and the `connection:state` push rides the same `on` / `off` pair.
@@ -176,7 +180,7 @@ Everything on disk is **data**, and data belongs to the server (its `AI_ZEN_DIR`
 ├── sub-agents/                  sub-agent definitions
 ├── workspaces/<workspaceId>/    workspace.json + sessions/<id>.json (with .meta.json listing)
 ├── desktop/                     written by Desktop itself (this one file only)
-│   └── connection.json          connection settings (local / remote + address + credential, 0600; delete it to return to "local")
+│   └── connection.json          connection settings (local / remote + address + credential, 0600; **deleting it returns to the first-run screen**)
 └── run/                         written by the server: how to reach it
     ├── server.json              service discovery: which port the resident server is on
     └── token                    credential (read or created by the server, 0600)

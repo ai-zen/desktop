@@ -86,7 +86,14 @@ import type {
   ConnectionState,
 } from "@ai-zen/desktop-shared";
 import type { LayerHello, ServerLayerOptions } from "../server/index.js";
-import { connectionConfigOf, parseConnectionSettings } from "./settings.js";
+// 措辞与映射全部来自包（`connection-settings.ts`）：`labelOf` / `describe` / `connectionConfigOf`
+// 在本仓只是别名，没有第二份实现 —— CLI 与桌面端说的是同一句话
+import {
+  connectionConfigOf,
+  describe,
+  labelOf,
+  parseConnectionSettings,
+} from "./settings.js";
 
 /**
  * 首次失败之后的重试间隔（D24）：1000 / 2000 / 5000。
@@ -162,8 +169,8 @@ export interface ConnectionControllerOptions {
   push: (event: ChatStreamEvent) => void;
   /** 建一层（生产 = `createServerLayer`，用例 = 假层 + 计数器） */
   createLayer: (options: ServerLayerOptions) => ConnectionLayer;
-  /** 读配置（生产 = `settings.ts` 的 `readSettings`，用例 = 一个内存变量） */
-  readSettings: () => Promise<ConnectionSettings>;
+  /** 读配置（生产 = `settings.ts` 的 `readSettings`，用例 = 一个内存变量）。`null` = 没配过 */
+  readSettings: () => Promise<ConnectionSettings | null>;
   /** 写配置（生产 = `settings.ts` 的 `writeSettings`，用例 = 计数 + 可控失败） */
   writeSettings: (settings: ConnectionSettings) => Promise<void>;
   /** 日志出口（缺省 `console.info`）。**只许说模式与地址，凭证一个字都不许进**（D22） */
@@ -229,11 +236,20 @@ export class ConnectionController {
    * **调用方不该 `await` 它去等窗口**（D25）：窗口先出来，这一句在后台跑，结果靠状态推送。
    * 它自己也不会 reject（失败由状态机接住：重试 → 或者 `error`），所以 `app.ts` 那边只是
    * `void this.connection.start()` 再加一道 `.catch` 兜底日志。
+   *
+   * **没配过就连都不连**（`unset`）：以前这里用默认值 `{ mode: "local" }` 兜底，于是「第一次
+   * 启动」与「用户选过本地」变成同一格 —— 应用一启动就去拉起一个本地服务端，引导屏永远出不来。
+   * 现在「没配过」是一个独立的状态，界面据此摆出首启的引导屏。
    */
   async start(): Promise<void> {
     const settings = await this.readSettings();
     const generation = this.nextGeneration();
-    // 起始态**不推**（见 `seed`）：它与 `state()` 在 start() 之前算出来的那一份逐字相同
+    if (!settings) {
+      // 起始态**不推**（见 `seed`）：它与 `state()` 在 `start()` 之前给出的那一份逐字相同
+      this.seed({ status: "unset" });
+      return;
+    }
+    // 起始态**不推**（见 `seed`）：它与 `state()` 在 `start()` 之前算出来的那一份逐字相同
     this.seed({ status: "connecting", label: labelOf(settings), attempt: 0 });
     await this.launch(settings, 0, generation);
   }
@@ -243,9 +259,12 @@ export class ConnectionController {
    *
    * 每次现读盘、不用内存里那份：这份文件可能被手改（排障时很常见），而「面板里显示的」
    * 必须是**盘上那一份** —— 否则用户改完文件、重新打开面板，看到的还是个旧值。
+   *
+   * 没配过时给 `{ mode: "local" }`：那是**表单的默认选项**，不是「盘上的事实」（首启与否由
+   * `connection:state` 的 `unset` 回答，那才是唯一判据）。面板拿它当初始值，用户选完一存就落盘。
    */
   async get(): Promise<ConnectionSettings> {
-    return await this.options.readSettings();
+    return (await this.options.readSettings()) ?? { mode: "local" };
   }
 
   /**
@@ -258,6 +277,8 @@ export class ConnectionController {
   async state(): Promise<ConnectionState> {
     if (this.currentState) return this.currentState;
     const settings = await this.readSettings();
+    // 没配过就答「没配过」：窗口比连接先出来，导引屏靠这一个答案决定该不该摆出来
+    if (!settings) return { status: "unset" };
     return { status: "connecting", label: labelOf(settings), attempt: 0 };
   }
 
@@ -269,6 +290,11 @@ export class ConnectionController {
    */
   async reconnect(): Promise<ConnectionState> {
     const settings = await this.readSettings();
+    // 没配过就没有「重试」这回事：回到 `unset`，界面据此摆首启屏
+    if (!settings) {
+      this.setState({ status: "unset" });
+      return { status: "unset" };
+    }
     // 换代：挂起的重试计时器作废，在飞的那一次回来时也不许再改状态（它代表的是旧配置）
     const generation = this.nextGeneration();
 
@@ -565,13 +591,19 @@ export class ConnectionController {
     if (changed) this.options.onStateChange?.(next);
   }
 
-  /** 读配置（`readSettings` 的契约是不抛：注入实现真抛了也按本地处理，别让启动挂住） */
-  private async readSettings(): Promise<ConnectionSettings> {
+  /**
+   * 读配置（`readSettings` 的契约是不抛：注入实现真抛了也按「没配过」处理，别让启动挂住）。
+   *
+   * 这里**不再**回退成 `{ mode: "local" }`：那种兜底会把一次读盘失败变成「用户选过本地」，
+   * 于是应用默默去拉起一个本地服务端，而真相是磁盘上那份读不出来。`null` 让界面把选择权交回
+   * 用户（首启屏）。
+   */
+  private async readSettings(): Promise<ConnectionSettings | null> {
     try {
       return await this.options.readSettings();
     } catch (error) {
-      this.log(`读连接配置失败，按本地配置继续：${messageOf(error)}`);
-      return { mode: "local" };
+      this.log(`读连接配置失败，按「没配过」处理：${messageOf(error)}`);
+      return null;
     }
   }
 
@@ -618,47 +650,6 @@ export class ConnectionController {
 // ==================================================================
 
 /**
- * 状态的 `label`：本地模式 = `"本机服务端"`，远程模式 = 那个地址。
- *
- * 这两个值是 render 唯一能显示的东西（它不许自己拼地址、也不许猜模式），所以**它们必须
- * 干净**：地址里的 userinfo（`wss://user:pass@host` 的 `user:pass@`）会先被抹掉
- * （{@link stripUserInfo}），凭证一个字都进不去。
- */
-function labelOf(settings: ConnectionSettings): string {
-  if (settings.mode !== "remote") return "本机服务端";
-  // `remote` 一定有地址（`parseConnectionSettings` / 读路径的归一化都保证过），兜底只是不写 `!`
-  return stripUserInfo(settings.serverUrl ?? "") || "远程服务端";
-}
-
-/**
- * 抹掉 URL 里的 userinfo。
- *
- * `parseServerUrl` 不看 userinfo（它只取 host / port / path），但**那一串会被原样写进
- * `label` 与日志** —— 而 `label` 是要推到界面上的。有人把钥匙写进地址（`wss://token@host`）
- * 时，凭证就会顺着界面与日志出去；这里多十行，那条路就是封死的。
- */
-function stripUserInfo(url: string): string {
-  const scheme = url.indexOf("://");
-  if (scheme < 0) return url;
-  const at = url.lastIndexOf("@");
-  if (at < scheme) return url;
-  return `${url.slice(0, scheme + 3)}${url.slice(at + 1)}`;
-}
-
-/**
- * 一份设置的一句话描述（**进日志**）。
- *
- * 只印模式与地址：凭证是钥匙，它不许出现在任何会被 `cat` 出去的东西里（D22 / D4）。
- * 这也是本文件里唯一一处「把配置写出去」的地方 —— 想加日志的人只能改这里，于是「别印
- * 凭证」是一条结构上的保证，而不是一句提醒。地址先过一遍 {@link stripUserInfo}：写在 URL
- * 里的凭证同样不许出去。
- */
-function describe(settings: ConnectionSettings): string {
-  if (settings.mode !== "remote") return "本地（发现文件 + 本机凭证）";
-  return `远程 ${stripUserInfo(settings.serverUrl ?? "")}`.trim();
-}
-
-/**
  * 失败原因（**进状态、进日志、进 `save()` 抛出的那句话**）。
  *
  * 比 {@link messageOf} 多一步：把配置里那串凭证抹掉。`error.message` 今天不含凭证（客户端包
@@ -684,6 +675,9 @@ function messageOf(error: unknown): string {
 function sameState(a: ConnectionState | null, b: ConnectionState): boolean {
   if (!a) return false;
   switch (b.status) {
+    case "unset":
+      // 没配过只有这一种形状，不需要比字段
+      return a.status === "unset";
     case "connecting":
       return (
         a.status === "connecting" &&

@@ -32,8 +32,8 @@ packages/main/src/
 ├── config.ts   路径常量 AI_ZEN_DIR（连接配置不在这个文件里）
 ├── preload.ts  contextBridge 暴露 window.electronAPI
 ├── connection/ 连本地还是远程（桌面端唯一一处自己的持久化）
-│   ├── settings.ts    连接配置读写：`<AI_ZEN_DIR>/desktop/connection.json`（0600 + 原子写；读不到回 `{ mode: "local" }`）
-│   └── controller.ts  ConnectionController：当前连着哪一层 / 保存即重连 / 测试连接 / 三态 + 有限重试
+│   ├── settings.ts    连接配置的**落点绑定**（读写/校验/措辞全在 `@ai-zen/agents-client` 的 `connection-settings.ts`；本文件只把路径钉成 `<AI_ZEN_DIR>/desktop/connection.json`）
+│   └── controller.ts  ConnectionController：当前连着哪一层 / 保存即重连 / 测试连接 / 四态 + 有限重试
 └── server/     服务端门面（可直接被 vitest + 真 daemon 验收）
     ├── index.ts            组装根：createServerLayer
     ├── call.ts             一次协议调用（每次取一条活着的连接，不缓存 client）
@@ -49,7 +49,7 @@ packages/main/src/
 - **`server/` 不碰 electron**。`createServerLayer` 只收四样非 electron 的事实（配置根、握手身份、默认工作目录、事件出口），所以它能被用例直接起起来；`app.getPath` / `dialog` / `webContents.send` 只出现在 `packages/main/src/app.ts` 里，以参数或回调递进去。
 - **`server/` 不碰数据文件**。会话清单、消息、工作区、配置全部经协议向服务端要。例外只有「连接本身」那两件，且都只读：地址（`run/server.json`，默认路径）与凭证（`run/token`），由 `ServerConnection` 在每次取用时现读；以及 `launch.ts` 把一个**进程**拉起来 —— 它自己不读不写任何数据文件。
 
-「不碰数据文件」说的是**数据**：会话、工作区、Agent 定义、模型配置仍然只由服务端拥有。桌面端自己确实写一个文件 —— `<AI_ZEN_DIR>/desktop/connection.json`（`connection/settings.ts`：`0600`、原子写、内含凭证；读不到 / 坏 JSON / 字段不合法一律回退 `{ mode: "local" }` 且照常启动）。它必须落在本机而不是服务端，理由是**先有鸡先有蛋**：服务端手上有「该连哪儿」的全部业务配置，可要问它，得先知道**连哪台**；把「连哪台」也存到服务端，就等于要求用户先连上服务端才能选服务端。所以这是**唯一**一处本地写，除这一处不新增任何往本地写数据的入口 —— 有意的例外，不是松绑。
+「不碰数据文件」说的是**数据**：会话、工作区、Agent 定义、模型配置仍然只由服务端拥有。桌面端自己确实写一个文件 —— `<AI_ZEN_DIR>/desktop/connection.json`（`connection/settings.ts` 只钉路径，规则在包里：`0600`、原子写、内含凭证；读不到 / 坏 JSON / 字段不合法一律返回 `null` = **没配过**）。它必须落在本机而不是服务端，理由是**先有鸡先有蛋**：服务端手上有「该连哪儿」的全部业务配置，可要问它，得先知道**连哪台**；把「连哪台」也存到服务端，就等于要求用户先连上服务端才能选服务端。所以这是**唯一**一处本地写，除这一处不新增任何往本地写数据的入口 —— 有意的例外，不是松绑。
 
 ### 启动顺序：窗口先出来，连接在后面
 
@@ -94,7 +94,11 @@ void connection.start()       ← 后台连，**不 await**
 
 配置落在 `<AI_ZEN_DIR>/desktop/connection.json`（`0600`、原子写），五条**专用** IPC `connection:get` / `connection:save` / `connection:test` / `connection:state` / `connection:reconnect` 承载这条路径（不进下面那张 service 表）。
 
-### 连不上时：三态 + 有限重试
+### 没配过时：`unset`（首启引导屏）
+
+「没配过」不是一种「连不上」，而是一个**该由用户做的选择**。它必须有独立的状态：用 `{ mode: "local" }` 兜底会把「第一次启动」压成「用户选过本地」，于是应用一启动就去拉起一个本地服务端，引导屏永远出不来（同 `resolve-target.ts` 里「两格布尔装不下三种凭证来源」那一型病）。所以 `ConnectionState` 的第一支是 `{ status: "unset" }`：`start()` 在这种情形下**一层都不建**，界面据此摆出 `views/setup`（本机 / 远程 + 地址凭证 + 测试连接）。
+
+### 连不上时：四态 + 有限重试
 
 窗口先出来（第 3 节），于是「这条连接此刻是什么状态」必须是一个**能被问、也能被推**的值 —— 否则 render 挂载时那几句 `invokeService` 撞在一条还没连上的连接上，屏幕上就是一片空白且没有提示。三态由 `ConnectionController` 一处维护，render 只按它放行界面：
 
@@ -102,7 +106,7 @@ void connection.start()       ← 后台连，**不 await**
 - `ready` —— 连上了，带服务端**自报**的 `protocol` / `version`（握手回执；拿不到时是 `0` / `""` —— 连上了但不知道自己连的是哪一版，比编一个数字诚实）；
 - `error` —— **重试也失败之后**的终态（不是「这一次失败了」），带一句人话 `message`。
 
-三态都带一个 `label`：本地是「本机服务端」，远程是那个地址。它由 main 产出（render 不许自己拼地址、也不许猜模式），并且**不含凭证** —— 地址里的 userinfo 会先被抹掉。
+除 `unset` 外每一态都带一个 `label`：本地是「本机服务端」，远程是那个地址。它由 main 产出（render 不许自己拼地址、也不许猜模式），并且**不含凭证** —— 地址里的 userinfo 会先被抹掉。
 
 **有限重试**：首次失败后最多再试 **3 次**，退避 **1s / 2s / 5s**；三次仍失败 → `error`，此后只剩用户手动「重试」（`connection:reconnect`）。自动重试只跑一批，不跑一辈子：一个连不上的远端不该让主进程永远每 5 秒敲一次门，而那种「安静地一直在试」在界面上和「停住了」长得一模一样。
 
@@ -150,14 +154,14 @@ void connection.start()       ← 后台连，**不 await**
 packages/render/src/
 ├── main.ts        Vue 入口（Pinia / ElementPlus）
 ├── App.vue        根：TitleBar + 按连接状态放行（settings → status → guide/main）；订阅 chat:push 与 connection:state
-├── views/         guide/index.vue、main/{index,Sidebar,ChatPanel,MessageBubble,NewChatDialog}.vue、settings/index.vue、status/index.vue
+├── views/         setup/index.vue（首启引导）、guide/index.vue、main/{index,Sidebar,ChatPanel,MessageBubble,NewChatDialog}.vue、settings/index.vue、status/index.vue
 ├── components/    TitleBar.vue、MarkdownContent.vue
 ├── composables/   useMessageWindow（分页窗口）、useAutoScroll（滚动策略）
 ├── stores/        ui / workspace / conversation / chat / agentView / connection
 └── apis/          base + workspace / conversation / chat / agent / model / config + connection
 ```
 
-- **界面按状态放行**（这是 `App.vue` 的一层，不是各视图各自判断）：优先级 `设置页 → 未就绪时的状态屏 → guide / main`。**设置页在未连接时也进得去** —— 那是用户唯一的自救路径（改回本地 / 换一个地址）；主界面（含侧栏、会话列表）只在 `ready` 之后才挂载，避免「窗口出来了但一片空白、也没有提示」。状态屏按三态说话：`connecting` 是「正在连接 …」（重试等待中多一句「第 N 次重试，约 X 秒后」），`error` 是那句 `message` 加「重试」与「去设置」。
+- **界面按状态放行**（这是 `App.vue` 的一层，不是各视图各自判断）：优先级 `设置页 → 首启引导屏（unset）→ 未就绪时的状态屏 → guide / main`。**设置页在未连接时也进得去** —— 那是用户唯一的自救路径（改回本地 / 换一个地址）；主界面（含侧栏、会话列表）只在 `ready` 之后才挂载，避免「窗口出来了但一片空白、也没有提示」。状态屏按状态说话：`connecting` 是「正在连接 …」（重试等待中多一句「第 N 次重试，约 X 秒后」），`error` 是那句 `message` 加「重试」与「去设置」。
 - **未连接时设置页只让出一半**：「默认模型 / 默认 Agent / API Key / 数据目录」全是服务端的事实，读不到就留空并挂一条说明（不弹红条、不打日志 —— 那不是故障）；「服务端连接」那一节读的是 main 本地的 `connection:get`，照常可用。
 - **进入 `ready` 才拉数据**：`init()`（Agent / 模型 / 工作区，再按有没有 workspace 落到 guide 或 main）只在 `false → true` 那一刻跑一次。「保存并重连」成功（已连上）后回到主界面；而如果用户此刻正停在设置页，后台自动重试成功**不会**把他从设置页拽走 —— 数据照常加载，只是不切视图。
 - **apis 只做转发**：`invokeService` 收敛成方法，错误统一成 `InvokeServerError`；`subscribeServiceEvent("chat:push", …)` 是唯一的事件入口。`apis/connection.ts` 是五条连接通道的同一套转发（它不经过 `invokeService`），`connection:state` 那条推送走同一对 `on` / `off`。
@@ -176,13 +180,13 @@ packages/render/src/
 ├── sub-agents/                  子 Agent 定义
 ├── workspaces/<workspaceId>/    workspace.json + sessions/<id>.json（含 .meta.json 清单）
 ├── desktop/                     桌面端自己写（就这一个文件）
-│   └── connection.json          连接设置（本地 / 远程 + 地址 + 凭证，0600；删掉即回到「本地」）
+│   └── connection.json          连接设置（本地 / 远程 + 地址 + 凭证，0600；**删掉即回到首启引导屏**）
 └── run/                         服务端自己写：怎么找到它
     ├── server.json              服务发现：常驻服务端此刻在哪个端口
     └── token                    凭证（服务端启动时读或生成，0600）
 ```
 
-桌面端在盘上只读 `<AI_ZEN_DIR>/run/` 下的两件事：`server.json`（**默认**的地址来源）与 `token`（凭证）；远程模式下地址来自连接设置，连 `server.json` 都不读。它**只写一处**：`<AI_ZEN_DIR>/desktop/connection.json`（连接设置，理由见第 3 节的「先有鸡先有蛋」；删掉这个文件就回到默认的「本地」）。会话存活由服务端按空闲宽限期（`DEFAULT_SESSION_IDLE_TIMEOUT_MS`）回收，`session.close` 是「我不看这段了」的当场释放，两者都不删存档。
+桌面端在盘上只读 `<AI_ZEN_DIR>/run/` 下的两件事：`server.json`（**默认**的地址来源）与 `token`（凭证）；远程模式下地址来自连接设置，连 `server.json` 都不读。它**只写一处**：`<AI_ZEN_DIR>/desktop/connection.json`（连接设置，理由见第 3 节的「先有鸡先有蛋」；删掉这个文件就回到首启引导屏 —— 不是「回到本地」，那会把一次删除解释成一次选择）。会话存活由服务端按空闲宽限期（`DEFAULT_SESSION_IDLE_TIMEOUT_MS`）回收，`session.close` 是「我不看这段了」的当场释放，两者都不删存档。
 
 「连哪台」与「拿什么进门」就存在这个文件里（`{ mode, serverUrl?, serverToken? }`）：`local` 时两个值对连接层一律是 `undefined`（= 老路），`remote` 时才是用户填的那两个。改它的入口只有设置页那一节（第 4 节），不需要手改文件。
 
@@ -199,7 +203,7 @@ packages/render/src/
 
 `server/` 那一层可以被 vitest 直接验收：`packages/main/src/server/test-harness.ts` 起一个**真 daemon**（真端口、真帧、真 `SessionManager`）+ 一个**假 Agent**（用例自己决定什么时候推哪一片增量）。验的是协议映射本身，所以 Agent 的流式循环该是假件，socket 与发现文件必须是真的。用例读的是门面推出去的 `ChatStreamEvent` 序列 —— 翻译层唯一的验收口径就是这条通道。
 
-`connection/` 那一层走另一条路：`ConnectionController` 的依赖全部注入（建层工厂、配置读写、日志出口），用例拿**假层 + 计数器**就能把「先落盘 → dispose → 建新 → start」这条顺序咬死（落盘失败时 `dispose` 一次都不许被调），不必起真 daemon、也不必开窗口；`settings.ts` 的用例碰真磁盘（临时 `AI_ZEN_DIR`），验的是 `0600`、原子写与「读不炸」。当前两侧的规模：`packages/main` 9 个用例文件 / 128 条用例（含状态机的三态推送序列、退避重试、`reconnect` 换掉挂起的计时器），`packages/render` 3 个文件 / 38 条（含 connection store 的「测试不刷数据、保存才刷」与「先查一次再订阅」）。
+`connection/` 那一层走另一条路：`ConnectionController` 的依赖全部注入（建层工厂、配置读写、日志出口），用例拿**假层 + 计数器**就能把「先落盘 → dispose → 建新 → start」这条顺序咬死（落盘失败时 `dispose` 一次都不许被调），不必起真 daemon、也不必开窗口；`settings.ts` 的用例碰真磁盘（临时 `AI_ZEN_DIR`），验的是 `0600`、原子写与「读不炸」。当前两侧的规模：`packages/main` 9 个用例文件 / 128 条用例（含状态机的推送序列、退避重试、`reconnect` 换掉挂起的计时器、`unset` 不建层），`packages/render` 3 个文件 / 38 条（含 connection store 的「测试不刷数据、保存才刷」与「先查一次再订阅」）。
 
 ## 11. 取舍
 

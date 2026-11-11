@@ -144,14 +144,16 @@ interface Harness {
  * `hello` 缺省给一份固定的（真件来自握手回执，见 `server/index.ts` 的 `readHello`）；
  * `hello: false` 用来验「拿不到身份时填 0 / 空串」那条分支。
  */
-function harness(options: { settings?: ConnectionSettings; hello?: boolean } = {}): Harness {
+function harness(options: { settings?: ConnectionSettings | null; hello?: boolean } = {}): Harness {
   const layers: FakeLayer[] = [];
   const trace: string[] = [];
   const writes: ConnectionSettings[] = [];
   const logs: string[] = [];
   const states: ConnectionState[] = [];
   const timers = manualTimers();
-  let stored: ConnectionSettings = options.settings ?? { mode: "local" };
+  // `null` = **没配过**（首启）；`undefined` = 用例没指定，给一个「已配过本地」的底
+  let stored: ConnectionSettings | null =
+    options.settings === null ? null : (options.settings ?? { mode: "local" });
   let failing = false;
   let plan: StartResult[] = [];
   let gate: { promise: Promise<void>; release: () => void } | null = null;
@@ -231,6 +233,55 @@ function harness(options: { settings?: ConnectionSettings; hello?: boolean } = {
     },
   };
 }
+
+/**
+ * 取状态的 `label`（四态里只有三态有它）。
+ *
+ * `unset` 没有 label —— 它是「还没选」而不是「正在连某台」，硬给它一个词只会让界面多一处
+ * 需要解释的东西。用例里要断 label 就过这个助手，窄化一次就够。
+ */
+function labelOfState(state: ConnectionState): string | undefined {
+  return "label" in state ? state.label : undefined;
+}
+
+describe("没配过（unset）：不猜默认值，把选择权交回用户", () => {
+  it("start() 不建层、不连、也不推（起始态与 state() 一致）", async () => {
+    const h = harness({ settings: null });
+    await h.controller.start();
+
+    // 一层都没建：没配过就不该握任何手
+    expect(h.layers).toHaveLength(0);
+    expect(h.states).toEqual([]);
+    expect(await h.controller.state()).toEqual({ status: "unset" });
+  });
+
+  it("start() **之前**问 state() 也是 unset（窗口比连接先出来）", async () => {
+    const h = harness({ settings: null });
+    expect(await h.controller.state()).toEqual({ status: "unset" });
+  });
+
+  it("get() 给的是**表单默认值**（local），不是「盘上有这一份」", async () => {
+    const h = harness({ settings: null });
+    expect(await h.controller.get()).toEqual({ mode: "local" });
+  });
+
+  it("reconnect() 在没配过时回到 unset，不发一轮空尝试", async () => {
+    const h = harness({ settings: null });
+    await h.controller.start();
+    expect(await h.controller.reconnect()).toEqual({ status: "unset" });
+    expect(h.layers).toHaveLength(0);
+  });
+
+  it("首启后在面板上存一次 → 从 unset 变成 connected（用户真的选了）", async () => {
+    const h = harness({ settings: null });
+    await h.controller.start();
+
+    await h.controller.save({ mode: "local" });
+    expect(h.writes).toEqual([{ mode: "local" }]);
+    expect(h.layers).toHaveLength(1);
+    expect(h.states.at(-1)!.status).toBe("ready");
+  });
+});
 
 describe("保存设置：换层（D18）", () => {
   it("save 成功：旧层 dispose 恰好一次、新层 start 一次、layer() 是新层", async () => {
@@ -553,8 +604,8 @@ describe("连接状态机（D23）：三态的推送序列", () => {
     expect(h.states).toHaveLength(4);
     const last = h.states[3]!;
     expect(last.status).toBe("error");
-    expect(last.label).toBe("本机服务端");
     if (last.status !== "error") throw new Error("第四次失败之后应当是 error");
+    expect(last.label).toBe("本机服务端");
     expect(last.message).toContain("连不上（用例造的）");
     expect(last.message).toContain("已重试 3 次");
     expect(h.timers.pending()).toEqual([]);
@@ -688,15 +739,16 @@ describe("state 的 label（D23）与凭证（D22）", () => {
   it("本地是本机服务端、远程是那个地址；label 与日志都不含凭证", async () => {
     const h = harness();
     await h.controller.start();
-    expect(h.states.at(-1)!.label).toBe("本机服务端");
+    expect(h.states.at(-1)!.status).toBe("ready");
+    expect(labelOfState(h.states.at(-1)!)).toBe("本机服务端");
 
     await h.controller.save({ mode: "remote", serverUrl: REMOTE_URL, serverToken: TOKEN });
 
     const remote = h.states.at(-1)!;
     expect(remote.status).toBe("ready");
     // 地址要原样显示（render 不自己拼地址，也不猜模式）
-    expect(remote.label).toBe(REMOTE_URL);
-    expect(remote.label).not.toContain(TOKEN);
+    expect(labelOfState(remote)).toBe(REMOTE_URL);
+    expect(labelOfState(remote)).not.toContain(TOKEN);
     expect(h.logs.join("\n")).not.toContain(TOKEN);
 
     // 失败那一支同样：`message` 会被推到界面上、也会进日志，它同样不许带凭证
@@ -719,8 +771,8 @@ describe("state 的 label（D23）与凭证（D22）", () => {
 
     const state = await h.controller.state();
     // 地址照显示，但 userinfo 那一截（写在这里的钥匙）必须消失
-    expect(state.label).toBe("wss://ai-zen.example.com/ai-zen");
-    expect(state.label).not.toContain("secret");
+    expect(labelOfState(state)).toBe("wss://ai-zen.example.com/ai-zen");
+    expect(labelOfState(state)).not.toContain("secret");
     expect(h.logs.join("\n")).not.toContain("secret");
   });
 });

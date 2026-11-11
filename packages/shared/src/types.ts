@@ -137,8 +137,12 @@ export type ConnectionProbe =
  * 屏幕上就是一片空白且没有提示。三态是那次挂载唯一能问的东西：`connecting` 就等，
  * `ready` 就照常干活，`error` 就把 `message` 显示出来（含「去设置页改回来」的入口）。
  *
- * ## 三态各自的含义
+ * ## 四态各自的含义
  *
+ *   · `unset` —— **没配过**（`connection.json` 不存在或不可用）。这不是「连不上」，而是一个
+ *     该由**用户**做的选择：界面据此摆出首启引导屏（本机 / 远程），而不是去猜一个默认值。
+ *     把「没配过」压进 `local` 是错的 —— 那样应用一启动就去拉起一个本地服务端，「引导」永远
+ *     出不来；
  *   · `connecting` —— **包含**「首次尝试中」与「重试等待中」。两者的区别是最后两个字段：
  *     `attempt: 0` = 首次尝试（`nextRetryInMs` 为 `undefined`）；`attempt: N > 0` = 正在
  *     等待第 N 次重试，`nextRetryInMs` 是还要等多久（见 D24 的 1000 / 2000 / 5000）；
@@ -155,6 +159,8 @@ export type ConnectionProbe =
  * `connection/controller.ts`）。
  */
 export type ConnectionState =
+  /** 没配过：连一个默认值都不该猜，界面该问用户（首启引导屏） */
+  | { status: "unset" }
   | { status: "connecting"; label: string; attempt: number; nextRetryInMs?: number }
   | { status: "ready"; label: string; protocol: number; version: string }
   | { status: "error"; label: string; message: string };
@@ -350,6 +356,9 @@ export interface ConnectionControls {
    */
   reconnect: () => Promise<ConnectionState>;
 }
+
+// 与连接相关的纯函数（render 也能用：包里那份是 Node 包，进不了浏览器产物）
+export * from "./address.js";
 
 declare global {
   interface Window {

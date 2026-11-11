@@ -63,6 +63,15 @@ export const useConnectionStore = defineStore("connection", {
      * `null`（还没查到）同样是 `false`：不知道的时候什么都还没开始拉。
      */
     isReady: (state): boolean => state.state?.status === "ready",
+
+    /**
+     * 「还没配过」（`unset`）—— 首启引导屏的唯一判据。
+     *
+     * 它与 `isReady === false` 是**两件不同的事**：那边是「正在连 / 连不上」（已经有一个目标），
+     * 这边是「连一个目标都还没有」。混用会让首启落在「连接状态屏」上，而那里只有一个「重试」
+     * 按钮 —— 重试的对象根本不存在。
+     */
+    isUnset: (state): boolean => state.state?.status === "unset",
   },
 
   actions: {
