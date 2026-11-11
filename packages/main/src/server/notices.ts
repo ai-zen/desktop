@@ -4,7 +4,7 @@
  * ## 为什么翻译在客户端，而且只在 main 这一份
  *
  * 服务端的通知只带机器码（`SESSION_NOTICE_CODES` / `SERVER_NOTICE_CODES`，见
- * `@ai-zen/agents-protocol` 的 `sessions.ts`），一句自然语言都不产 —— 一个服务端
+ * `@ai-zen/agents-server/protocol` 的 `sessions.ts`），一句自然语言都不产 —— 一个服务端
  * 同时接中文终端与英文浏览器时，它只能挑一种语言撒谎。于是「这句 code 该怎么说」落在各
  * 客户端自己的词典里：CLI 那份在 `cli/src/session-notice.ts`，本文件是桌面端的那一份。
  *
