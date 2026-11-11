@@ -10,13 +10,13 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@ai-zen/agents-client": "link:../../../agents/packages/client",
-    "@ai-zen/agents-server": "link:../../../agents/packages/server",
+    "@ai-zen/agents-core": "link:../../../agents/packages/core",
+    "@ai-zen/agents-sdk": "link:../../../agents/packages/sdk",
     "@ai-zen/desktop-shared": "workspace:*"
   },
   "devDependencies": {
-    "@ai-zen/agents-core": "link:../../../agents/packages/core",
-    "@ai-zen/agents-sdk": "link:../../../agents/packages/sdk",
+    "@ai-zen/agents-client": "link:../../../agents/packages/client",
+    "@ai-zen/agents-server": "link:../../../agents/packages/server",
     "cross-env": "^10.1.0",
     "electron": "^43.1.1",
     "rolldown": "^1.2.0",

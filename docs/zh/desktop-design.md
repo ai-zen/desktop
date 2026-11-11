@@ -37,19 +37,23 @@ packages/main/src/
     ├── services.ts         六个 Service：render 的形状 ↔ 协议调用
     ├── ServicesManager.ts  invokeService 动态分发
     ├── events.ts           服务端事件 → ChatStreamEvent
+    ├── launch.ts           拉起随包分发的服务端（Electron 自带的 Node）
     └── notices.ts          通知 code → 中文文案
 ```
 
 两条硬边界：
 
 - **`server/` 不碰 electron**。`createServerLayer` 只收四样非 electron 的事实（配置根、握手身份、默认工作目录、事件出口），所以它能被用例直接起起来；`app.getPath` / `dialog` / `webContents.send` 只出现在 `packages/main/src/app.ts` 里，以参数或回调递进去。
-- **`server/` 不碰磁盘**。会话清单、消息、工作区、配置全部经协议向服务端要。
+- **`server/` 不碰磁盘**。会话清单、消息、工作区、配置全部经协议向服务端要。唯一例外是插件：`launch.ts` 把一个**进程**拉起来，它自己不读不写任何数据文件。
 
 ## 4. 一条连接（`ServerConnection`）
 
 「连哪台、断了怎么办」收在 `@ai-zen/agents-client` 的 `agents/packages/client/src/transport/connection.ts` 一份实现里，`packages/main/src/server/index.ts` 只组装它一次：
 
 - **连哪台**由服务发现文件回答（`<AI_ZEN_DIR>/run/server.json`）。服务端重启后换端口，文件跟着换，本层不缓存端口也不记 pid。
+- **没有服务端时怎么拉起来**：`startServerProcess` 注入成 `server/launch.ts` —— 拉起**随包分发**的那份（`dist/server.mjs`，由 `rolldown.config.mjs` 的 `server` 入口打成一个自包含文件），用 Electron 自带的 Node 跑（`ELECTRON_RUN_AS_NODE=1`）。客户机上可能连 Node.js / npm 都没有，所以这里不走 `npx`（那是 CLI 的做法 —— 它假设机器上有 npm）。
+
+注意「优先用已经在跑的」不是本层的能力，而是 `ensureServer` 的顺序：先读发现文件、`ping` 一次，通了就直接连，拉进程只发生在没有活着的服务端时。
 - **断了怎么办**：`client()` 每次取用都判 `closed`，关了就地重建；`watch()` 让这条连接开始收事件；`onOpen()` 在换了一条连接时通知上层重挂监听。
 
 这三件事缺一不可，其中最后一条最容易漏：监听挂在**具体那条** `ServerClient` 上，而客户端在断开那一刻会清空监听表。少了重挂，新连接能发请求却一个事件也收不到，症状是界面安静地不动（不报错、不重连、也没有提示）。

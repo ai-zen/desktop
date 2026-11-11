@@ -17,22 +17,22 @@ importers:
 
   packages/main:
     dependencies:
-      '@ai-zen/agents-client':
-        specifier: link:../../../agents/packages/client
-        version: link:../../../agents/packages/client
-      '@ai-zen/agents-server':
-        specifier: link:../../../agents/packages/server
-        version: link:../../../agents/packages/server
-      '@ai-zen/desktop-shared':
-        specifier: workspace:*
-        version: link:../shared
-    devDependencies:
       '@ai-zen/agents-core':
         specifier: link:../../../agents/packages/core
         version: link:../../../agents/packages/core
       '@ai-zen/agents-sdk':
         specifier: link:../../../agents/packages/sdk
         version: link:../../../agents/packages/sdk
+      '@ai-zen/desktop-shared':
+        specifier: workspace:*
+        version: link:../shared
+    devDependencies:
+      '@ai-zen/agents-client':
+        specifier: link:../../../agents/packages/client
+        version: link:../../../agents/packages/client
+      '@ai-zen/agents-server':
+        specifier: link:../../../agents/packages/server
+        version: link:../../../agents/packages/server
       cross-env:
         specifier: ^10.1.0
         version: 10.1.0

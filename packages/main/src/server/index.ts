@@ -33,6 +33,7 @@ import { ServerConnection } from "@ai-zen/agents-client";
 import type { ChatStreamEvent } from "@ai-zen/desktop-shared";
 import { ServicesManager } from "./ServicesManager.js";
 import { protocolCall } from "./call.js";
+import { startBundledServer } from "./launch.js";
 import { ChatEventBridge } from "./events.js";
 import {
   ServerAgentService,
@@ -70,6 +71,9 @@ export function createServerLayer(options: ServerLayerOptions): ServerLayer {
   const connection = new ServerConnection({
     aiZenDir: options.aiZenDir,
     clientInfo: options.clientInfo,
+    // 拉起的是**随包分发**的那份（客户机可能连 Node.js 都没有）。
+    // 「优先用系统里已经在跑的」不在这里：`ensureServer` 先读发现文件并 ping，通了就直接连。
+    startServerProcess: startBundledServer,
   });
   const call = protocolCall(connection);
   const events = new ChatEventBridge({ connection, call, push: options.push });

@@ -37,19 +37,23 @@ packages/main/src/
     ├── services.ts         six Services: render's shapes ↔ protocol calls
     ├── ServicesManager.ts  invokeService dynamic dispatch
     ├── events.ts           server events → ChatStreamEvent
+    ├── launch.ts           starts the server shipped with the app (on Electron's Node)
     └── notices.ts          notice code → Chinese text
 ```
 
 Two hard boundaries:
 
 - **`server/` never touches electron.** `createServerLayer` takes only four non-electron facts (config root, handshake identity, default working directory, event sink), so a test can start it directly; `app.getPath` / `dialog` / `webContents.send` appear only in `packages/main/src/app.ts`, passed in as arguments or callbacks.
-- **`server/` never touches disk.** Conversation lists, messages, workspaces and config all come from the server over the protocol.
+- **`server/` never touches disk.** Conversation lists, messages, workspaces and config all come from the server over the protocol. The one exception is a process, not data: `launch.ts` starts a server process; it reads and writes no data files itself.
 
 ## 4. One connection (`ServerConnection`)
 
 "Which server, and what if the connection dies" lives in exactly one implementation: `agents/packages/client/src/transport/connection.ts` in `@ai-zen/agents-client`. `packages/main/src/server/index.ts` assembles it once:
 
 - **Which server** is answered by the discovery file (`<AI_ZEN_DIR>/run/server.json`). A restarted server switches ports and rewrites the file; this layer caches no port and remembers no pid.
+- **Launching one when none is running**: `startServerProcess` is injected as `server/launch.ts`, which starts the copy **shipped with the app** (`dist/server.mjs`, built as a self-contained file by the `server` entry in `rolldown.config.mjs`) on Electron's bundled Node (`ELECTRON_RUN_AS_NODE=1`). A customer machine may have neither Node.js nor npm, so this path cannot use `npx` — that is the CLI's route, and it assumes npm is there.
+
+Note that "prefer one that is already running" is not this layer's doing: it is `ensureServer`'s order — read the discovery file, `ping` once, use it if it answers. Spawning only happens when no live server exists.
 - **What if it dies**: `client()` checks `closed` on every use and rebuilds in place when shut; `watch()` makes that connection start receiving events; `onOpen()` tells the layer above to re-attach its listeners when the connection was replaced.
 
 All three matter, and the last one is the easiest to miss: listeners are attached to one **specific** `ServerClient`, and the client clears its listener table the moment the socket drops. Without re-attaching, the new connection can send requests but receives no events at all — the UI just sits there silently (no error, no reconnect, no notice).
