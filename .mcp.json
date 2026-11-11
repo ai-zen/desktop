@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "electron-devtools": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "chrome-devtools-mcp@latest",
+        "--browserUrl",
+        "http://127.0.0.1:9222",
+        "--workspace",
+        "C:\\Projects\\ai-zen\\desktop",
+        "--no-performance-crux",
+        "--no-usage-statistics"
+      ],
+      "description": "以 CDP 直连本项目的 Electron 渲染进程（127.0.0.1:9222）。要求应用已带 --remote-debugging-port=9222 启动：pnpm dev / .vscode/launch.json 已默认如此。"
+    }
+  }
+}
