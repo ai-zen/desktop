@@ -16,11 +16,41 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { SERVER_NOTICE_CODES, SESSION_NOTICE_CODES } from "@ai-zen/agents-client";
+import type {
+  SessionNoticeCode,
+  ServerNoticeCode,
+} from "@ai-zen/agents-client";
 import { noticeText } from "./notices.js";
 
-/** 协议里全部 13 个 code（11 个对话内 + 2 个服务端） */
-const ALL_CODES = [...Object.values(SESSION_NOTICE_CODES), ...Object.values(SERVER_NOTICE_CODES)];
+/**
+ * 本端要给文案的全部通知码（11 个对话内 + 2 个服务端）。
+ *
+ * 以前是从协议的码表里 `Object.values` 出来的；码表现在是**类型**（`SessionNoticeCode` /
+ * `ServerNoticeCode` 联合），所以这里显式列一遍 —— 下面那条类型断言就是「不许漏」的那颗
+ * 钉子：协议里加了第 14 个码而这里没跟上，编译就不过。
+ */
+const ALL_CODES = [
+  "persistFailed",
+  "migrationDegraded",
+  "turnAborted",
+  "handoffWriting",
+  "handoffAutoDetected",
+  "handoffPath",
+  "handoffArchived",
+  "handoffMigrated",
+  "handoffMigratedHint",
+  "migrationSkipped",
+  "subAgentFailed",
+  "mcpUnavailable",
+  "storeUnavailable",
+] as const satisfies readonly (SessionNoticeCode | ServerNoticeCode)[];
+
+type Missing = Exclude<
+  SessionNoticeCode | ServerNoticeCode,
+  (typeof ALL_CODES)[number]
+>;
+// 少一个码时 `Missing` 不是 `never`，这一行就是编译错误
+export const NO_MISSING_CODES: Missing[] = [];
 
 describe("词典：每个 code 都有文案", () => {
   it("13 个 code 逐个出非空文案，且不落到「未知通知」兜底", () => {
@@ -40,14 +70,16 @@ describe("词典：每个 code 都有文案", () => {
 
 describe("词典：params 代进句子（字段名对着服务端的 emit 点）", () => {
   it("handoffPath 带路径、handoffArchived 带旧会话 id、persistFailed 带错误原文", () => {
-    expect(noticeText("handoffPath", { path: "/proj/.ai-zen/handoffs/a.md" })).toContain(
-      "/proj/.ai-zen/handoffs/a.md",
-    );
+    expect(
+      noticeText("handoffPath", { path: "/proj/.ai-zen/handoffs/a.md" }),
+    ).toContain("/proj/.ai-zen/handoffs/a.md");
     // `params.sessionId` 是**旧**会话（`SessionManager.autoMigrate` / `migrate`）
-    expect(noticeText("handoffArchived", { sessionId: "chat_7" })).toContain("chat_7");
-    expect(noticeText("persistFailed", { error: "ENOSPC: no space left" })).toContain(
-      "ENOSPC: no space left",
+    expect(noticeText("handoffArchived", { sessionId: "chat_7" })).toContain(
+      "chat_7",
     );
+    expect(
+      noticeText("persistFailed", { error: "ENOSPC: no space left" }),
+    ).toContain("ENOSPC: no space left");
   });
 
   it("handoffAutoDetected 带 used/limit，handoffMigrated 带条数", () => {
@@ -65,19 +97,32 @@ describe("词典：params 代进句子（字段名对着服务端的 emit 点）
   });
 
   it("subAgentFailed 带序号与原文，序号缺了句子也成立", () => {
-    expect(noticeText("subAgentFailed", { index: 2, message: "模型炸了" })).toContain("2");
-    expect(noticeText("subAgentFailed", { index: 2, message: "模型炸了" })).toContain("模型炸了");
+    expect(
+      noticeText("subAgentFailed", { index: 2, message: "模型炸了" }),
+    ).toContain("2");
+    expect(
+      noticeText("subAgentFailed", { index: 2, message: "模型炸了" }),
+    ).toContain("模型炸了");
     // 只有原文（`index` 缺）：不出 `子 Agent # 出错`，也不出 undefined
-    expect(noticeText("subAgentFailed", { message: "模型炸了" })).toBe("子 Agent 出错：模型炸了");
+    expect(noticeText("subAgentFailed", { message: "模型炸了" })).toBe(
+      "子 Agent 出错：模型炸了",
+    );
   });
 
   it("migrationDegraded 两个执行者都翻成人话，mcpUnavailable / storeUnavailable 带名字与原因", () => {
-    const degraded = noticeText("migrationDegraded", { requested: "self", mode: "summary" });
+    const degraded = noticeText("migrationDegraded", {
+      requested: "self",
+      mode: "summary",
+    });
     expect(degraded).toContain("原 agent 自交接");
     expect(degraded).toContain("独立摘要");
 
-    expect(noticeText("mcpUnavailable", { name: "filesystem" })).toContain("filesystem");
-    expect(noticeText("storeUnavailable", { error: "EACCES" })).toContain("EACCES");
+    expect(noticeText("mcpUnavailable", { name: "filesystem" })).toContain(
+      "filesystem",
+    );
+    expect(noticeText("storeUnavailable", { error: "EACCES" })).toContain(
+      "EACCES",
+    );
   });
 });
 
@@ -86,7 +131,9 @@ describe("词典：params 缺字段时照出话（空着就空着）", () => {
     // 只留一个尾巴：句子照样是一句话，用户不会看到字段名
     expect(noticeText("handoffPath")).toBe("交接文档：");
     // 两个数缺一个就整块省掉，不留 `（9000/ tokens）` 这种半截
-    expect(noticeText("handoffAutoDetected", { used: 9_000, mode: "self" })).not.toContain("/");
+    expect(
+      noticeText("handoffAutoDetected", { used: 9_000, mode: "self" }),
+    ).not.toContain("/");
     // 后置说明（`（独立摘要）`）缺值就整块省掉，不留空括号
     expect(noticeText("handoffWriting")).toBe("正在编写任务交接文档…");
     // 引号里必须有个词的位置，缺值时说「未指定」，不留一对空引号

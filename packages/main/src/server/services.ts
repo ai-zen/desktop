@@ -30,10 +30,6 @@
 
 import { basename, dirname } from "node:path";
 import {
-  AGENT_METHODS,
-  CONFIG_METHODS,
-  SESSION_METHODS,
-  WORKSPACE_METHODS,
   type AgentListResult,
   type ConfigGetResult,
   type SessionCreateResult,
@@ -96,7 +92,8 @@ export class ServerWorkspaceService {
 
   /** 盘上全部工作区（服务端已按显示名排好序，客户端不重排） */
   async list(): Promise<Workspace[]> {
-    const result = await this.options.call<WorkspaceListResult>(WORKSPACE_METHODS.list);
+    const result =
+      await this.options.call<WorkspaceListResult>("workspace.list");
     return result.workspaces.map((summary) => ({
       id: summary.workspaceId,
       // `title` 缺省 = 还没起过名：用目录名兜底（名称本来就是选填）
@@ -118,12 +115,12 @@ export class ServerWorkspaceService {
   async create(name: string, cwd: string): Promise<Workspace> {
     const path = cwd?.trim() || this.options.defaultCwd();
     const resolved = await this.options.call<WorkspaceResolveResult>(
-      WORKSPACE_METHODS.resolve,
+      "workspace.resolve",
       { path },
     );
     const title = name?.trim();
     if (title) {
-      await this.options.call<WorkspaceRenameResult>(WORKSPACE_METHODS.rename, {
+      await this.options.call<WorkspaceRenameResult>("workspace.rename", {
         workspaceId: resolved.workspaceId,
         title,
       });
@@ -138,7 +135,7 @@ export class ServerWorkspaceService {
 
   /** 改显示名（不动 id、不动 path） */
   async rename(id: string, name: string): Promise<void> {
-    await this.options.call<WorkspaceRenameResult>(WORKSPACE_METHODS.rename, {
+    await this.options.call<WorkspaceRenameResult>("workspace.rename", {
       workspaceId: id,
       title: name,
     });
@@ -149,7 +146,7 @@ export class ServerWorkspaceService {
    * 关掉该工作区下还活着的会话。客户端因此不需要任何释放钩子。
    */
   async remove(id: string): Promise<void> {
-    await this.options.call<WorkspaceRemoveResult>(WORKSPACE_METHODS.remove, {
+    await this.options.call<WorkspaceRemoveResult>("workspace.remove", {
       workspaceId: id,
     });
   }
@@ -174,7 +171,7 @@ export class ServerConversationService {
    * 侧栏那个小圆点要的是"正在跑"。
    */
   async list(workspaceId: string): Promise<ConversationSummary[]> {
-    const result = await this.options.call<SessionListResult>(SESSION_METHODS.list, {
+    const result = await this.options.call<SessionListResult>("session.list", {
       workspaceId,
     });
     return result.sessions.map((entry) => ({
@@ -209,11 +206,11 @@ export class ServerConversationService {
    */
   async create(workspaceId: string, agentId: string): Promise<Conversation> {
     const created = await this.options.call<SessionCreateResult>(
-      SESSION_METHODS.create,
+      "session.create",
       { workspaceId, agentId },
     );
     const snapshot = await this.options.call<SessionSnapshotResult>(
-      SESSION_METHODS.snapshot,
+      "session.snapshot",
       { sessionId: created.sessionId },
     );
     const now = new Date().toISOString();
@@ -251,15 +248,17 @@ export class ServerConversationService {
   async read(workspaceId: string, id: string): Promise<Conversation | null> {
     // 先读清单（理由见上）。复用 `list` 而不是自己再拼一遍："read 的名字/时间与侧栏那一条
     // 一致"这件事，因此由同一处实现保证
-    const summary = (await this.list(workspaceId)).find((item) => item.id === id);
+    const summary = (await this.list(workspaceId)).find(
+      (item) => item.id === id,
+    );
     try {
-      await this.options.call(SESSION_METHODS.attach, { workspaceId, sessionId: id });
+      await this.options.call("session.attach", { workspaceId, sessionId: id });
     } catch (error) {
       if ((error as { code?: string }).code === "session-missing") return null;
       throw error;
     }
     const snapshot = await this.options.call<SessionSnapshotResult>(
-      SESSION_METHODS.snapshot,
+      "session.snapshot",
       { sessionId: id },
     );
     // 清单里没有这一条，只可能是「list 与 attach 之间它刚被另一条连接建出来」这种竞态：
@@ -282,7 +281,7 @@ export class ServerConversationService {
 
   /** 删会话：服务端先关掉活会话再物理删存档（幂等，"本来就没有"不算错） */
   async remove(workspaceId: string, id: string): Promise<void> {
-    await this.options.call<SessionRemoveResult>(SESSION_METHODS.remove, {
+    await this.options.call<SessionRemoveResult>("session.remove", {
       workspaceId,
       sessionId: id,
     });
@@ -290,7 +289,7 @@ export class ServerConversationService {
 
   /** 改显示名（不动 id；服务端会拒绝空名字，那是协议层的必填约束） */
   async rename(workspaceId: string, id: string, name: string): Promise<void> {
-    await this.options.call(SESSION_METHODS.rename, {
+    await this.options.call("session.rename", {
       workspaceId,
       sessionId: id,
       title: name,
@@ -298,8 +297,12 @@ export class ServerConversationService {
   }
 
   /** 换这一段会话的模型：只写会话级覆盖，服务端随即按新模型重建 Agent */
-  async setModel(workspaceId: string, id: string, modelId: string): Promise<void> {
-    await this.options.call(SESSION_METHODS.modelSet, { sessionId: id, modelId });
+  async setModel(
+    workspaceId: string,
+    id: string,
+    modelId: string,
+  ): Promise<void> {
+    await this.options.call("session.model.set", { sessionId: id, modelId });
   }
 }
 
@@ -321,7 +324,7 @@ export class ServerAgentService {
    * —— 判定只该在分目录的地方做一次。
    */
   async list(): Promise<AgentOption[]> {
-    const result = await this.options.call<AgentListResult>(AGENT_METHODS.list);
+    const result = await this.options.call<AgentListResult>("agent.list");
     // 线上是 `unknown[]`（协议不解释定义的形状）：到这一层才回收成 Agent 定义
     return (result.agents as AgentDefinition[]).map((agent) => ({
       id: agent.id,
@@ -340,7 +343,7 @@ export class ServerModelService {
 
   /** 模型下拉。协议里没有 `model.list`：模型清单是全局配置的一个字段，只能整份读 */
   async list(): Promise<ModelOption[]> {
-    const result = await this.options.call<ConfigGetResult>(CONFIG_METHODS.get);
+    const result = await this.options.call<ConfigGetResult>("config.get");
     const config = result.config as AppConfig;
     return config.models.map((model) => ({ id: model.id, name: model.name }));
   }
@@ -364,7 +367,7 @@ export class ServerConfigService {
    * （两机部署时更不存在），所以这条路径由服务端随配置一起回来。
    */
   async get(): Promise<ConfigSettings> {
-    const result = await this.options.call<ConfigGetResult>(CONFIG_METHODS.get);
+    const result = await this.options.call<ConfigGetResult>("config.get");
     const config = result.config as AppConfig;
     const endpoints: EndpointSettings[] = config.endpoints.map((endpoint) => ({
       id: endpoint.id,
@@ -396,26 +399,28 @@ export class ServerConfigService {
    */
   async update(input: Partial<ConfigSettings>): Promise<void> {
     if (input.defaultModel) {
-      await this.options.call(CONFIG_METHODS.defaultModelSet, {
+      await this.options.call("config.defaultModel.set", {
         modelId: input.defaultModel,
       });
     }
     if (input.defaultAgent) {
-      await this.options.call(CONFIG_METHODS.defaultAgentSet, {
+      await this.options.call("config.defaultAgent.set", {
         agentId: input.defaultAgent,
       });
     }
     if (input.endpoints) {
-      const result = await this.options.call<ConfigGetResult>(CONFIG_METHODS.get);
+      const result = await this.options.call<ConfigGetResult>("config.get");
       const config = result.config as AppConfig;
       for (const edit of input.endpoints) {
-        const target = config.endpoints.find((endpoint) => endpoint.id === edit.id);
+        const target = config.endpoints.find(
+          (endpoint) => endpoint.id === edit.id,
+        );
         if (!target) continue;
         if (edit.apiKey !== undefined) target.apiKey = edit.apiKey;
         if (edit.baseUrl !== undefined) target.baseUrl = edit.baseUrl;
         if (edit.name !== undefined) target.name = edit.name;
       }
-      await this.options.call(CONFIG_METHODS.save, { config });
+      await this.options.call("config.save", { config });
     }
   }
 }
@@ -451,12 +456,16 @@ export class ServerChatService {
    * `workspaceId` 只是为了与 render 的签名一致留着：`session.send` 只认会话 id（会话已
    * 知道自己属于哪个工作区），这里不再拿它去查任何东西。
    */
-  async send(workspaceId: string, conversationId: string, content: string): Promise<void> {
+  async send(
+    workspaceId: string,
+    conversationId: string,
+    content: string,
+  ): Promise<void> {
     // 事件可能比这次调用的回执**先**到（服务端在 beginTurn 后就推第一条阶段事件），
     // 所以正文要在发请求之前登记好，否则第一批增量到了却不知道该给哪条 user 消息
     this.options.events.noteSend(conversationId, content);
     try {
-      await this.options.call<SessionSendResult>(SESSION_METHODS.send, {
+      await this.options.call<SessionSendResult>("session.send", {
         sessionId: conversationId,
         content,
       });
@@ -469,7 +478,7 @@ export class ServerChatService {
 
   /** 中止本轮：服务端掐掉正在流的那一段，随后照常走 `session-turn-end` 收尾（保留已生成内容） */
   async abort(conversationId: string): Promise<void> {
-    await this.options.call(SESSION_METHODS.cancel, { sessionId: conversationId });
+    await this.options.call("session.cancel", { sessionId: conversationId });
   }
 
   /**
@@ -479,13 +488,16 @@ export class ServerChatService {
    * 历史。`attach` 对活会话是空操作，对存档是"装回内存"，两条路收敛成一条，
    * 不用 try/catch 猜是哪一种。
    */
-  async getState(workspaceId: string, conversationId: string): Promise<ConversationState> {
-    await this.options.call(SESSION_METHODS.attach, {
+  async getState(
+    workspaceId: string,
+    conversationId: string,
+  ): Promise<ConversationState> {
+    await this.options.call("session.attach", {
       workspaceId,
       sessionId: conversationId,
     });
     const snapshot = await this.options.call<SessionSnapshotResult>(
-      SESSION_METHODS.snapshot,
+      "session.snapshot",
       { sessionId: conversationId },
     );
     // 这份快照同时也交给事件层：它是「render 点开这段会话」这个动作的**新基线**，而事件层
@@ -508,7 +520,7 @@ export class ServerChatService {
    * 这条路径（它只删会话，走 remove）。
    */
   async release(conversationId: string): Promise<void> {
-    await this.options.call(SESSION_METHODS.close, { sessionId: conversationId });
+    await this.options.call("session.close", { sessionId: conversationId });
   }
 }
 

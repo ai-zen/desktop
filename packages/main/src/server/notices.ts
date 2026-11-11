@@ -27,7 +27,10 @@
  * 直接编译失败；`if/else` 链漏一个分支则一句抱怨都没有，运行期默默走到兜底。
  */
 
-import type { ServerNoticeCode, SessionNoticeCode } from "@ai-zen/agents-client";
+import type {
+  ServerNoticeCode,
+  SessionNoticeCode,
+} from "@ai-zen/agents-client";
 
 /** 服务端给来的可变部分（协议里是 `Record<string, unknown>`，本层不假设值的类型） */
 type NoticeParams = Record<string, unknown>;
@@ -58,7 +61,10 @@ function text(params: NoticeParams, key: string): string {
  * 「正在编写任务交接文档（self）…」。不认识的取值原样返回（那是协议新增了执行者，
  * 露出来才好定位）；字段缺失则说「未指定」——留一对空引号比说清楚更让人困惑。
  */
-const MODE_NAMES: Record<string, string> = { self: "原 agent 自交接", summary: "独立摘要" };
+const MODE_NAMES: Record<string, string> = {
+  self: "原 agent 自交接",
+  summary: "独立摘要",
+};
 
 function modeName(params: NoticeParams, key: string): string {
   const raw = text(params, key);
@@ -103,7 +109,9 @@ const SESSION_TEXTS: Record<SessionNoticeCode, NoticeTemplate> = {
   /** `SessionHandoff` 的 `onMigrated`：`params.n` 是新会话第一条上下文的消息数 */
   handoffMigrated: (params) => {
     const count = text(params, "n");
-    return count ? `任务迁移完成，已开启新会话（共 ${count} 条消息）` : "任务迁移完成，已开启新会话";
+    return count
+      ? `任务迁移完成，已开启新会话（共 ${count} 条消息）`
+      : "任务迁移完成，已开启新会话";
   },
   /** 紧跟 `handoffMigrated` 的补充（无参数）：新助手会先读交接文档 */
   handoffMigratedHint: () => "新助手会先读交接文档，然后继续推进任务",
@@ -114,7 +122,9 @@ const SESSION_TEXTS: Record<SessionNoticeCode, NoticeTemplate> = {
     const index = text(params, "index");
     const message = text(params, "message");
     // 序号缺失时不出 `子 Agent # 出错`：没有序号就说「子 Agent 出错」，句子照样成立
-    return index ? `子 Agent #${index} 出错：${message}` : `子 Agent 出错：${message}`;
+    return index
+      ? `子 Agent #${index} 出错：${message}`
+      : `子 Agent 出错：${message}`;
   },
 };
 
@@ -143,8 +153,12 @@ const SERVER_TEXTS: Record<ServerNoticeCode, NoticeTemplate> = {
  * 编译期假装它不可能（理由见文件头）。
  */
 export function noticeText(code: string, params: NoticeParams = {}): string {
-  const templates: Record<string, NoticeTemplate | undefined> = { ...SESSION_TEXTS, ...SERVER_TEXTS };
+  const templates: Record<string, NoticeTemplate | undefined> = {
+    ...SESSION_TEXTS,
+    ...SERVER_TEXTS,
+  };
   const template = templates[code];
-  if (!template) return `未知通知：${code}（桌面端还不认识这条，可能是服务端更新了）`;
+  if (!template)
+    return `未知通知：${code}（桌面端还不认识这条，可能是服务端更新了）`;
   return template(params);
 }

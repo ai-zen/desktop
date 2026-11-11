@@ -75,7 +75,10 @@ export function createServerLayer(options: ServerLayerOptions): ServerLayer {
   const events = new ChatEventBridge({ connection, call, push: options.push });
 
   const manager = new ServicesManager({
-    workspace: new ServerWorkspaceService({ call, defaultCwd: options.defaultCwd }),
+    workspace: new ServerWorkspaceService({
+      call,
+      defaultCwd: options.defaultCwd,
+    }),
     conversation: new ServerConversationService({ call }),
     agent: new ServerAgentService({ call }),
     model: new ServerModelService({ call }),

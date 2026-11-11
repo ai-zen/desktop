@@ -29,8 +29,11 @@
  */
 
 import { afterEach, describe, expect, it } from "vitest";
-import { SERVER_EVENTS } from "@ai-zen/agents-client";
-import type { Conversation, ConversationSummary, Workspace } from "@ai-zen/desktop-shared";
+import type {
+  Conversation,
+  ConversationSummary,
+  Workspace,
+} from "@ai-zen/desktop-shared";
 import { noticeText } from "./notices.js";
 import { startTestServer, waitFor, type TestServer } from "./test-harness.js";
 
@@ -42,21 +45,46 @@ afterEach(async () => {
 });
 
 /** render 真实走的那条路：`window.electronAPI.invokeService(service, method, ...args)` */
-async function invoke<T>(service: string, method: string, ...args: unknown[]): Promise<T> {
+async function invoke<T>(
+  service: string,
+  method: string,
+  ...args: unknown[]
+): Promise<T> {
   if (!server) throw new Error("用例还没起服务端");
-  return (await server.layer.manager.invokeService(service, method, ...args)) as T;
+  return (await server.layer.manager.invokeService(
+    service,
+    method,
+    ...args,
+  )) as T;
 }
 
 /** 开一个工作区 + 一段会话（`live` 的会话活在脚手架的 `SessionManager` 里，重启后照旧在） */
-async function openWorkspace(): Promise<{ workspaceId: string; conversationId: string }> {
-  const workspace = await invoke<Workspace>("workspace", "create", "", server!.projectDir);
-  const conversation = await invoke<Conversation>("conversation", "create", workspace.id, "default");
+async function openWorkspace(): Promise<{
+  workspaceId: string;
+  conversationId: string;
+}> {
+  const workspace = await invoke<Workspace>(
+    "workspace",
+    "create",
+    "",
+    server!.projectDir,
+  );
+  const conversation = await invoke<Conversation>(
+    "conversation",
+    "create",
+    workspace.id,
+    "default",
+  );
   return { workspaceId: workspace.id, conversationId: conversation.id };
 }
 
 /** 侧栏那份清单的 id（`conversation.list` 是**一步 IPC**，`workspace.list` 也是 —— 同一分发面） */
 async function listIds(workspaceId: string): Promise<string[]> {
-  const listed = await invoke<ConversationSummary[]>("conversation", "list", workspaceId);
+  const listed = await invoke<ConversationSummary[]>(
+    "conversation",
+    "list",
+    workspaceId,
+  );
   return listed.map((item) => item.id);
 }
 
@@ -108,7 +136,9 @@ describe("连接：daemon 重启之后", () => {
     await waitFor(
       async () => {
         try {
-          return (await listIds(workspaceId))[0] === conversationId ? true : undefined;
+          return (await listIds(workspaceId))[0] === conversationId
+            ? true
+            : undefined;
         } catch {
           return undefined;
         }
@@ -126,7 +156,7 @@ describe("连接：daemon 重启之后", () => {
      * 收到一份。
      */
     server.hub.publish({
-      event: SERVER_EVENTS.notice,
+      event: "server-notice",
       level: "warn",
       code: "mcpUnavailable",
       params: { name: "filesystem" },

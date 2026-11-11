@@ -35,6 +35,6 @@ export type ProtocolCall = <T>(method: string, params?: unknown) => Promise<T>;
  * 的那一条 —— 本函数因此不持有任何状态。
  */
 export function protocolCall(connection: ServerConnection): ProtocolCall {
-  return async <T,>(method: string, params?: unknown): Promise<T> =>
+  return async <T>(method: string, params?: unknown): Promise<T> =>
     await (await connection.client()).call<T>(method, params);
 }

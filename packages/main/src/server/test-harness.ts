@@ -24,7 +24,6 @@ import {
   Daemon,
   EventHub,
   FileSessionStore,
-  SESSION_METHODS,
   SessionManager,
   createAgentHandlers,
   createConfigHandlers,
@@ -38,17 +37,28 @@ import {
   type SubAgentSnapshotParams,
   type SubAgentSnapshotResult,
 } from "@ai-zen/agents-server";
-import { SocketServerClient, type ClientInfo, type ServerClient } from "@ai-zen/agents-client";
+import {
+  SocketServerClient,
+  type ClientInfo,
+  type ServerClient,
+} from "@ai-zen/agents-client";
 // 只要类型：`AgentNS` 在本文件里全是类型位置。里面那几个 role/status 字面量走下面的
 // `as AgentNS.Role / MessageStatus` 断言（与 `events.ts` 同一口径）：依赖图里不出现
 // 「main → 整个模型库」这条运行期边
 import type { AgentNS } from "@ai-zen/agents-core";
-import { resolveModel, type AgentDefinition, type AppConfig } from "@ai-zen/agents-sdk";
+import {
+  resolveModel,
+  type AgentDefinition,
+  type AppConfig,
+} from "@ai-zen/agents-sdk";
 import type { ChatStreamEvent } from "@ai-zen/desktop-shared";
 import { createServerLayer, type ServerLayer } from "./index.js";
 
 /** 握手时自称的身份（与桌面端一致，只进日志与服务端回执） */
-export const CLIENT_INFO: ClientInfo = { name: "@ai-zen/desktop", version: "0.0.0-test" };
+export const CLIENT_INFO: ClientInfo = {
+  name: "@ai-zen/desktop",
+  version: "0.0.0-test",
+};
 
 /** 测试里自动标题的返回值：服务端第一轮收尾后会发 `session-title-changed` */
 export const AUTO_TITLE = "自动起的名字";
@@ -110,7 +120,8 @@ export class FakeSubAgent extends EventBus {
   emitDelta(text: string, reasoning = ""): void {
     const receiver = this.streamingMessage();
     receiver.content = `${receiver.content ?? ""}${text}`;
-    if (reasoning) receiver.reasoning_content = `${receiver.reasoning_content ?? ""}${reasoning}`;
+    if (reasoning)
+      receiver.reasoning_content = `${receiver.reasoning_content ?? ""}${reasoning}`;
     this.fire("chunk", {
       choices: [
         {
@@ -176,7 +187,13 @@ export class FakeAgent extends EventBus implements AgentLike {
   definition = { modelId: MODEL_ID, messages: [] as AgentNS.Message[] };
   tools: Array<{ function?: { name?: string } }> = [];
   client = {
-    chat: { completions: { create: async () => ({ choices: [{ message: { content: AUTO_TITLE } }] }) } },
+    chat: {
+      completions: {
+        create: async () => ({
+          choices: [{ message: { content: AUTO_TITLE } }],
+        }),
+      },
+    },
   };
   scope = { cwd: "" };
   /** 被 abort 过（`session.cancel` 的唯一可观测面） */
@@ -195,7 +212,9 @@ export class FakeAgent extends EventBus implements AgentLike {
       role: USER_ROLE,
       content: input as AgentNS.MessageContent,
     });
-    return new Promise<unknown>((resolve) => this.pending.push(() => resolve([])));
+    return new Promise<unknown>((resolve) =>
+      this.pending.push(() => resolve([])),
+    );
   }
 
   abort(): void {
@@ -208,7 +227,8 @@ export class FakeAgent extends EventBus implements AgentLike {
   emitDelta(text: string, reasoning = ""): void {
     const receiver = this.streamingMessage();
     receiver.content = `${receiver.content ?? ""}${text}`;
-    if (reasoning) receiver.reasoning_content = `${receiver.reasoning_content ?? ""}${reasoning}`;
+    if (reasoning)
+      receiver.reasoning_content = `${receiver.reasoning_content ?? ""}${reasoning}`;
     this.fire("chunk", {
       choices: [
         {
@@ -232,11 +252,19 @@ export class FakeAgent extends EventBus implements AgentLike {
    *   - 参数是**累积**的：首片带 `index` / `id` / `name`，之后只带参数片段，core 往
    *     `function.arguments` 后面接。所以这里也接，而不是覆盖。
    */
-  emitToolCall(chunk: { index?: number; id?: string; name?: string; arguments?: string }): void {
+  emitToolCall(chunk: {
+    index?: number;
+    id?: string;
+    name?: string;
+    arguments?: string;
+  }): void {
     const index = chunk.index ?? 0;
     const receiver = this.streamingMessage();
     receiver.tool_calls ??= [];
-    receiver.tool_calls[index] ??= { index, function: { name: "", arguments: "" } };
+    receiver.tool_calls[index] ??= {
+      index,
+      function: { name: "", arguments: "" },
+    };
     const call = receiver.tool_calls[index]!;
     if (chunk.id) call.id = chunk.id;
     if (chunk.name) call.function!.name = chunk.name;
@@ -303,7 +331,10 @@ export class FakeAgent extends EventBus implements AgentLike {
    * 那次 `toolCall`**（`task`，即 `AgentNS.ToolCall`），这里没有真调用的入参可填，而服务端
    * 今天不读它 —— 但字段形状不能省，否则将来有人真的去读 `event.toolCall` 时，用例仍然是绿的。
    */
-  endToolCall(message: AgentNS.Message, status: AgentNS.MessageStatus = COMPLETED_STATUS): void {
+  endToolCall(
+    message: AgentNS.Message,
+    status: AgentNS.MessageStatus = COMPLETED_STATUS,
+  ): void {
     message.status = status;
     // core `markResult` 先按新状态重发同一条消息，再报「这个工具跑完了」这个时刻。
     // 少发 `message` 就等于让用例造一个真件里不存在的时序：服务端那条通道永远收不到东西
@@ -431,7 +462,7 @@ export interface TestServer {
    * 为什么脚手架要把它递出来：**服务端通知今天没有生产者**。协议里那两个 code
    * （`mcpUnavailable` / `storeUnavailable`）由组装根在发现 MCP / 存档不可用时发，而这件事
    * 在桌面端与 `agents` 的服务端入口里都还没接上。真件里这一行是 `hub.publish({ event:
-   * SERVER_EVENTS.notice, … })`（见 `SessionManager` 的 `notice()` 注释：「服务端通知不归这里
+   * "server-notice", … })`（见 `SessionManager` 的 `notice()` 注释：「服务端通知不归这里
    * 管 —— 那是服务本身的事，由组装根直接往 hub 里发」），而本脚手架**就是**那个组装根（它
    * 自己也 `new SessionManager` 并注入 hub）。所以用例在这里发一条，走的是真链路：hub → 真
    * socket → 桌面端的事件翻译；没有替任何一侧演动作。
@@ -487,7 +518,9 @@ export interface TestServerOptions {
  * 每个用例各起一个（临时目录 + `port: 0`），互不共享发现文件与存档 —— 用例之间没有
  * "上一个留下的环境"这种隐性状态。
  */
-export async function startTestServer(options: TestServerOptions = {}): Promise<TestServer> {
+export async function startTestServer(
+  options: TestServerOptions = {},
+): Promise<TestServer> {
   const dir = mkdtempSync(join(tmpdir(), "aiz-desktop-main-"));
   const projectDir = join(dir, "proj");
   mkdirSync(projectDir, { recursive: true });
@@ -523,14 +556,18 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
     // 假件不跟着入参走，「有会话级覆盖」就永远测不出覆盖值
     createAgent: async (input) => {
       agentInputs.push(input);
-      const agent = options.freshAgentPerSession ? new FakeAgent() : sharedAgent;
+      const agent = options.freshAgentPerSession
+        ? new FakeAgent()
+        : sharedAgent;
       agent.definition.modelId = input.modelId ?? MODEL_ID;
       agent.modelLevel = input.modelId ? "session" : "agent";
       agents.push(agent);
       return agent;
     },
     nextSessionId: () => `chat_${++seq}`,
-    ...(options.askTimeoutMs !== undefined ? { askTimeoutMs: options.askTimeoutMs } : {}),
+    ...(options.askTimeoutMs !== undefined
+      ? { askTimeoutMs: options.askTimeoutMs }
+      : {}),
     storeFor: (workspaceId) =>
       new FileSessionStore({ rootDir: join(dir, "workspaces", workspaceId) }),
     // 真件由组装根注入（`createAutoTitle`）；这里只验「服务端起了名之后客户端怎么翻」
@@ -539,7 +576,8 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
     // 条目的 `effectiveModelId` 永远被省略 —— 那会把「侧栏对历史会话显示模型」这条路
     // 测成一个假现象（真实部署里它是有的）
     resolveSessionModel: async ({ agentId, sessionModelId }) => {
-      const definition = (await config.getAgent({ id: agentId })).agent as AgentDefinition | null;
+      const definition = (await config.getAgent({ id: agentId }))
+        .agent as AgentDefinition | null;
       // 定义已删：与 `createAgent` 同一口径（它也认为这段会话装不起来）。抛而不是退到
       // 全局兜底 —— 一条指着已删定义的存档没有「生效模型」可言
       if (!definition) throw new Error(`Agent "${agentId}" not found`);
@@ -563,7 +601,9 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
     ...createAgentHandlers({
       // 只有 `agent.model.set` 用它（写定义 + 清思考参数）；render 没有调用点，
       // 用例也不需要它真去改定义，所以给一个记录用的最小实现
-      factory: { setModel: async ({ agentId, modelId }) => ({ agentId, modelId }) },
+      factory: {
+        setModel: async ({ agentId, modelId }) => ({ agentId, modelId }),
+      },
       config,
     }),
     ...createConfigHandlers({ config }),
@@ -576,12 +616,15 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
    * `askHandoffMode` 回来的是 `null` 分辨不出「客户端答了」与「等到超时了」。**服务端
    * 收到过这条请求**（`answerCalls`）且**认领了它**（`answered: true`）才是那个判据。
    */
-  const answerHandler = handlers[SESSION_METHODS.answer]!;
-  handlers[SESSION_METHODS.answer] = async (params, connection) => {
+  const answerHandler = handlers["session.answer"]!;
+  handlers["session.answer"] = async (params, connection) => {
     answerCalls.push(params as SessionAnswerParams);
     const failure = options.failAnswerWith?.();
     if (failure) throw failure;
-    const result = (await answerHandler(params, connection)) as SessionAnswerResult;
+    const result = (await answerHandler(
+      params,
+      connection,
+    )) as SessionAnswerResult;
     answerResults.push(result);
     return result;
   };
@@ -593,8 +636,8 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
    * （`messages` 数组当场复制、立刻序列化上线），之后子 Agent 继续吐字也不会让它变。用例把
    * 回程推后之后，这个定格才真的能被观察到（否则慢下来的那一帧会带去更长的新内容）。
    */
-  const subAgentSnapshotHandler = handlers[SESSION_METHODS.subAgentSnapshot]!;
-  handlers[SESSION_METHODS.subAgentSnapshot] = async (params, connection) => {
+  const subAgentSnapshotHandler = handlers["session.subAgent.snapshot"]!;
+  handlers["session.subAgent.snapshot"] = async (params, connection) => {
     subAgentSnapshotCalls.push(params as SubAgentSnapshotParams);
     const result = structuredClone(
       await subAgentSnapshotHandler(params, connection),
@@ -689,7 +732,12 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
       );
       probe?.close();
       probe = null;
-      daemon = new Daemon({ aiZenDir: dir, port: 0, version: "0.0.0-test", handlers });
+      daemon = new Daemon({
+        aiZenDir: dir,
+        port: 0,
+        version: "0.0.0-test",
+        handlers,
+      });
       await daemon.start();
     },
     stop: async () => {
@@ -741,10 +789,27 @@ function seedConfig(dir: string): void {
     join(dir, "config.json"),
     JSON.stringify({
       endpoints: [
-        { id: "e1", name: "端点一", baseUrl: "http://127.0.0.1:9/v1", apiKey: "key-1" },
-        { id: "e2", name: "端点二", baseUrl: "http://127.0.0.1:9/v2", apiKey: "key-2" },
+        {
+          id: "e1",
+          name: "端点一",
+          baseUrl: "http://127.0.0.1:9/v1",
+          apiKey: "key-1",
+        },
+        {
+          id: "e2",
+          name: "端点二",
+          baseUrl: "http://127.0.0.1:9/v2",
+          apiKey: "key-2",
+        },
       ],
-      models: [{ id: MODEL_ID, name: "模型 X", endpointId: "e1", tokenThresholds: { handoff: 1, guard: 2 } }],
+      models: [
+        {
+          id: MODEL_ID,
+          name: "模型 X",
+          endpointId: "e1",
+          tokenThresholds: { handoff: 1, guard: 2 },
+        },
+      ],
       defaultModel: MODEL_ID,
       defaultAgent: "default",
       version: 4,

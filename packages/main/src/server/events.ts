@@ -58,10 +58,6 @@
  */
 
 import {
-  AGENT_EVENTS,
-  SERVER_EVENTS,
-  SESSION_EVENTS,
-  SESSION_METHODS,
   SessionStream,
   type AgentChunkEvent,
   type AgentSubAgentEndEvent,
@@ -198,17 +194,17 @@ export class ChatEventBridge {
     for (const off of this.subscriptions.splice(0)) off();
     this.bound = client;
     this.subscriptions.push(
-      client.on(SESSION_EVENTS.phase, (event) => this.onPhase(event)),
-      client.on(AGENT_EVENTS.chunk, (event) => this.onChunk(event)),
-      client.on(AGENT_EVENTS.toolCallEnd, (event) => this.onMessageAppended(event)),
-      client.on(AGENT_EVENTS.subAgentStart, (event) => this.onSubAgentStarted(event)),
-      client.on(AGENT_EVENTS.subAgentEnd, (event) => this.onSubAgentEnded(event)),
-      client.on(SESSION_EVENTS.turnEnd, (event) => this.onTurnEnd(event)),
-      client.on(SESSION_EVENTS.idChanged, (event) => this.onIdChanged(event)),
-      client.on(SESSION_EVENTS.titleChanged, (event) => this.onTitleChanged(event)),
-      client.on(SESSION_EVENTS.question, (event) => this.onQuestion(event)),
-      client.on(SESSION_EVENTS.notice, (event) => this.onNotice(event)),
-      client.on(SERVER_EVENTS.notice, (event) => this.onServerNotice(event)),
+      client.on("session-phase", (event) => this.onPhase(event)),
+      client.on("chunk", (event) => this.onChunk(event)),
+      client.on("tool-call-end", (event) => this.onMessageAppended(event)),
+      client.on("sub-agent-start", (event) => this.onSubAgentStarted(event)),
+      client.on("sub-agent-end", (event) => this.onSubAgentEnded(event)),
+      client.on("session-turn-end", (event) => this.onTurnEnd(event)),
+      client.on("session-id-changed", (event) => this.onIdChanged(event)),
+      client.on("session-title-changed", (event) => this.onTitleChanged(event)),
+      client.on("session-question", (event) => this.onQuestion(event)),
+      client.on("session-notice", (event) => this.onNotice(event)),
+      client.on("server-notice", (event) => this.onServerNotice(event)),
     );
   }
 
@@ -322,7 +318,8 @@ export class ChatEventBridge {
       return;
     }
     stream.applyChunk(event.chunk);
-    if (stream.state !== before) this.pushStreamed(key, stream.state, event.turnId);
+    if (stream.state !== before)
+      this.pushStreamed(key, stream.state, event.turnId);
   }
 
   /**
@@ -361,7 +358,10 @@ export class ChatEventBridge {
     const key = this.keyOf(event.sessionId);
     const stream = this.streamOf(key);
     const before = stream.state;
-    stream.subAgentStarted({ subAgentId: event.subAgentId, index: event.index });
+    stream.subAgentStarted({
+      subAgentId: event.subAgentId,
+      index: event.index,
+    });
     if (stream.state !== before) this.pushAgents(key, stream.state);
     void this.syncSubAgent(event.sessionId, event.subAgentId).catch(() => {});
   }
@@ -376,7 +376,10 @@ export class ChatEventBridge {
     const key = this.keyOf(event.sessionId);
     const stream = this.streamOf(key);
     const before = stream.state;
-    stream.subAgentEnded({ subAgentId: event.subAgentId, status: event.status });
+    stream.subAgentEnded({
+      subAgentId: event.subAgentId,
+      status: event.status,
+    });
     if (stream.state !== before) this.pushAgents(key, stream.state);
   }
 
@@ -410,9 +413,12 @@ export class ChatEventBridge {
 
     let snapshot: SessionSnapshotResult;
     try {
-      snapshot = await this.options.call<SessionSnapshotResult>(SESSION_METHODS.snapshot, {
-        sessionId: event.sessionId,
-      });
+      snapshot = await this.options.call<SessionSnapshotResult>(
+        "session.snapshot",
+        {
+          sessionId: event.sessionId,
+        },
+      );
     } catch (error) {
       // 拿不到快照也要把这一轮在本地收掉（拼接态丢掉），否则下一轮的增量会接着往那条
       // 已经死掉的临时消息上拼
@@ -426,15 +432,24 @@ export class ChatEventBridge {
 
     stream.settle(snapshot);
     // 失败进状态（`failed` 是终态，文案由 render 显示，状态机只收 code + 原话）
-    if (event.error) stream.failTurn({ code: event.error.code, message: event.error.message });
+    if (event.error)
+      stream.failTurn({ code: event.error.code, message: event.error.message });
     // 空数组 = 「这一轮的子 Agent 都没了」：render 据此把栏目收回去，退回主对话
     if (hadAgents) this.pushAgents(key, stream.state);
 
-    this.options.push({ conversationId: key, type: "done", messages: stream.state.messages });
+    this.options.push({
+      conversationId: key,
+      type: "done",
+      messages: stream.state.messages,
+    });
     // 失败原因放在 `done` **之后**：render 的 `done` 分支会把错误条清空，先 error 后
     // done 等于把原因白白扔掉。
     if (event.error) {
-      this.options.push({ conversationId: key, type: "error", message: event.error.message });
+      this.options.push({
+        conversationId: key,
+        type: "error",
+        message: event.error.message,
+      });
     }
   }
 
@@ -457,7 +472,9 @@ export class ChatEventBridge {
     if (hadAgents) this.pushAgents(key, stream.state);
 
     void this.options
-      .call<SessionSnapshotResult>(SESSION_METHODS.snapshot, { sessionId: event.sessionId })
+      .call<SessionSnapshotResult>("session.snapshot", {
+        sessionId: event.sessionId,
+      })
       .then((snapshot) => {
         this.adoptSnapshot(key, snapshot);
         this.options.push({
@@ -468,7 +485,11 @@ export class ChatEventBridge {
       })
       .catch((error: unknown) => {
         // 拿不到新会话的快照时，画面只能靠已知内容停住，但错误必须说出去
-        this.options.push({ conversationId: key, type: "error", message: messageOf(error) });
+        this.options.push({
+          conversationId: key,
+          type: "error",
+          message: messageOf(error),
+        });
       });
   }
 
@@ -489,7 +510,7 @@ export class ChatEventBridge {
    */
   private onQuestion(event: SessionQuestionEvent): void {
     void this.options
-      .call<SessionAnswerResult>(SESSION_METHODS.answer, {
+      .call<SessionAnswerResult>("session.answer", {
         // 用服务端给的 id（不是 `keyOf`）：回答这条请求认的是服务端自己的会话键
         sessionId: event.sessionId,
         questionId: event.questionId,
@@ -550,9 +571,12 @@ export class ChatEventBridge {
    * 一截）在包里的 `mergeStreamedSnapshot`，由状态机的 `subAgentSnapshot()` 执行。栏目在
    * 往返期间被收掉（这一轮收了尾 / 换了 id）时状态机自己会忽略这次快照 —— 本层不必再判。
    */
-  private async syncSubAgent(sessionId: string, subAgentId: string): Promise<void> {
+  private async syncSubAgent(
+    sessionId: string,
+    subAgentId: string,
+  ): Promise<void> {
     const snapshot = await this.options.call<SubAgentSnapshotResult>(
-      SESSION_METHODS.subAgentSnapshot,
+      "session.subAgent.snapshot",
       // 用服务端给的 id（不是 `keyOf`）：这条请求认的是服务端自己的会话键
       { sessionId, subAgentId },
     );
@@ -587,8 +611,14 @@ export class ChatEventBridge {
    * 每次都推全量：render 按 id 整条替换，漏一个字段就等于把已经显示出来的东西抹掉 ——
    * 漏正文（工具调用常常晚于正文到达）、漏工具调用（正文还在继续流）都会在屏幕上看出来。
    */
-  private pushStreamed(key: string, state: SessionStreamState, turnId: number): void {
-    const message = [...state.messages].reverse().find((item) => item.role === ASSISTANT_ROLE);
+  private pushStreamed(
+    key: string,
+    state: SessionStreamState,
+    turnId: number,
+  ): void {
+    const message = [...state.messages]
+      .reverse()
+      .find((item) => item.role === ASSISTANT_ROLE);
     if (!message) return;
     const track = this.openTurn(key, turnId);
     // 状态机那条临时消息刻意不带 id（见文件头）：给 render 的 key 在这里编，一轮一个
@@ -610,7 +640,11 @@ export class ChatEventBridge {
    * 推出去的那一份因此天然定格在这一刻 —— 本层不再就地改状态里的字段，也就没有拷贝的理由。
    */
   private pushAgents(key: string, state: SessionStreamState): void {
-    this.options.push({ conversationId: key, type: "agents", agents: state.subAgents });
+    this.options.push({
+      conversationId: key,
+      type: "agents",
+      agents: state.subAgents,
+    });
   }
 
   /** render 认识的那个 id（换过 id 的会话收敛回旧 key） */

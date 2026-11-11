@@ -17,7 +17,6 @@ import type {
   ConversationState,
 } from "@ai-zen/desktop-shared";
 import type { AgentNS } from "@ai-zen/agents-core";
-import { AGENT_EVENTS, SERVER_EVENTS } from "@ai-zen/agents-client";
 import type { HandoffMode, SessionSaveAsResult } from "@ai-zen/agents-client";
 import { noticeText } from "./notices.js";
 import {
@@ -66,8 +65,16 @@ async function send(content: string): Promise<void> {
 }
 
 /** render 真实走的那条路：`window.electronAPI.invokeService(service, method, ...args)` */
-async function invoke<T>(service: string, method: string, ...args: unknown[]): Promise<T> {
-  return (await server.layer.manager.invokeService(service, method, ...args)) as T;
+async function invoke<T>(
+  service: string,
+  method: string,
+  ...args: unknown[]
+): Promise<T> {
+  return (await server.layer.manager.invokeService(
+    service,
+    method,
+    ...args,
+  )) as T;
 }
 
 function eventsOf(type: ChatStreamEvent["type"]): ChatStreamEvent[] {
@@ -107,7 +114,8 @@ const TOOL_ROLE = "tool" as AgentNS.Role;
 /** 工具**结果**消息的 `message` 事件（`tool-call-end` 翻出来的那一条） */
 function toolResultEvents(): MessageEvent[] {
   return server.pushed.filter(
-    (event): event is MessageEvent => event.type === "message" && event.message.role === TOOL_ROLE,
+    (event): event is MessageEvent =>
+      event.type === "message" && event.message.role === TOOL_ROLE,
   );
 }
 
@@ -143,7 +151,9 @@ const ASK_TIMEOUT_MS = 300_000;
 type AgentsEvent = Extract<ChatStreamEvent, { type: "agents" }>;
 
 function agentsEvents(): AgentsEvent[] {
-  return server.pushed.filter((event): event is AgentsEvent => event.type === "agents");
+  return server.pushed.filter(
+    (event): event is AgentsEvent => event.type === "agents",
+  );
 }
 /** 屏幕上那一份栏目（最后一条 `agents` 事件；还没有事件时是 `undefined`） */
 function latestAgents(): AgentsEvent["agents"] | undefined {
@@ -180,8 +190,11 @@ function latch(): { wait: Promise<void>; open: () => void } {
 function askHandoffMode(): Promise<HandoffMode | null> {
   // 每个用例只开一段会话（`openServer`），所以装配入参只有一条
   const resolver = server.agentInputs.at(-1)?.resolveMode;
-  if (!resolver) throw new Error("会话没有接上 resolveMode：脚手架没拿到装配入参");
-  return Promise.resolve(resolver({ promptTokens: 9_000, handoffTokens: 8_000 }));
+  if (!resolver)
+    throw new Error("会话没有接上 resolveMode：脚手架没拿到装配入参");
+  return Promise.resolve(
+    resolver({ promptTokens: 9_000, handoffTokens: 8_000 }),
+  );
 }
 
 describe("开始：没有「开始」事件，从阶段变化推", () => {
@@ -213,7 +226,9 @@ describe("增量：只有 text / reasoning，拼进一条占位 assistant 消息
     await waitFor(() => eventsOf("message").length >= 2, "两片增量");
 
     const messages = eventsOf("message");
-    expect(messages.map((event) => (event.type === "message" ? event.id : ""))).toEqual([
+    expect(
+      messages.map((event) => (event.type === "message" ? event.id : "")),
+    ).toEqual([
       `${conversationId}:assistant:1`,
       `${conversationId}:assistant:1`,
     ]);
@@ -221,7 +236,9 @@ describe("增量：只有 text / reasoning，拼进一条占位 assistant 消息
     const second = messages[1]!;
     expect(first.type === "message" && first.message.content).toBe("你");
     expect(second.type === "message" && second.message.content).toBe("你好");
-    expect(second.type === "message" && second.message.reasoning_content).toBe("想一想");
+    expect(second.type === "message" && second.message.reasoning_content).toBe(
+      "想一想",
+    );
   });
 });
 
@@ -253,21 +270,32 @@ describe("并发：一条连接、多段会话", () => {
     agentB.emitDelta("答B");
 
     const messages = await waitFor(
-      () => (eventsOf("message").length >= 2 ? (eventsOf("message") as MessageEvent[]) : undefined),
+      () =>
+        eventsOf("message").length >= 2
+          ? (eventsOf("message") as MessageEvent[])
+          : undefined,
       "两段会话各自的正文",
     );
     const bodyOf = (id: string): string =>
-      String(messages.find((event) => event.conversationId === id)!.message.content);
+      String(
+        messages.find((event) => event.conversationId === id)!.message.content,
+      );
     // 谁的字落在谁的会话上：串台的表现是 A 的正文贴到 B 上（或者一条正文两条会话各收一份）
     expect(bodyOf(conversationId)).toBe("答A");
     expect(bodyOf(conversationB.id)).toBe("答B");
-    expect(messages.every((event) => event.message.content === "答A" || event.message.content === "答B"))
-      .toBe(true);
+    expect(
+      messages.every(
+        (event) =>
+          event.message.content === "答A" || event.message.content === "答B",
+      ),
+    ).toBe(true);
 
     // user 也各归各的（正文由 main 在 send 时登记，登记表按会话分键）
     const users = await waitFor(
       () =>
-        eventsOf("user").length === 2 ? (eventsOf("user") as UserEvent[]) : undefined,
+        eventsOf("user").length === 2
+          ? (eventsOf("user") as UserEvent[])
+          : undefined,
       "两段会话各自的 user",
     );
     const userOf = (id: string): string =>
@@ -279,13 +307,22 @@ describe("并发：一条连接、多段会话", () => {
     agentA.finish();
     agentB.finish();
     const dones = await waitFor(
-      () => (eventsOf("done").length === 2 ? (eventsOf("done") as DoneEvent[]) : undefined),
+      () =>
+        eventsOf("done").length === 2
+          ? (eventsOf("done") as DoneEvent[])
+          : undefined,
       "两段会话各一条 done",
     );
     const doneOf = (id: string): AgentNS.Message[] =>
       dones.find((event) => event.conversationId === id)!.messages;
-    expect(doneOf(conversationId).map((message) => message.content)).toEqual(["先说 A", "答A"]);
-    expect(doneOf(conversationB.id).map((message) => message.content)).toEqual(["先说 B", "答B"]);
+    expect(doneOf(conversationId).map((message) => message.content)).toEqual([
+      "先说 A",
+      "答A",
+    ]);
+    expect(doneOf(conversationB.id).map((message) => message.content)).toEqual([
+      "先说 B",
+      "答B",
+    ]);
   });
 });
 
@@ -293,9 +330,17 @@ describe("工具调用：流式期间就画出来（chunk 折叠出组装态）"
   it("推一片工具调用就收到 message，形状是 core 的嵌套形，随后的正文仍落在同一条消息上", async () => {
     await send("读一下文件");
     // 真件里模型可以先决定调工具、正文要等工具跑完的下一段流才有 —— 这一片没有任何正文
-    server.agent.emitToolCall({ index: 0, id: "call_1", name: "read", arguments: '{"path":' });
+    server.agent.emitToolCall({
+      index: 0,
+      id: "call_1",
+      name: "read",
+      arguments: '{"path":',
+    });
 
-    const streamed = await waitFor(() => toolCallEvents()[0], "流式期间的工具调用");
+    const streamed = await waitFor(
+      () => toolCallEvents()[0],
+      "流式期间的工具调用",
+    );
     const call = streamed.message.tool_calls?.[0];
     expect(call?.function?.name).toBe("read");
     // 半截 JSON 原样透传：这一层不解析、不修补
@@ -319,7 +364,12 @@ describe("工具调用：流式期间就画出来（chunk 折叠出组装态）"
 
   it("参数变长的那一片仍是同一个 id、给的是完整参数，按 render 的 upsert 合并后只有一条", async () => {
     await send("读一下文件");
-    server.agent.emitToolCall({ index: 0, id: "call_1", name: "read", arguments: '{"path":' });
+    server.agent.emitToolCall({
+      index: 0,
+      id: "call_1",
+      name: "read",
+      arguments: '{"path":',
+    });
     const first = await waitFor(() => toolCallEvents()[0], "第一片工具调用");
 
     // 第二片只带参数片段：core 把它接到 receiver 上，服务端上报的是**拼到此刻**的整串
@@ -327,12 +377,16 @@ describe("工具调用：流式期间就画出来（chunk 折叠出组装态）"
     const second = await waitFor(() => toolCallEvents()[1], "第二片工具调用");
 
     expect(second.id).toBe(first.id);
-    expect(second.message.tool_calls?.[0]?.function?.arguments).toBe('{"path":"a.ts"}');
+    expect(second.message.tool_calls?.[0]?.function?.arguments).toBe(
+      '{"path":"a.ts"}',
+    );
 
     // render 的 upsert：同一个 id 只占一个位置 —— 这两条事件在界面上是「一张卡片长大了」
     const merged = upsertLikeRender();
     expect(merged.size).toBe(1);
-    expect(merged.get(first.id)?.tool_calls?.[0]?.function?.arguments).toBe('{"path":"a.ts"}');
+    expect(merged.get(first.id)?.tool_calls?.[0]?.function?.arguments).toBe(
+      '{"path":"a.ts"}',
+    );
   });
 
   it("正文已经在流：后到的工具调用不抹掉正文（整条替换语义要带全字段）", async () => {
@@ -343,7 +397,12 @@ describe("工具调用：流式期间就画出来（chunk 折叠出组装态）"
       return event?.type === "message" ? event : undefined;
     }, "正文增量");
 
-    server.agent.emitToolCall({ index: 0, id: "call_1", name: "read", arguments: "{}" });
+    server.agent.emitToolCall({
+      index: 0,
+      id: "call_1",
+      name: "read",
+      arguments: "{}",
+    });
     const withTools = await waitFor(() => toolCallEvents()[0], "工具调用");
 
     expect(withTools.id).toBe(bodyOnly.id);
@@ -361,7 +420,10 @@ describe("工具调用：流式期间就画出来（chunk 折叠出组装态）"
       name: "read",
       arguments: '{"path":"a.ts"}',
     });
-    const streamed = await waitFor(() => toolCallEvents()[0], "流式期间的工具调用");
+    const streamed = await waitFor(
+      () => toolCallEvents()[0],
+      "流式期间的工具调用",
+    );
     server.agent.emitDelta("看完了");
     // 工具结果只有服务端知道（协议没有「结果增量」这条事件）
     server.agent.pushToolResult("文件内容");
@@ -370,7 +432,11 @@ describe("工具调用：流式期间就画出来（chunk 折叠出组装态）"
     const done = await waitFor(() => eventsOf("done")[0], "done 事件");
     if (done.type !== "done") throw new Error("unreachable");
 
-    expect(done.messages.map((message) => message.role)).toEqual(["user", "assistant", "tool"]);
+    expect(done.messages.map((message) => message.role)).toEqual([
+      "user",
+      "assistant",
+      "tool",
+    ]);
     // 占位消息被服务端真实 id 换掉（同一位置、同一份工具调用参数）
     expect(done.messages[1]!.id).not.toBe(streamed.id);
     expect(done.messages[1]!.tool_calls?.[0]).toMatchObject({
@@ -380,7 +446,10 @@ describe("工具调用：流式期间就画出来（chunk 折叠出组装态）"
     expect(done.messages[1]!.content).toBe("看完了");
     // 工具**结果**仍然只有快照里有：它不会从流式那条占位消息里出现
     expect(streamed.message.tool_call_id).toBeUndefined();
-    expect(done.messages[2]).toMatchObject({ content: "文件内容", tool_call_id: "call_1" });
+    expect(done.messages[2]).toMatchObject({
+      content: "文件内容",
+      tool_call_id: "call_1",
+    });
   });
 });
 
@@ -395,14 +464,22 @@ describe("工具结果：跑完那一刻就上屏（tool-call-end）", () => {
   it("工具一跑完就收到 message：role=tool、tool_call_id/正文对得上、id 是服务端那条", async () => {
     await send("读一下文件");
     // 真件的顺序：模型先决定调工具（组装态走 `session-tool-calls`），跑完才有结果
-    server.agent.emitToolCall({ index: 0, id: "call_1", name: "read", arguments: '{"path":"a.ts"}' });
+    server.agent.emitToolCall({
+      index: 0,
+      id: "call_1",
+      name: "read",
+      arguments: '{"path":"a.ts"}',
+    });
     await waitFor(() => toolCallEvents()[0], "流式期间的工具调用");
 
     // 工具跑完：结果消息定型 + `tool-call-end`（服务端就在这一刻推上线）
     const result = server.agent.pushToolResult("文件内容", "read");
     server.agent.endToolCall(result);
 
-    const event = await waitFor(() => toolResultEvents()[0], "工具结果的 message 事件");
+    const event = await waitFor(
+      () => toolResultEvents()[0],
+      "工具结果的 message 事件",
+    );
     expect(event.message.role).toBe("tool");
     expect(event.message.tool_call_id).toBe("call_1");
     expect(event.message.content).toBe("文件内容");
@@ -446,19 +523,31 @@ describe("工具结果：跑完那一刻就上屏（tool-call-end）", () => {
     server.agent.emitDelta("我读一下");
     const result = server.agent.pushToolResult("文件内容", "read");
     server.agent.endToolCall(result);
-    const streamed = await waitFor(() => toolResultEvents()[0], "工具结果的 message 事件");
+    const streamed = await waitFor(
+      () => toolResultEvents()[0],
+      "工具结果的 message 事件",
+    );
 
     server.agent.finish();
     const done = await waitFor(() => eventsOf("done")[0], "done 事件");
     if (done.type !== "done") throw new Error("unreachable");
 
     // 快照仍是权威：工具结果在里面……
-    const inSnapshot = done.messages.find((message) => message.role === TOOL_ROLE);
-    expect(inSnapshot).toMatchObject({ content: "文件内容", tool_call_id: "call_1" });
+    const inSnapshot = done.messages.find(
+      (message) => message.role === TOOL_ROLE,
+    );
+    expect(inSnapshot).toMatchObject({
+      content: "文件内容",
+      tool_call_id: "call_1",
+    });
     // ……而且就是流式期间推的那一条：id 相同，收尾的全量替换不会把它画成第二条
     expect(inSnapshot?.id).toBe(streamed.id);
     // 收尾路径没被打乱：占位 assistant 仍被服务端真实 id 换掉，工具结果排在它后面
-    expect(done.messages.map((message) => message.role)).toEqual(["user", "assistant", "tool"]);
+    expect(done.messages.map((message) => message.role)).toEqual([
+      "user",
+      "assistant",
+      "tool",
+    ]);
     expect(done.messages[1]!.id).not.toBe(`${conversationId}:assistant:1`);
   });
 
@@ -477,13 +566,22 @@ describe("工具结果：跑完那一刻就上屏（tool-call-end）", () => {
 
     // 新 id 上跑第二轮，工具在这一次跑完（服务端事件里的 sessionId 已是 `chat_renamed`）
     const startsBefore = eventsOf("start").length;
-    await server.call("session.send", { sessionId: "chat_renamed", content: "迁移之后" });
-    await waitFor(() => eventsOf("start").length > startsBefore, "新 id 上的 start");
+    await server.call("session.send", {
+      sessionId: "chat_renamed",
+      content: "迁移之后",
+    });
+    await waitFor(
+      () => eventsOf("start").length > startsBefore,
+      "新 id 上的 start",
+    );
 
     const result = server.agent.pushToolResult("迁移之后的结果", "read");
     server.agent.endToolCall(result);
 
-    const event = await waitFor(() => toolResultEvents()[0], "工具结果的 message 事件");
+    const event = await waitFor(
+      () => toolResultEvents()[0],
+      "工具结果的 message 事件",
+    );
     // 落回 render 认识的那个 key：报新 id 的话，这条结果会贴到一段 render 从没见过、也永远
     // 不会选中过的会话上 —— 画面上等于什么都没发生（`keyOf` 与其它事件同一口径）
     expect(event.conversationId).toBe(conversationId);
@@ -503,11 +601,20 @@ describe("收尾：session-turn-end 不带消息，必须补一次快照", () =>
     const done = await waitFor(() => eventsOf("done")[0], "done 事件");
     if (done.type !== "done") throw new Error("unreachable");
 
-    expect(done.messages.map((message) => message.role)).toEqual(["user", "assistant", "tool"]);
-    expect(done.messages[2]).toMatchObject({ content: "工具结果", tool_call_id: "call_1" });
+    expect(done.messages.map((message) => message.role)).toEqual([
+      "user",
+      "assistant",
+      "tool",
+    ]);
+    expect(done.messages[2]).toMatchObject({
+      content: "工具结果",
+      tool_call_id: "call_1",
+    });
     // 占位消息的 id 是客户端编的，收尾后被服务端真实 id 换掉（同一个位置、同一份内容）
     const streamed = eventsOf("message")[0];
-    expect(streamed?.type === "message" && streamed.id).toBe(`${conversationId}:assistant:1`);
+    expect(streamed?.type === "message" && streamed.id).toBe(
+      `${conversationId}:assistant:1`,
+    );
     expect(done.messages[1]!.id).not.toBe(`${conversationId}:assistant:1`);
     expect(done.messages[1]!.content).toBe("答案");
   });
@@ -519,12 +626,15 @@ describe("收尾：session-turn-end 不带消息，必须补一次快照", () =>
 
     const done = await waitFor(() => eventsOf("done")[0], "done 事件");
     const error = await waitFor(() => eventsOf("error")[0], "error 事件");
-    if (error.type !== "error" || done.type !== "done") throw new Error("unreachable");
+    if (error.type !== "error" || done.type !== "done")
+      throw new Error("unreachable");
 
     expect(error.message).toBe("模型炸了");
     // 半截内容仍然留在 done 里（中断现场要能看到）
     expect(done.messages[1]).toMatchObject({ content: "半截" });
-    expect(server.pushed.indexOf(done)).toBeLessThan(server.pushed.indexOf(error));
+    expect(server.pushed.indexOf(done)).toBeLessThan(
+      server.pushed.indexOf(error),
+    );
   });
 });
 
@@ -562,7 +672,10 @@ describe("轮次计数从 0 重来：新的一轮不复用旧槽位", () => {
     );
     // 装回来的是一个空闲会话（这一轮不在飞）；消息来自存档
     expect(state.streaming).toBe(false);
-    expect(state.messages.map((message) => message.content)).toEqual(["第一轮", "半截"]);
+    expect(state.messages.map((message) => message.content)).toEqual([
+      "第一轮",
+      "半截",
+    ]);
 
     const usersBefore = eventsOf("user").length;
     const startsBefore = eventsOf("start").length;
@@ -578,18 +691,28 @@ describe("轮次计数从 0 重来：新的一轮不复用旧槽位", () => {
       3_000,
     );
     expect(user).toMatchObject({ conversationId, content: "重来一轮" });
-    await waitFor(() => eventsOf("start").length > startsBefore, "重来这一轮的 start", 3_000);
+    await waitFor(
+      () => eventsOf("start").length > startsBefore,
+      "重来这一轮的 start",
+      3_000,
+    );
 
     // 正文不接旧半句：状态机里那份拼接态属于上一个 `LiveSession`，而合并规则会把它当成
     // 「本地更全」留下来 —— 屏幕上于是出现「半截新答案」
     const before = eventsOf("message").length;
-    const latest = await waitFor(() => {
-      const messages = eventsOf("message") as MessageEvent[];
-      if (messages.length <= before) return undefined;
-      return messages
-        .filter((event) => event.message.id?.startsWith(`${conversationId}:assistant:`))
-        .at(-1);
-    }, "新答案上屏", 3_000);
+    const latest = await waitFor(
+      () => {
+        const messages = eventsOf("message") as MessageEvent[];
+        if (messages.length <= before) return undefined;
+        return messages
+          .filter((event) =>
+            event.message.id?.startsWith(`${conversationId}:assistant:`),
+          )
+          .at(-1);
+      },
+      "新答案上屏",
+      3_000,
+    );
     expect(latest.message.content).toBe("新答案");
   });
 });
@@ -607,7 +730,11 @@ describe("自动标题：session-title-changed → renamed", () => {
       () => eventsOf("renamed")[0],
       "renamed 事件（服务端自动标题）",
     );
-    expect(renamed).toEqual({ conversationId, type: "renamed", name: AUTO_TITLE });
+    expect(renamed).toEqual({
+      conversationId,
+      type: "renamed",
+      name: AUTO_TITLE,
+    });
   });
 });
 
@@ -625,17 +752,29 @@ describe("换 id：session-id-changed → migrated + 之后的 key 收敛", () =
     });
     expect(saved.sessionId).toBe("chat_renamed");
 
-    const migrated = await waitFor(() => eventsOf("migrated")[0], "migrated 事件");
+    const migrated = await waitFor(
+      () => eventsOf("migrated")[0],
+      "migrated 事件",
+    );
     if (migrated.type !== "migrated") throw new Error("unreachable");
     // 用旧 id 上报：render 手里只有这个键（`ChatStreamEvent` 里没有"换 key"的类型）
     expect(migrated.conversationId).toBe(conversationId);
-    expect(migrated.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+    expect(migrated.messages.map((message) => message.role)).toEqual([
+      "user",
+      "assistant",
+    ]);
 
     // 之后在新 id 上发生的一切仍然落在旧 key 上 —— 否则界面会在旧 id 上永远等不到收尾。
     // 计数要在发请求**之前**取：阶段事件是在 `session.send` 的回执之前推的
     const startsBefore = eventsOf("start").length;
-    await server.call("session.send", { sessionId: "chat_renamed", content: "迁移之后" });
-    await waitFor(() => eventsOf("start").length > startsBefore, "新 id 上的 start");
+    await server.call("session.send", {
+      sessionId: "chat_renamed",
+      content: "迁移之后",
+    });
+    await waitFor(
+      () => eventsOf("start").length > startsBefore,
+      "新 id 上的 start",
+    );
     expect(eventsOf("start").at(-1)).toEqual({ conversationId, type: "start" });
   });
 });
@@ -653,11 +792,17 @@ describe("提问：桌面端没有提问 UI，收到就按「跳过」回答", (
     const asking = askHandoffMode();
 
     // 服务端**收到了这条回答**（证明是客户端发了 session.answer，不是超时兜底）……
-    const claimed = await waitFor(() => server.answerResults[0], "服务端认领的 session.answer");
+    const claimed = await waitFor(
+      () => server.answerResults[0],
+      "服务端认领的 session.answer",
+    );
     // ……而且**认领了它**：`answered:true` 只会在问题还挂在表里时出现（超时之后是 false）
     expect(claimed).toEqual({ answered: true });
     expect(server.answerCalls).toHaveLength(1);
-    expect(server.answerCalls[0]).toMatchObject({ sessionId: conversationId, choice: null });
+    expect(server.answerCalls[0]).toMatchObject({
+      sessionId: conversationId,
+      choice: null,
+    });
     expect(typeof server.answerCalls[0]!.questionId).toBe("string");
 
     // 提问方拿到的就是「跳过」——与服务端超时后自己走 fallback 是同一个答案
@@ -679,7 +824,10 @@ describe("提问：桌面端没有提问 UI，收到就按「跳过」回答", (
 
     const asking = askHandoffMode();
     // 客户端确实**尝试**答了，只是那次调用在服务端失败了（失败没有回执）
-    await waitFor(() => server.answerCalls.length > 0, "客户端发出的 session.answer");
+    await waitFor(
+      () => server.answerCalls.length > 0,
+      "客户端发出的 session.answer",
+    );
     expect(server.answerResults).toEqual([]);
 
     // 同一条会话后续的翻译一点不受影响：增量照旧拼、收尾照样补快照
@@ -687,7 +835,10 @@ describe("提问：桌面端没有提问 UI，收到就按「跳过」回答", (
     server.agent.finish();
     const done = await waitFor(() => eventsOf("done")[0], "done 事件");
     if (done.type !== "done") throw new Error("unreachable");
-    expect(done.messages.map((message) => message.content)).toEqual(["你好", "答案"]);
+    expect(done.messages.map((message) => message.content)).toEqual([
+      "你好",
+      "答案",
+    ]);
 
     // 提问方由服务端的兜底收场（拿到的仍是「跳过」）……
     await expect(asking).resolves.toBeNull();
@@ -730,13 +881,16 @@ describe("通知：服务端推来的通知不再被丢掉", () => {
   it("server-notice 也进 render，且**不带** conversationId（它不属于任何会话）", async () => {
     // 服务端今天还没有全局通知的生产者（协议先立住 code）；组装根的职责就是往 hub 里发
     server.hub.publish({
-      event: SERVER_EVENTS.notice,
+      event: "server-notice",
       level: "warn",
       code: "mcpUnavailable",
       params: { name: "filesystem" },
     });
 
-    const notice = await waitFor(() => eventsOf("notice")[0], "server-notice 翻出来的 notice");
+    const notice = await waitFor(
+      () => eventsOf("notice")[0],
+      "server-notice 翻出来的 notice",
+    );
     expect(notice).toEqual({
       type: "notice",
       level: "warn",
@@ -766,11 +920,19 @@ describe("子 Agent：另开一条 agents 通道（整份替换）", () => {
     const view = await waitFor(() => latestAgents()?.[0], "子 Agent 的视图");
     // 三件事一次说清：`index` 来自 `started`（不是客户端数的）、状态开门就是 running、
     // 内容此刻还是空的（它由增量与快照负责填）
-    expect(view).toEqual({ id: "sub-1", index: 1, status: "running", messages: [] });
+    expect(view).toEqual({
+      id: "sub-1",
+      index: 1,
+      status: "running",
+      messages: [],
+    });
 
     // `started` 一到就**立刻**拉了一次快照：它可能已经跑了一会儿、已经有内容了。
     // 服务端收到过这条请求才是这条规矩的判据（屏幕上什么都没变，客户端那一侧看不见）
-    const call = await waitFor(() => server.subAgentSnapshotCalls[0], "started 之后的快照请求");
+    const call = await waitFor(
+      () => server.subAgentSnapshotCalls[0],
+      "started 之后的快照请求",
+    );
     expect(call).toEqual({ sessionId: conversationId, subAgentId: "sub-1" });
     expect(first.messages).toEqual([]);
 
@@ -780,12 +942,18 @@ describe("子 Agent：另开一条 agents 通道（整份替换）", () => {
     // 而服务端说的是 1（同一个子 Agent 在标题上被叫成「子AGENT2」）。
     server.agent.endSubAgent(first);
     server.agent.finish();
-    await waitFor(() => agentsEvents().at(-1)?.agents.length === 0, "session-turn-end 清空栏目");
+    await waitFor(
+      () => agentsEvents().at(-1)?.agents.length === 0,
+      "session-turn-end 清空栏目",
+    );
 
     await send("第二轮");
     server.agent.startSubAgent();
     const second = await waitFor(
-      () => agentsEvents().map((event) => event.agents[0]).find((item) => item?.id === "sub-2"),
+      () =>
+        agentsEvents()
+          .map((event) => event.agents[0])
+          .find((item) => item?.id === "sub-2"),
       "第二轮的子 Agent 视图",
     );
     // id 递增了、index 还是 1：一位来自 id 序号、一位来自本轮展示序号，两个都是服务端给的
@@ -805,26 +973,35 @@ describe("子 Agent：另开一条 agents 通道（整份替换）", () => {
     sub.emitDelta("答案");
 
     const view = await waitFor(
-      () => latestAgents()?.[0]?.messages.at(-1)?.content === "子答案" && latestAgents()?.[0],
+      () =>
+        latestAgents()?.[0]?.messages.at(-1)?.content === "子答案" &&
+        latestAgents()?.[0],
       "子 Agent 的正文",
     );
     // 一个子 Agent 只拼一条临时消息（这期间它可能有多轮 assistant，拆开就断了）
     expect(view.messages).toHaveLength(1);
-    expect(view.messages[0]).toMatchObject({ role: "assistant", content: "子答案" });
+    expect(view.messages[0]).toMatchObject({
+      role: "assistant",
+      content: "子答案",
+    });
 
     // 主对话那一侧一个字都没被动过：所有 `message` 事件里都没有子 Agent 的文字，
     // 最后一条仍是主 Agent 自己那句话（拼进去 = 主回答里凭空多出一段别人的正文）
     const mainBodies = server.pushed
       .filter((event): event is MessageEvent => event.type === "message")
       .map((event) => String(event.message.content));
-    expect(mainBodies.some((content) => content.includes("子答案"))).toBe(false);
+    expect(mainBodies.some((content) => content.includes("子答案"))).toBe(
+      false,
+    );
     expect(mainBodies.at(-1)).toBe("主线在等");
   });
 
   it("快照晚于增量到达：正文取更全的那份（直接赋值会把已经上屏的字摸短）", async () => {
     // 把快照的回程扣住不放：真事里它就是可能比第一批增量还慢
     let snapshotCaptured!: () => void;
-    const captured = new Promise<void>((resolve) => (snapshotCaptured = resolve));
+    const captured = new Promise<void>(
+      (resolve) => (snapshotCaptured = resolve),
+    );
     const hold = latch();
     await openServer({
       holdSubAgentSnapshot: () => {
@@ -848,7 +1025,9 @@ describe("子 Agent：另开一条 agents 通道（整份替换）", () => {
     sub.emitDelta("答");
     sub.emitDelta("案");
     const streamed = await waitFor(
-      () => latestAgents()?.[0]?.messages.at(-1)?.content === "答案" && latestAgents()?.[0],
+      () =>
+        latestAgents()?.[0]?.messages.at(-1)?.content === "答案" &&
+        latestAgents()?.[0],
       "增量先上屏",
     );
     // 此刻只有本地拼出来的那一条：快照还在路上（这就是那条竞态本身）
@@ -861,9 +1040,15 @@ describe("子 Agent：另开一条 agents 通道（整份替换）", () => {
       () => latestAgents()?.[0]?.messages.length === 2 && latestAgents()?.[0],
       "快照与增量合并之后的栏目",
     );
-    expect(merged.messages[0]).toMatchObject({ role: "user", content: "子任务" });
+    expect(merged.messages[0]).toMatchObject({
+      role: "user",
+      content: "子任务",
+    });
     // 直接赋值的话这里会是快照那一刻的「答」—— 屏幕上的答案凭空短一截，而本轮不会再补上
-    expect(merged.messages[1]).toMatchObject({ role: "assistant", content: "答案" });
+    expect(merged.messages[1]).toMatchObject({
+      role: "assistant",
+      content: "答案",
+    });
   });
 
   it("ended 只改状态，且 failed 不被后来的 done 覆盖", async () => {
@@ -884,7 +1069,7 @@ describe("子 Agent：另开一条 agents 通道（整份替换）", () => {
     // 已经用「只把仍在 running 的置为 done」挡了一层，但协议把 `failed` 写成**终态**，客户端
     // 这一层自己也要挡住 —— 所以这条 done 直接从事件出口发出去，验的就是客户端。
     server.hub.publish({
-      event: AGENT_EVENTS.subAgentEnd,
+      event: "sub-agent-end",
       sessionId: conversationId,
       turnId: 1,
       subAgentId: "sub-1",
@@ -901,7 +1086,11 @@ describe("子 Agent：另开一条 agents 通道（整份替换）", () => {
     );
     // 无脑覆盖会把 ✖ 擦成 ✓：用户会以为一个真的挂了的子任务成功了
     expect(after?.[0]).toMatchObject({ id: "sub-1", status: "failed" });
-    expect(after?.[1]).toMatchObject({ id: "sub-2", index: 2, status: "running" });
+    expect(after?.[1]).toMatchObject({
+      id: "sub-2",
+      index: 2,
+      status: "running",
+    });
   });
 
   it("session-turn-end 清空栏目：推一条空数组（子 Agent 只活当前这一轮）", async () => {
@@ -917,7 +1106,10 @@ describe("子 Agent：另开一条 agents 通道（整份替换）", () => {
 
     // 空数组 = 「这一轮的子 Agent 都没了」：render 据此把栏目收回去，退回主对话
     const cleared = await waitFor(
-      () => (agentsEvents().at(-1)?.agents.length === 0 ? agentsEvents().at(-1) : undefined),
+      () =>
+        agentsEvents().at(-1)?.agents.length === 0
+          ? agentsEvents().at(-1)
+          : undefined,
       "session-turn-end 之后的清空事件",
     );
     expect(cleared?.conversationId).toBe(conversationId);
@@ -939,8 +1131,14 @@ describe("子 Agent：另开一条 agents 通道（整份替换）", () => {
 
     // 新 id 上跑第二轮，子 Agent 在这一轮开跑（服务端事件里的 sessionId 已是 chat_renamed）
     const startsBefore = eventsOf("start").length;
-    await server.call("session.send", { sessionId: "chat_renamed", content: "迁移之后" });
-    await waitFor(() => eventsOf("start").length > startsBefore, "新 id 上的 start");
+    await server.call("session.send", {
+      sessionId: "chat_renamed",
+      content: "迁移之后",
+    });
+    await waitFor(
+      () => eventsOf("start").length > startsBefore,
+      "新 id 上的 start",
+    );
 
     server.agent.startSubAgent();
     await waitFor(() => latestAgents()?.[0], "新 id 上的子 Agent 视图");

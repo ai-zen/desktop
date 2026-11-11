@@ -7,7 +7,13 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import type {
   AgentOption,
@@ -23,7 +29,12 @@ import type {
   SessionSnapshotResult,
   WorkspaceListResult,
 } from "@ai-zen/agents-client";
-import { startTestServer, waitFor, MODEL_ID, type TestServer } from "./test-harness.js";
+import {
+  startTestServer,
+  waitFor,
+  MODEL_ID,
+  type TestServer,
+} from "./test-harness.js";
 
 let server: TestServer;
 
@@ -36,17 +47,35 @@ afterEach(async () => {
 });
 
 /** render 的那条路：`window.electronAPI.invokeService(service, method, ...args)` */
-async function invoke<T>(service: string, method: string, ...args: unknown[]): Promise<T> {
-  return (await server.layer.manager.invokeService(service, method, ...args)) as T;
+async function invoke<T>(
+  service: string,
+  method: string,
+  ...args: unknown[]
+): Promise<T> {
+  return (await server.layer.manager.invokeService(
+    service,
+    method,
+    ...args,
+  )) as T;
 }
 
 async function createWorkspace(name = ""): Promise<Workspace> {
-  return await invoke<Workspace>("workspace", "create", name, server.projectDir);
+  return await invoke<Workspace>(
+    "workspace",
+    "create",
+    name,
+    server.projectDir,
+  );
 }
 
 async function createConversation(agentId = "default"): Promise<Conversation> {
   const workspace = await createWorkspace();
-  return await invoke<Conversation>("conversation", "create", workspace.id, agentId);
+  return await invoke<Conversation>(
+    "conversation",
+    "create",
+    workspace.id,
+    agentId,
+  );
 }
 
 /**
@@ -80,7 +109,12 @@ describe("workspace", () => {
     // 名字不是客户端的私事：它进了 `workspace.json` 的 title（`workspace.rename` 那条窄方法）
     const listed = await server.call<WorkspaceListResult>("workspace.list");
     expect(listed.workspaces).toEqual([
-      { workspaceId: created.id, title: "我的项目", path: server.projectDir, pathExists: true },
+      {
+        workspaceId: created.id,
+        title: "我的项目",
+        path: server.projectDir,
+        pathExists: true,
+      },
     ]);
   });
 
@@ -100,7 +134,11 @@ describe("workspace", () => {
 
     const list = await invoke<Workspace[]>("workspace", "list");
     const byId = new Map(list.map((item) => [item.id, item]));
-    expect(byId.get(named.id)).toEqual({ id: named.id, name: "起过名的", cwd: server.projectDir });
+    expect(byId.get(named.id)).toEqual({
+      id: named.id,
+      name: "起过名的",
+      cwd: server.projectDir,
+    });
     // 顺序由服务端定（显示名码位序），客户端不重排
     expect(list.map((item) => item.name)).toEqual(["另一个目录", "起过名的"]);
   });
@@ -108,11 +146,20 @@ describe("workspace", () => {
   it("rename / remove：改名只动显示名；删除连它的会话一起删，且幂等", async () => {
     const workspace = await createWorkspace("旧名字");
     await invoke<void>("workspace", "rename", workspace.id, "新名字");
-    expect((await invoke<Workspace[]>("workspace", "list"))[0]!.name).toBe("新名字");
+    expect((await invoke<Workspace[]>("workspace", "list"))[0]!.name).toBe(
+      "新名字",
+    );
     // cwd 一个字都不动
-    expect((await invoke<Workspace[]>("workspace", "list"))[0]!.cwd).toBe(server.projectDir);
+    expect((await invoke<Workspace[]>("workspace", "list"))[0]!.cwd).toBe(
+      server.projectDir,
+    );
 
-    const conversation = await invoke<Conversation>("conversation", "create", workspace.id, "default");
+    const conversation = await invoke<Conversation>(
+      "conversation",
+      "create",
+      workspace.id,
+      "default",
+    );
     expect(conversation.id).toEqual(expect.any(String));
 
     await invoke<void>("workspace", "remove", workspace.id);
@@ -123,7 +170,9 @@ describe("workspace", () => {
     });
     expect(sessions.sessions).toEqual([]);
     // 幂等：本来就不存在不算错
-    await expect(invoke<void>("workspace", "remove", workspace.id)).resolves.toBeUndefined();
+    await expect(
+      invoke<void>("workspace", "remove", workspace.id),
+    ).resolves.toBeUndefined();
   });
 });
 
@@ -140,7 +189,9 @@ describe("conversation", () => {
     expect(conversation.agentId).toBe("default");
     // 客户端没有能力指定模型：这是服务端解析出来的（Agent 定义上那个）
     expect(conversation.modelId).toBe(MODEL_ID);
-    expect(conversation.messages.map((message) => message.role)).toEqual(["system"]);
+    expect(conversation.messages.map((message) => message.role)).toEqual([
+      "system",
+    ]);
     expect(conversation.createdAt).toEqual(expect.any(String));
     expect(conversation.updatedAt).toEqual(expect.any(String));
   });
@@ -157,7 +208,11 @@ describe("conversation", () => {
       "default",
     );
 
-    const list = await invoke<ConversationSummary[]>("conversation", "list", workspace.id);
+    const list = await invoke<ConversationSummary[]>(
+      "conversation",
+      "list",
+      workspace.id,
+    );
     expect(list).toHaveLength(1);
     expect(list[0]).toMatchObject({
       id: conversation.id,
@@ -193,7 +248,11 @@ describe("conversation", () => {
     expect(raw.sessions[0]!.effectiveModelId).toBe(MODEL_ID);
 
     // 下拉框读的就是这一位：空串 = 用户看到「没选模型」
-    const list = await invoke<ConversationSummary[]>("conversation", "list", workspace.id);
+    const list = await invoke<ConversationSummary[]>(
+      "conversation",
+      "list",
+      workspace.id,
+    );
     expect(list[0]).toMatchObject({ id: conversation.id, modelId: MODEL_ID });
   });
 
@@ -206,7 +265,13 @@ describe("conversation", () => {
       workspace.id,
       "default",
     );
-    await invoke<void>("conversation", "setModel", workspace.id, conversation.id, OVERRIDE_MODEL_ID);
+    await invoke<void>(
+      "conversation",
+      "setModel",
+      workspace.id,
+      conversation.id,
+      OVERRIDE_MODEL_ID,
+    );
 
     // 服务端侧：有覆盖时两个字段同值，档位说清是会话级赢了
     const raw = await server.call<SessionListResult>("session.list", {
@@ -218,7 +283,11 @@ describe("conversation", () => {
       effectiveModelLevel: "session",
     });
 
-    const list = await invoke<ConversationSummary[]>("conversation", "list", workspace.id);
+    const list = await invoke<ConversationSummary[]>(
+      "conversation",
+      "list",
+      workspace.id,
+    );
     expect(list[0]!.modelId).toBe(OVERRIDE_MODEL_ID);
   });
 
@@ -232,8 +301,19 @@ describe("conversation", () => {
       workspace.id,
       "default",
     );
-    await invoke<void>("conversation", "setModel", workspace.id, overridden.id, OVERRIDE_MODEL_ID);
-    const plain = await invoke<Conversation>("conversation", "create", workspace.id, "default");
+    await invoke<void>(
+      "conversation",
+      "setModel",
+      workspace.id,
+      overridden.id,
+      OVERRIDE_MODEL_ID,
+    );
+    const plain = await invoke<Conversation>(
+      "conversation",
+      "create",
+      workspace.id,
+      "default",
+    );
 
     // 落盘再放回存档：只有**存档条目**才走服务端那个解析器（活会话的生效模型来自 Agent 实例，
     // 定义删了也不影响它 → 造不出「解析不出来」）
@@ -245,9 +325,11 @@ describe("conversation", () => {
     // 先确认「有 → 没有」只由删定义引起：放回存档之后、删定义之前，两条都还解析得出来
     // （否则下面「字段被省略」可能只是假件根本没接解析器，用例就变成永远为真）
     const archived = new Map(
-      (await server.call<SessionListResult>("session.list", { workspaceId: workspace.id })).sessions.map(
-        (entry) => [entry.sessionId, entry.effectiveModelId],
-      ),
+      (
+        await server.call<SessionListResult>("session.list", {
+          workspaceId: workspace.id,
+        })
+      ).sessions.map((entry) => [entry.sessionId, entry.effectiveModelId]),
     );
     expect(archived.get(overridden.id)).toBe(OVERRIDE_MODEL_ID);
     expect(archived.get(plain.id)).toBe(MODEL_ID);
@@ -268,7 +350,11 @@ describe("conversation", () => {
     // 客户端：字段被省略时**就是没有**生效模型 —— 空串（下拉框显示成没选）。不退回会话级
     // 覆盖值：那个值是「用户给这段会话设过的覆盖」，而它此刻指着的定义已经不在了，拿它
     // 冒充「现在在用的模型」只会让 UI 更有底气地撜谎（协议写得很直：拿不到就省略，不伪造）
-    const list = await invoke<ConversationSummary[]>("conversation", "list", workspace.id);
+    const list = await invoke<ConversationSummary[]>(
+      "conversation",
+      "list",
+      workspace.id,
+    );
     const byId = new Map(list.map((item) => [item.id, item]));
     expect(byId.get(overridden.id)!.modelId).toBe("");
     expect(byId.get(plain.id)!.modelId).toBe("");
@@ -285,7 +371,11 @@ describe("conversation", () => {
     await invoke<void>("chat", "send", workspace.id, conversation.id, "你好");
 
     await waitFor(async () => {
-      const list = await invoke<ConversationSummary[]>("conversation", "list", workspace.id);
+      const list = await invoke<ConversationSummary[]>(
+        "conversation",
+        "list",
+        workspace.id,
+      );
       return list[0]?.running === true;
     }, "侧栏看到 running");
 
@@ -298,7 +388,11 @@ describe("conversation", () => {
     } as never);
     server.agent.finish();
     await waitFor(async () => {
-      const list = await invoke<ConversationSummary[]>("conversation", "list", workspace.id);
+      const list = await invoke<ConversationSummary[]>(
+        "conversation",
+        "list",
+        workspace.id,
+      );
       return list[0]?.running === false;
     }, "收尾后 running 落回 false");
   });
@@ -312,8 +406,18 @@ describe("conversation", () => {
       "default",
     );
 
-    await invoke<void>("conversation", "rename", workspace.id, conversation.id, "改过的名字");
-    const list = await invoke<ConversationSummary[]>("conversation", "list", workspace.id);
+    await invoke<void>(
+      "conversation",
+      "rename",
+      workspace.id,
+      conversation.id,
+      "改过的名字",
+    );
+    const list = await invoke<ConversationSummary[]>(
+      "conversation",
+      "list",
+      workspace.id,
+    );
     expect(list[0]!.name).toBe("改过的名字");
 
     // 协议里 title 是必填非空：空名字当场报错，而不是悄悄改名
@@ -333,17 +437,31 @@ describe("conversation", () => {
     await invoke<void>("chat", "send", workspace.id, conversation.id, "留个痕");
     server.agent.emitDelta("答");
     server.agent.finish();
-    await waitFor(() => server.pushed.some((event) => event.type === "done"), "本轮收尾");
+    await waitFor(
+      () => server.pushed.some((event) => event.type === "done"),
+      "本轮收尾",
+    );
 
-    const live = await invoke<Conversation | null>("conversation", "read", workspace.id, conversation.id);
-    expect(live?.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+    const live = await invoke<Conversation | null>(
+      "conversation",
+      "read",
+      workspace.id,
+      conversation.id,
+    );
+    expect(live?.messages.map((message) => message.role)).toEqual([
+      "user",
+      "assistant",
+    ]);
 
     // 把会话从内存里放掉：只剩盘上的存档。`session.snapshot` 只认活会话，这时取不到，
     // 所以 read 必须先 attach
     await invoke<void>("chat", "release", conversation.id);
     expect(
-      (await server.call<SessionListResult>("session.list", { workspaceId: workspace.id })).sessions[0]
-        ?.live,
+      (
+        await server.call<SessionListResult>("session.list", {
+          workspaceId: workspace.id,
+        })
+      ).sessions[0]?.live,
     ).toBe(false);
     const archived = await invoke<Conversation | null>(
       "conversation",
@@ -351,9 +469,19 @@ describe("conversation", () => {
       workspace.id,
       conversation.id,
     );
-    expect(archived?.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+    expect(archived?.messages.map((message) => message.role)).toEqual([
+      "user",
+      "assistant",
+    ]);
 
-    expect(await invoke<Conversation | null>("conversation", "read", workspace.id, "chat_nope")).toBeNull();
+    expect(
+      await invoke<Conversation | null>(
+        "conversation",
+        "read",
+        workspace.id,
+        "chat_nope",
+      ),
+    ).toBeNull();
   });
 
   it("read：name 是服务端的 title（不是「未命名对话」）", async () => {
@@ -364,7 +492,13 @@ describe("conversation", () => {
       workspace.id,
       "default",
     );
-    await invoke<void>("conversation", "rename", workspace.id, conversation.id, "服务端记得的名字");
+    await invoke<void>(
+      "conversation",
+      "rename",
+      workspace.id,
+      conversation.id,
+      "服务端记得的名字",
+    );
 
     const read = await invoke<Conversation | null>(
       "conversation",
@@ -386,18 +520,30 @@ describe("conversation", () => {
     await invoke<void>("chat", "send", workspace.id, conversation.id, "留个痕");
     server.agent.emitDelta("答");
     server.agent.finish();
-    await waitFor(() => server.pushed.some((event) => event.type === "done"), "本轮收尾");
+    await waitFor(
+      () => server.pushed.some((event) => event.type === "done"),
+      "本轮收尾",
+    );
     await invoke<void>("chat", "release", conversation.id);
 
     // 把这段存档的最后活动时间挪到过去：服务端从清单（清单不在时取正文文件的 mtime）读它。
     // 这样「read 报的是清单里那个时间」与「read 报的是此刻」之间才有一眼可辨的差距 ——
     // 两边都是「刚才」，断言相等就什么也证不了
-    const sessionsDir = join(server.dir, "workspaces", workspace.id, "sessions");
+    const sessionsDir = join(
+      server.dir,
+      "workspaces",
+      workspace.id,
+      "sessions",
+    );
     rmSync(join(sessionsDir, `${conversation.id}.meta.json`));
     const past = new Date("2020-01-02T03:04:05.000Z");
     utimesSync(join(sessionsDir, `${conversation.id}.json`), past, past);
 
-    const listed = await invoke<ConversationSummary[]>("conversation", "list", workspace.id);
+    const listed = await invoke<ConversationSummary[]>(
+      "conversation",
+      "list",
+      workspace.id,
+    );
     expect(listed[0]!.updatedAt).toBe(past.toISOString());
 
     const read = await invoke<Conversation | null>(
@@ -421,12 +567,24 @@ describe("conversation", () => {
       "default",
     );
 
-    await invoke<void>("conversation", "setModel", workspace.id, conversation.id, MODEL_ID);
+    await invoke<void>(
+      "conversation",
+      "setModel",
+      workspace.id,
+      conversation.id,
+      MODEL_ID,
+    );
 
     // 服务端侧的事实：存档里的会话级 modelId 就是它（假件的 `definition.modelId` 没被改）
-    const listed = await server.call<SessionListResult>("session.list", { workspaceId: workspace.id });
+    const listed = await server.call<SessionListResult>("session.list", {
+      workspaceId: workspace.id,
+    });
     expect(listed.sessions[0]!.modelId).toBe(MODEL_ID);
-    const list = await invoke<ConversationSummary[]>("conversation", "list", workspace.id);
+    const list = await invoke<ConversationSummary[]>(
+      "conversation",
+      "list",
+      workspace.id,
+    );
     expect(list[0]!.modelId).toBe(MODEL_ID);
   });
 
@@ -440,7 +598,9 @@ describe("conversation", () => {
     );
 
     await invoke<void>("conversation", "remove", workspace.id, conversation.id);
-    expect((await invoke<ConversationSummary[]>("conversation", "list", workspace.id))).toEqual([]);
+    expect(
+      await invoke<ConversationSummary[]>("conversation", "list", workspace.id),
+    ).toEqual([]);
     await expect(
       invoke<void>("conversation", "remove", workspace.id, conversation.id),
     ).resolves.toBeUndefined();
@@ -462,13 +622,21 @@ describe("chat", () => {
 
     expect(server.agent.sent).toEqual(["你好"]);
     // 服务端侧：这一轮的编号已经是 1（`session.send` 的返回值就是它）
-    const snapshot = await server.call<SessionSnapshotResult>("session.snapshot", {
-      sessionId: conversation.id,
-    });
+    const snapshot = await server.call<SessionSnapshotResult>(
+      "session.snapshot",
+      {
+        sessionId: conversation.id,
+      },
+    );
     expect(snapshot.turnId).toBe(1);
     expect(snapshot.phase).not.toBeNull();
 
-    const state = await invoke<ConversationState>("chat", "getState", workspace.id, conversation.id);
+    const state = await invoke<ConversationState>(
+      "chat",
+      "getState",
+      workspace.id,
+      conversation.id,
+    );
     expect(state.streaming).toBe(true);
     expect(state.messages.map((message) => message.role)).toEqual(["user"]);
   });
@@ -483,7 +651,10 @@ describe("chat", () => {
     );
 
     await invoke<void>("chat", "send", workspace.id, conversation.id, "第一句");
-    await waitFor(() => server.pushed.some((event) => event.type === "start"), "本轮开始");
+    await waitFor(
+      () => server.pushed.some((event) => event.type === "start"),
+      "本轮开始",
+    );
     const pushedBefore = server.pushed.length;
 
     // 上一轮还没收尾，再发一次：服务端回 `turn-busy`，客户端不弹错
@@ -505,7 +676,10 @@ describe("chat", () => {
       "default",
     );
     await invoke<void>("chat", "send", workspace.id, conversation.id, "跑起来");
-    await waitFor(() => server.pushed.some((event) => event.type === "start"), "本轮开始");
+    await waitFor(
+      () => server.pushed.some((event) => event.type === "start"),
+      "本轮开始",
+    );
 
     await invoke<void>("chat", "abort", conversation.id);
     expect(server.agent.aborted).toBe(true);
@@ -522,23 +696,38 @@ describe("chat", () => {
     await invoke<void>("chat", "send", workspace.id, conversation.id, "留档");
     server.agent.emitDelta("答");
     server.agent.finish();
-    await waitFor(() => server.pushed.some((event) => event.type === "done"), "本轮收尾");
+    await waitFor(
+      () => server.pushed.some((event) => event.type === "done"),
+      "本轮收尾",
+    );
 
     await invoke<void>("chat", "release", conversation.id);
-    const listed = await server.call<SessionListResult>("session.list", { workspaceId: workspace.id });
+    const listed = await server.call<SessionListResult>("session.list", {
+      workspaceId: workspace.id,
+    });
     expect(listed.sessions[0]!.live).toBe(false);
 
     // 点回来：getState 先 attach 把存档装回内存，再取快照
-    const state = await invoke<ConversationState>("chat", "getState", workspace.id, conversation.id);
+    const state = await invoke<ConversationState>(
+      "chat",
+      "getState",
+      workspace.id,
+      conversation.id,
+    );
     expect(state.streaming).toBe(false);
-    expect(state.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+    expect(state.messages.map((message) => message.role)).toEqual([
+      "user",
+      "assistant",
+    ]);
   });
 });
 
 describe("agent / model / config", () => {
   it("agent.list：只列入口 Agent（子 Agent 由服务端分好，不再靠 `function` 过滤）", async () => {
     const agents = await invoke<AgentOption[]>("agent", "list");
-    expect(agents).toEqual([{ id: "default", name: "默认助手", description: "入口 Agent" }]);
+    expect(agents).toEqual([
+      { id: "default", name: "默认助手", description: "入口 Agent" },
+    ]);
   });
 
   it("model.list：来自 config.get 的 models（协议里没有 model.list）", async () => {
@@ -550,8 +739,20 @@ describe("agent / model / config", () => {
     const settings = await invoke<ConfigSettings>("config", "get");
     expect(settings).toEqual({
       endpoints: [
-        { id: "e1", name: "端点一", baseUrl: "http://127.0.0.1:9/v1", apiKey: "key-1", description: undefined },
-        { id: "e2", name: "端点二", baseUrl: "http://127.0.0.1:9/v2", apiKey: "key-2", description: undefined },
+        {
+          id: "e1",
+          name: "端点一",
+          baseUrl: "http://127.0.0.1:9/v1",
+          apiKey: "key-1",
+          description: undefined,
+        },
+        {
+          id: "e2",
+          name: "端点二",
+          baseUrl: "http://127.0.0.1:9/v2",
+          apiKey: "key-2",
+          description: undefined,
+        },
       ],
       defaultModel: MODEL_ID,
       defaultAgent: "default",
@@ -567,18 +768,35 @@ describe("agent / model / config", () => {
         endpoints: Array<{ id: string; name: string; apiKey: string }>;
       };
 
-    await invoke<void>("config", "update", { defaultModel: MODEL_ID, defaultAgent: "default" });
+    await invoke<void>("config", "update", {
+      defaultModel: MODEL_ID,
+      defaultAgent: "default",
+    });
     // 空串不写（服务端的窄方法只接受非空 id）：不影响另一个字段
-    await invoke<void>("config", "update", { defaultModel: "", defaultAgent: "" });
+    await invoke<void>("config", "update", {
+      defaultModel: "",
+      defaultAgent: "",
+    });
     expect(readConfig().defaultModel).toBe(MODEL_ID);
     expect(readConfig().defaultAgent).toBe("default");
 
     await invoke<void>("config", "update", {
-      endpoints: [{ id: "e1", name: "端点一", baseUrl: "http://127.0.0.1:9/v1", apiKey: "换过的 key" }],
+      endpoints: [
+        {
+          id: "e1",
+          name: "端点一",
+          baseUrl: "http://127.0.0.1:9/v1",
+          apiKey: "换过的 key",
+        },
+      ],
     });
     const config = readConfig();
-    expect(config.endpoints.find((endpoint) => endpoint.id === "e1")?.apiKey).toBe("换过的 key");
+    expect(
+      config.endpoints.find((endpoint) => endpoint.id === "e1")?.apiKey,
+    ).toBe("换过的 key");
     // 没被编辑的端点原样保留（整份 save 用的是服务端刚读到的那一份，不是客户端的副本）
-    expect(config.endpoints.find((endpoint) => endpoint.id === "e2")?.apiKey).toBe("key-2");
+    expect(
+      config.endpoints.find((endpoint) => endpoint.id === "e2")?.apiKey,
+    ).toBe("key-2");
   });
 });
