@@ -30,7 +30,8 @@ import {
   createSessionHandlers,
   type AgentLike,
   type CreateAgentInput,
-  type MethodHandler,
+  type AnyHandler,
+  type MethodHandlers,
   type ModelLevel,
   type SessionAnswerParams,
   type SessionAnswerResult,
@@ -592,7 +593,7 @@ export async function startTestServer(
     },
   });
 
-  const handlers: Record<string, MethodHandler> = {
+  const handlers: Record<string, AnyHandler> = {
     ...createSessionHandlers({
       manager,
       workspacesRoot: join(dir, "workspaces"),
@@ -617,7 +618,7 @@ export async function startTestServer(
    * 收到过这条请求**（`answerCalls`）且**认领了它**（`answered: true`）才是那个判据。
    */
   const answerHandler = handlers["session.answer"]!;
-  handlers["session.answer"] = async (params, connection) => {
+  handlers["session.answer"] = async (params: never, connection) => {
     answerCalls.push(params as SessionAnswerParams);
     const failure = options.failAnswerWith?.();
     if (failure) throw failure;
