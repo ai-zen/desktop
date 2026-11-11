@@ -112,9 +112,13 @@ cd packages/main && pnpm build
   - **唯一的本地写是连接配置**：`<AI_ZEN_DIR>/desktop/connection.json`（`0600` + 原子写，里面有凭证；读不到 / 坏 JSON / 字段不合法一律回退「本地」并照常启动）。这**不是**「桌面端开始落盘了」，而是**先有鸡先有蛋**：服务端手上有全部业务配置，可要问它，得先知道**连哪台** —— 把「连哪台」也存到服务端，等于要求用户先连上服务端才能选服务端。路径的唯一实现处是 `packages/main/src/connection/settings.ts`（`config.ts` 只剩 `AI_ZEN_DIR`，不拼这个子路径）。**除这一处，不新增任何往本地写数据的入口** —— 有意的例外，不是松绑
   - **连哪台在设置页里切**（「设置」页开头的「服务端连接」那一节）：本地 = 发现文件 + 本机 `run/token`；远程 = 用户填的地址（`ws://` / `wss://` / `http://` / `https://`，支持 path，如 `wss://example.com/ai-zen`）与凭证（留空 = 用本机 `run/token`）。远程**只连、不拉起**捆绑的 server（本机拉起来的一定不在那个地址上；只留一条只说地址、不含凭证的 log）
     - 这一节自带「测试连接」（只探测候选值：不落盘、不影响当前连接）与「保存并重连」（先落盘 → dispose 旧层 → 建新 → start，**立刻**生效、不必重启 App，进行中的回答会中断），与页面底部那个「保存」（把默认模型 / 默认 Agent / API Key 写给**服务端**，不换连接）分开
-    - 实现：`connection/{settings,controller}.ts` + 三条专用 IPC `connection:get` / `connection:save` / `connection:test`（**不进** `invokeService` 的 service 表 —— 那六个键是服务端的方法面）
+    - 实现：`connection/{settings,controller}.ts` + 五条专用 IPC `connection:get` / `connection:save` / `connection:test` / `connection:state` / `connection:reconnect`（**不进** `invokeService` 的 service 表 —— 那六个键是服务端的方法面）；`preload` 暴露成 `electronAPI.connection = { get, save, test, state, reconnect }`
+    - 连接状态机（`connection/controller.ts`）：`connecting`（**含**首次尝试与重试等待，靠 `attempt` / `nextRetryInMs` 分开）/ `ready`（带服务端自报的 `protocol` / `version`）/ `error`（重试也失败之后的终态，带一句人话 `message`）；三态都带 `label`（本地「本机服务端」、远程那个地址，**不含凭证**）
+    - 有限重试：首次失败后最多再试 **3 次**，退避 **1s / 2s / 5s**；仍失败 → `error`，只留手动「重试」。每次重试都是**整层重建**（`dispose` → `build` → `start`）—— 事件桥重复 `start()` 会覆盖 `onOpen` 订阅、漏监听，不能只重调一次 `start()`
+    - 界面按状态放行（`packages/render/src/App.vue`）：**设置页 → 未就绪时的状态屏 → guide / main**；设置页在未连接时也进得去（那是用户唯一的自救路径：改回本地 / 换地址），主界面只在 `ready` 之后才挂载
   - 会话历史由服务端的 `<workspace>/workspace.json` + `<workspace>/sessions/*.json` 存档接管，main 侧没有本地库
   - 全局配置：`~/.ai-zen/config.json`（含 endpoints/models，DeepSeek apiKey 明文）——**由服务端读写**，桌面端只走 `config.get` / 窄方法
-- IPC 通道：`invokeService`（业务）+ `connection:get/save/test`（连接设置，见上）+ `window:xxx`（窗口控制）+ `dialog:selectDirectory`（原生目录选择，默认桌面、记住上次位置）
+- IPC 通道：`invokeService`（业务）+ `connection:get/save/test/state/reconnect`（连接设置与连接状态，见上）+ 推送通道 `connection:state`（与查询同名；起始态 `connecting(attempt 0)` **不推**，所以 render 挂载时**先查一次、再听推送**）+ `window:xxx`（窗口控制）+ `dialog:selectDirectory`（原生目录选择，默认桌面、记住上次位置）
+- 启动顺序（`packages/main/src/app.ts` 的 `start()`）：`app.whenReady()` → nativeTheme / Menu → `registerIpc()` → `createMainWindow()` → `void connection.start()`（**不 await**）。三条理由：① IPC 必须早于窗口（render 一挂载就会 `invokeService`）；② **窗口不依赖连接**（远程不可达时窗口也照样出现 —— 连不上是窗口里的一件事，不是「应用没起来」）；③ `start()` 不 await，失败只记日志 + 交给状态机。`main.ts` 的入口另带 `.catch`：启动路径上任何漏网的失败只变成一行日志，而不是「双击没反应」
 - 业务语义：工作空间 cwd **选填，默认桌面**（`app.getPath("desktop")` 兜底）；删 workspace 级联删会话，删会话不碰 workspace
 - 调试截图（`preview-*.png`）已加入 `.gitignore`，勿提交

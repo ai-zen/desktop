@@ -80,6 +80,23 @@
           show-icon
         />
 
+        <!--
+          以下这一节（默认模型 / 默认 Agent / API Key / 数据目录）全部是**服务端的事实**：
+          它们走 `invokeService`，需要一条连着的服务端。窗口现在先出来、连接在后面
+          （D25），所以面板可能是「连不上」的时候打开的 —— 那时这四样一个都读不到。
+
+          读不到时：这一节**留空**（不弹红条，也不报错），只在这里挂**一条**说明。
+          上面那一节「服务端连接」与这儿无关（它走 main 本地的 `connection:get`），一定照常可用。
+        -->
+        <el-alert
+          v-if="serverUnavailable"
+          class="settings-warning"
+          type="info"
+          title="未连接服务端，这一节的配置读不到；连上后会自动带出来"
+          :closable="false"
+          show-icon
+        />
+
         <el-form-item label="默认模型">
           <el-select v-model="form.defaultModel" class="wide">
             <el-option
@@ -183,6 +200,15 @@ import type { ConfigSettings, ConnectionSettings } from "@ai-zen/desktop-shared"
 const uiStore = useUiStore();
 const connectionStore = useConnectionStore();
 const saving = ref(false);
+
+/**
+ * 服务端那一半（默认模型 / 默认 Agent / API Key / 数据目录）**读不到**。
+ *
+ * 它的唯一成因是「还没连上服务端」（窗口先出来、连接在后面，D25）：这时那几样一个都读不到，
+ * 面板上留空 + 一条说明就好 —— 不是什么异常，所以既不弹红条也不打日志。
+ * 一旦读到（`reload()` 成功）就自己落下，说明也跟着消失。
+ */
+const serverUnavailable = ref(false);
 
 /**
  * 最近一次从服务端读到的端点 id 清单（`reload()` 刷、保存前那次只读探测也刷）。
@@ -353,6 +379,11 @@ async function saveConnection() {
         `连接已保存，但重读配置失败：${err instanceof Error ? err.message : String(err)}`,
       );
     }
+
+    // 保存已经生效，界面该回主界面：用户改完配置还停在设置页时，main 那边已经在等他。
+    // 不管模式有没有变（本地 → 本地也算一次保存），只要保存成了就走这一句；
+    // 它在保存失败走不到的位置（外层 `catch` 后面）。
+    uiStore.setView("main");
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : String(err));
   }
@@ -369,6 +400,9 @@ async function saveConnection() {
  * 模型，说「已不存在」就是新的谎话。
  */
 const modelNotice = computed(() => {
+  // 未连接时这一节整个读不到（上面已经挂了一条说明），谈不上「已不存在」——
+  // 再说一句「当前没有默认模型」就成了新的谎话（服务端上有没有，这会儿根本不知道）。
+  if (serverUnavailable.value) return "";
   if (!form.defaultModel) return "当前没有默认模型，请先选一个（空值不会被保存）";
   if (!uiStore.models.length) return "";
   if (!uiStore.models.some((m) => m.id === form.defaultModel)) {
@@ -379,6 +413,7 @@ const modelNotice = computed(() => {
 
 /** 同 `modelNotice`，只是对着 Agent 那一份清单说话 */
 const agentNotice = computed(() => {
+  if (serverUnavailable.value) return "";
   if (!form.defaultAgent) return "当前没有默认 Agent，请先选一个（空值不会被保存）";
   if (!uiStore.agents.length) return "";
   if (!uiStore.agents.some((a) => a.id === form.defaultAgent)) {
@@ -422,13 +457,33 @@ const endpointMismatchNotice = computed(() => {
 });
 
 async function reload() {
-  const cfg = await api.getConfigSettings();
-  form.endpoints = cfg.endpoints;
-  // 「服务端那一侧」的端点清单只跟着这次读刷新：下面两条提示是拿表单跟它比出来的
-  serverEndpointIds.value = cfg.endpoints.map((ep) => ep.id);
-  form.defaultModel = cfg.defaultModel;
-  form.defaultAgent = cfg.defaultAgent;
-  form.dataDir = cfg.dataDir;
+  try {
+    const cfg = await api.getConfigSettings();
+    form.endpoints = cfg.endpoints;
+    // 「服务端那一侧」的端点清单只跟着这次读刷新：下面两条提示是拿表单跟它比出来的
+    serverEndpointIds.value = cfg.endpoints.map((ep) => ep.id);
+    form.defaultModel = cfg.defaultModel;
+    form.defaultAgent = cfg.defaultAgent;
+    form.dataDir = cfg.dataDir;
+    serverUnavailable.value = false;
+  } catch {
+    // 未连接服务端：这一节**留空**（模板里那条说明靠这个标记出现）。
+    // **不弹红条、不打日志**：这不是故障，是「还没连上」这件正常的事。
+    //
+    // 清空而不是「原样留着」：如果是面板开着时连接断了，框里会留着上一台的值 ——
+    // 框里有值、盘上却读不到，人就会把那当成当前配置（本面板最不能犯的错）。
+    serverUnavailable.value = true;
+    form.endpoints = [];
+    serverEndpointIds.value = [];
+    form.defaultModel = "";
+    form.defaultAgent = "";
+    form.dataDir = "";
+  }
+
+  // 下面这一段与上面那半部分**完全无关**：它读 `connection:get`，走 main 本地，不需要服务端。
+  // 所以上面读不到也必须照常执行 —— 「服务端连接」是用户改回本地 / 换地址的唯一入口，
+  // 绝不能被「服务端那半部分读不到」连累（被连累的后果就是他没地方自救了）。
+  //
   // 「恢复」也把连接配置恢复成 main 上那份（面板里未保存的改动一律丢弃）。
   // 单独包一层：`connection:get` 的约定是「读不到就回默认值、绢不抛错」（D17），
   // 万一那条通道本身出问题，也不该让「默认模型 / API Key」这一屏跟着加载不出来。
@@ -507,7 +562,16 @@ function goBack() {
 }
 
 onMounted(async () => {
-  if (!uiStore.models.length) await uiStore.loadOptions();
+  // 这两件都经过服务端，未连接时会抛（窗口先出来、连接在后面，D25）。
+  // 不弹红条、也不该冒到控制台：那是「还没连上」这件正常的事，界面照常显示，
+  // 服务端那一半留空（见模板里那条说明）；下面那一节「服务端连接」照常可用。
+  if (!uiStore.models.length) {
+    try {
+      await uiStore.loadOptions();
+    } catch {
+      // 未连接：模型 / Agent 清单留空（下拉框空着，比弹一条红字诚实）
+    }
+  }
   await reload();
 });
 </script>

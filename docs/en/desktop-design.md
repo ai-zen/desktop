@@ -27,13 +27,13 @@ Dependency direction: `render → shared`, `main → shared + @ai-zen/agents-cli
 
 ```
 packages/main/src/
-├── main.ts     entry: new DesktopApp().start()
+├── main.ts     entry: new DesktopApp().start() (with its own .catch: a stray startup failure leaves one log line)
 ├── app.ts      DesktopApp: window / IPC / native dialogs / events pushed to render
 ├── config.ts   the path constant AI_ZEN_DIR (the connection settings are not in this file)
 ├── preload.ts  contextBridge exposing window.electronAPI
 ├── connection/ local or remote (the only persistence Desktop owns)
 │   ├── settings.ts    connection settings I/O: `<AI_ZEN_DIR>/desktop/connection.json` (0600 + atomic write; unreadable → `{ mode: "local" }`)
-│   └── controller.ts  ConnectionController: which layer is live / saving means reconnecting / testing a connection
+│   └── controller.ts  ConnectionController: which layer is live / saving means reconnecting / testing a connection / three states + bounded retries
 └── server/     the server facade (directly verifiable by vitest + a real daemon)
     ├── index.ts            assembly root: createServerLayer
     ├── call.ts             one protocol call (fetches a live connection each time, caches no client)
@@ -50,6 +50,22 @@ Two hard boundaries:
 - **`server/` never touches data files.** Conversation lists, messages, workspaces and config all come from the server over the protocol. The only exceptions are the two facts the connection itself needs, both read-only: the address (`run/server.json`, the default path) and the credential (`run/token`), read fresh on every use by `ServerConnection`; plus `launch.ts` starting a **process**, which reads and writes no data files itself.
 
 "Never touches data files" is about **data**: conversations, workspaces, Agent definitions and model config are still owned solely by the server. Desktop does write exactly one file of its own — `<AI_ZEN_DIR>/desktop/connection.json` (`connection/settings.ts`: `0600`, atomic write, credential inside; unreadable / broken JSON / invalid fields all fall back to `{ mode: "local" }` and the app still starts). It has to live on this machine rather than on the server because of the **chicken and egg**: the server holds all the business config about where to connect, but asking it requires knowing **which server** first; storing "which server" on the server would mean a user must connect to a server before choosing a server. So this is the **only** local write, and no other entry point for writing data locally gets added — a deliberate exception, not a loosening.
+
+### Startup order: the window first, the connection after
+
+```
+await app.whenReady()
+nativeTheme / Menu
+registerIpc()                 ← before the window: render invokes the moment it mounts
+createMainWindow()            ← the window comes first
+void connection.start()       ← connects in the background, **not awaited**
+```
+
+This order is the one thing in this document that has to be read literally; each of the three reasons blocks a different failure:
+
+- **IPC has to come before the window**: render calls `invokeService` the moment it mounts, so a `registerIpc()` that runs one step late leaves the UI with nothing on it.
+- **The window does not depend on the connection**: when a remote server is unreachable the window still appears — "cannot connect" then becomes **something inside the window** (the `connecting` / `error` status screen with its "retry"), not "the app failed to start".
+- **`connection.start()` is not awaited**: it is one attempt running in the background; a failure only writes one log line and is handed to the state machine (the retries in section 4). `main.ts` adds a `.catch` of its own too — any stray failure on the startup path becomes one log line rather than "double-click does nothing".
 
 ## 4. One connection (`ServerConnection`)
 
@@ -73,14 +89,34 @@ All of these matter, and re-attaching after a reconnect is the easiest to miss: 
 - **That section carries its own buttons, separate from the "Save" at the bottom of the page.** "Test connection" and "Save and reconnect" belong to the connection; the bottom "Save" writes "default model / default Agent / API Key" to the **server** (the one already connected). Merging them has a very concrete consequence: a user who only wanted to change the default model clicks once and ends up on another machine.
 - **"Test connection" only probes the candidate values**: nothing is written to disk, the current connection is untouched. Success shows the server's self-reported `protocol` / `version` / elapsed time; failure shows the plain sentence the client package already renders (`explainUnauthorized`'s wording, e.g. pointing at the credential). Address validity is asked of `parseServerUrl` only — Desktop writes no second validation.
 - **"Save and reconnect" swaps the connection immediately**: `ConnectionController.save()` runs **write to disk → `dispose()` the old layer → build the new one → `start()`**, with no app restart. A failed write touches no part of the connection (otherwise the UI says remote while the app is still on local); answers in flight are interrupted, hence the confirmation dialog before saving.
-- **After a successful save the UI refetches everything that comes from the server** (conversations / workspaces / Agents / model list): a different server is a different world, and keeping the previous machine's conversation cache only makes the user click into a fetch that can never succeed.
+- **After a successful save the UI returns to the main interface and refetches everything that comes from the server** (conversations / workspaces / Agents / model list): a different server is a different world, and keeping the previous machine's conversation cache only makes the user click into a fetch that can never succeed.
 - **Remote never starts a server on this machine**: whatever would be started here is not listening on that address. Local is the mode that does "discovery file + start on demand".
 
-The config lives in `<AI_ZEN_DIR>/desktop/connection.json` (`0600`, atomic write), carried by three **dedicated** IPC channels `connection:get` / `connection:save` / `connection:test` (they do not go into the service table below).
+The config lives in `<AI_ZEN_DIR>/desktop/connection.json` (`0600`, atomic write), carried by five **dedicated** IPC channels `connection:get` / `connection:save` / `connection:test` / `connection:state` / `connection:reconnect` (they do not go into the service table below).
+
+### When it cannot connect: three states + bounded retries
+
+The window comes up first (section 3), so "what state is this connection in right now" has to be a value that can be **asked for and pushed** — otherwise the `invokeService` calls render makes while mounting hit a connection that is not up yet and the screen is blank with no hint. The three states are maintained in exactly one place, `ConnectionController`, and render only gates the UI on them:
+
+- `connecting` — **covers** both "first attempt in flight" and "waiting for a retry". The two are told apart by `attempt` (`0` = the first attempt) and `nextRetryInMs` (how long until the next one);
+- `ready` — connected, carrying the server's **self-reported** `protocol` / `version` (from the handshake reply; when unavailable they are `0` / `""` — connected but unaware of which version it is, which is more honest than inventing a number);
+- `error` — the terminal state **after the retries failed too** (not "this attempt failed"), carrying one plain sentence in `message`.
+
+All three carry a `label`: `"本机服务端"` (the local server) for local, the address for remote. It is produced by main (render may neither compose an address nor guess the mode) and it **never contains the credential** — userinfo in an address is stripped first.
+
+**Bounded retries**: after the first failure there are at most **3** more tries, backing off **1s / 2s / 5s**; if all three fail → `error`, and from then on only the user's manual "retry" (`connection:reconnect`) is left. Automatic retries run one batch, not forever: an unreachable remote should not make the main process knock every 5 seconds for the rest of the day, and "quietly retrying forever" looks exactly like "stuck" in the UI.
+
+**A retry rebuilds the whole layer** (`dispose()` → `build()` → `start()`), it does not call `start()` again: `ChatEventBridge.start()` overwrites `unsubscribeOpen` without unsubscribing first, so calling `start()` twice on the same bridge loses the previous `onOpen` subscription — and that subscription is exactly what re-attaches listeners when the connection was replaced. Lose it and no event ever arrives again; the UI just sits there silently. Every attempt therefore gets a new bridge and a new connection, owing nothing to the previous one.
+
+The four exits of one attempt (connected → `ready` / schedule the next retry / enter `error` / superseded by a new configuration, so state must not be touched at all) all live in that one object; `save()` and `reconnect()` only bump the generation (clearing the pending timer and making the in-flight attempt stale).
 
 ## 5. Protocol surface
 
-The business surface has exactly one entry point: `electronAPI.invokeService(service, method, ...args)`, which `ServicesManager` looks up and dispatches to one of six Services. A few channels deliberately stay **off** that table: the connection settings `connection:get` / `save` / `test` (section 4), window controls `window:xxx`, and the native directory picker `dialog:selectDirectory` — they answer questions that belong to the main process itself, not methods of the server.
+The business surface has exactly one entry point: `electronAPI.invokeService(service, method, ...args)`, which `ServicesManager` looks up and dispatches to one of six Services. A few channels deliberately stay **off** that table: the connection settings and connection state `connection:get` / `save` / `test` / `state` / `reconnect` (section 4), window controls `window:xxx`, and the native directory picker `dialog:selectDirectory` — they answer questions that belong to the main process itself, not methods of the server.
+
+The last two of those five are **the query** and **the manual retry**: `connection:state` asks "what state is it in right now", `connection:reconnect` lets the user start another round themselves (it clears the pending timer, resets `attempt` to zero and returns the moment it enters `connecting`; the whole round runs in the background). A **push** channel shares the same name `connection:state` (main → render), so "ask once" and "listen for changes" are one name to the caller. Neither of them goes into the service table either — those six keys are the server's method surface.
+
+**The initial state is not pushed**: `connecting / attempt 0` is word-for-word what `state()` already reports before `start()` runs, so pushing it would be pure noise. That is why render must **query once first, then listen** when it mounts — listening alone misses the change that happened before the mount, querying alone never learns about the ones after it. `preload` exposes these as `electronAPI.connection = { get, save, test, state, reconnect }`.
 
 | Dispatch key | Implementation | Main actions |
 |--------------|----------------|--------------|
@@ -113,15 +149,18 @@ The translation layer does four things:
 ```
 packages/render/src/
 ├── main.ts        Vue entry (Pinia / ElementPlus)
-├── App.vue        root: TitleBar + Guide/Main/Settings switching; subscribes to chat:push
-├── views/         guide/index.vue, main/{index,Sidebar,ChatPanel,MessageBubble,NewChatDialog}.vue, settings/index.vue
+├── App.vue        root: TitleBar + gating on connection state (settings → status → guide/main); subscribes to chat:push and connection:state
+├── views/         guide/index.vue, main/{index,Sidebar,ChatPanel,MessageBubble,NewChatDialog}.vue, settings/index.vue, status/index.vue
 ├── components/    TitleBar.vue, MarkdownContent.vue
 ├── composables/   useMessageWindow (paged window), useAutoScroll (scroll policy)
 ├── stores/        ui / workspace / conversation / chat / agentView / connection
 └── apis/          base + workspace / conversation / chat / agent / model / config + connection
 ```
 
-- **apis only forwards**: `invokeService` is converged into methods and errors are normalized into `InvokeServerError`; `subscribeServiceEvent("chat:push", …)` is the single event entry point. `apis/connection.ts` is the same kind of forwarding for the three connection channels (it does not go through `invokeService`).
+- **The UI is gated on connection state** (this is a layer in `App.vue`, not something each view decides for itself): the priority is `settings page → status screen while not ready → guide / main`. **The settings page is reachable even while disconnected** — it is the user's only way to rescue themselves (back to local / another address); the main interface (sidebar and conversation list included) only mounts once `ready`, so the app never shows "the window is up but blank and silent". The status screen speaks each state: `connecting` is "connecting to …" (during a retry wait it adds "retry N, in about X seconds"), `error` is that `message` plus "retry" and "go to settings".
+- **While disconnected the settings page only gives up half of itself**: "default model / default Agent / API Key / data directory" are all server facts, so they stay empty with a single note (no red banner, no log line — it is not a fault); the "server connection" section reads `connection:get` from main locally and stays fully usable.
+- **Data is fetched on `ready`**: `init()` (Agents / models / workspaces, then guide or main depending on whether any workspace exists) runs exactly once per `false → true` transition. A successful "save and reconnect" (connected) returns to the main interface; and if the user happens to be sitting on the settings page, a background auto-retry that succeeds does **not** yank them out of it — data loads as usual, only the view is left alone.
+- **apis only forwards**: `invokeService` is converged into methods and errors are normalized into `InvokeServerError`; `subscribeServiceEvent("chat:push", …)` is the single event entry point. `apis/connection.ts` is the same kind of forwarding for the five connection channels (it does not go through `invokeService`), and the `connection:state` push rides the same `on` / `off` pair.
 - **stores are the only data entry**: views never call `invokeService` with a string. `chat` slots state by `byConversation[id]`, so switching conversations only switches the viewpoint and each conversation's streaming state stays independent.
 - **The sub-agent strip runs parallel to the main conversation**: `agents` is a wholesale replacement of `SubAgentView[]` (the server pushes the whole list on every change) and render does no diffing; selection repair and Tab cycling live in `packages/render/src/stores/agentView.ts` as pure, testable functions.
 - **Notices are toasts, not state**: `type: "notice"` pops an element-plus message and never enters `ConversationChatState` — especially not `error`, which is the "this turn failed" banner that `done` clears.
@@ -160,7 +199,7 @@ The sidebar's model dropdown reads the latter; recomputing "override + definitio
 
 The `server/` layer is verified directly by vitest: `packages/main/src/server/test-harness.ts` starts a **real daemon** (real port, real frames, real `SessionManager`) plus a **fake Agent** (the test decides when which delta is pushed). What is under test is the protocol mapping itself, so the Agent's streaming loop should be fake while the socket and discovery file must be real. Tests assert on the `ChatStreamEvent` sequence the facade pushes — that channel is the only acceptance surface the translation layer has.
 
-The `connection/` layer takes another road: every dependency of `ConnectionController` is injected (layer factory, settings I/O, log sink), so a test can pin the order "write to disk → dispose → build → start" with a **fake layer plus counters** (when the write fails, `dispose` must not be called even once) without starting a real daemon or opening a window; the `settings.ts` tests do touch a real disk (a temporary `AI_ZEN_DIR`) and verify `0600`, atomic writes and "never throws on a bad file". Current size: `packages/main` 9 test files / 111 cases, `packages/render` 3 files / 25 cases (including the connection store's "testing refetches nothing, saving refetches everything").
+The `connection/` layer takes another road: every dependency of `ConnectionController` is injected (layer factory, settings I/O, log sink), so a test can pin the order "write to disk → dispose → build → start" with a **fake layer plus counters** (when the write fails, `dispose` must not be called even once) without starting a real daemon or opening a window; the `settings.ts` tests do touch a real disk (a temporary `AI_ZEN_DIR`) and verify `0600`, atomic writes and "never throws on a bad file". Current size: `packages/main` 9 test files / 128 cases (including the state machine's push sequence across the three states, the backoff retries and `reconnect` discarding a pending timer), `packages/render` 3 files / 38 cases (including the connection store's "testing refetches nothing, saving refetches everything" and "query once, then subscribe").
 
 ## 11. Trade-offs
 

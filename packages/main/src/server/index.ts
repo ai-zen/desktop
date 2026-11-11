@@ -79,11 +79,35 @@ export interface ServerLayerOptions {
   serverToken?: string;
 }
 
+/**
+ * 服务端**自报的身份**里 render 用得到的那两位（`hello` 回执）。
+ *
+ * 只留 `protocol` / `version`：`HelloResult` 还带 `name` / `pid` / `startedAt`，而它们对界面
+ * 没有意义（谁都不需要知道对面进程的 pid）—— 一个字段只要没人读，就会有人以为它该被读。
+ */
+export interface LayerHello {
+  /** 服务端说的协议版本（正整数） */
+  protocol: number;
+  /** 服务端的版本串（`0.1.0` 这种） */
+  version: string;
+}
+
 export interface ServerLayer {
   /** `invokeService(service, method, ...)` 的动态分发（六个分发键即 render 的调用面） */
   manager: ServicesManager;
   /** 连上服务端并开始收事件（必须早于第一次 `chat.send`） */
   start: () => Promise<void>;
+  /**
+   * 握手回执里那份身份（`start()` 成功之后才有；拿不到就是 `null`）。
+   *
+   * 谁要它：`ConnectionController` 把 `protocol` / `version` 填进 `ready` 状态（D23），
+   * render 直接显示，不自己猜版本。
+   *
+   * 为什么是「记下来再给」而不是「现发一次 `hello`」：服务端**握手只认一次**，握过之后
+   * 再发 `hello` 会被回 `invalid-request`（`Daemon` 的 `handshaken` 分支）—— 那条路根本
+   * 走不通。所以身份只能在握手那一刻从连接上读下来，而 `start()` 就是那个时刻。
+   */
+  hello: () => LayerHello | null;
   /** 退出时收摊（断开连接；事件订阅随连接一起失效） */
   dispose: () => void;
 }
@@ -125,12 +149,49 @@ export function createServerLayer(options: ServerLayerOptions): ServerLayer {
     config: new ServerConfigService({ call }),
   });
 
+  /**
+   * 握手回执里那份身份（见 {@link ServerLayer.hello}）。`start()` 那一刻从连接上读一次，
+   * 之后一直是它：这条连接这辈子就握了这一次手。
+   */
+  let hello: LayerHello | null = null;
+
   return {
     manager,
-    start: async () => await events.start(),
+    start: async () => {
+      await events.start();
+      // `events.start()` 里已经取过连接了：这一次 `client()` 拿到的是同一条（还活着就复用），
+      // 不会多建一条连接，也不会多发一帧 `events.watch`
+      hello = await readHello(connection);
+    },
+    hello: () => hello,
     dispose: () => {
       events.dispose();
       connection.close();
     },
   };
+}
+
+/**
+ * 从一条**已经连上**的连接上读服务端自报的身份。
+ *
+ * `ServerClient` 的门面上没有 `server` —— 那是 `SocketServerClient` 的 getter（握手回执一到
+ * 就填好）。本仓只允许改 `desktop/`，所以这里做一次**窄断言**：拿的就是那个 getter，读不到
+ * （换成别的实现、或还没握手）就当没有。
+ *
+ * 失败一律回 `null`，**不抛**：拿不到版本串不该把「连上了」变成「连不上」—— 界面上少显示
+ * 一行版本，比一个明明能用的连接被报成失败要好得多。
+ */
+async function readHello(connection: ServerConnection): Promise<LayerHello | null> {
+  try {
+    const client = await connection.client();
+    const info = (client as unknown as { server?: { protocol?: unknown; version?: unknown } })
+      .server;
+    if (!info || typeof info.protocol !== "number") return null;
+    return {
+      protocol: info.protocol,
+      version: typeof info.version === "string" ? info.version : "",
+    };
+  } catch {
+    return null;
+  }
 }

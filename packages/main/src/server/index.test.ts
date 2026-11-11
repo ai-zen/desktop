@@ -18,6 +18,9 @@
  *   3. 地址指向没人监听的地方（发现文件却指着活的那台）→ 报错里是**那个地址**，说明地址没被
  *      悄悄换成发现文件里的那个。
  *
+ * 外加一条组（`hello()`）：`ConnectionState.ready` 里 `protocol` / `version` 的来源（D23）——
+ * 那两个值只有真对端知道，所以它也必须站在一台真 daemon 前面验。
+ *
  * D10（给了地址就不拉起本机 server）的计数判据在 `launch.test.ts`：那是唯一能看见
  * 「有没有拉起」的位置。
  */
@@ -146,5 +149,26 @@ describe("组装根：地址与凭证透传", () => {
     });
 
     await expect(layer.start()).rejects.toThrow("127.0.0.1:1");
+  });
+});
+
+/**
+ * `hello()` —— `ConnectionState.ready` 里 `protocol` / `version` 那两位的来源（D23）。
+ *
+ * 为什么要真 daemon：这两个值只有**对端**知道，而且它们必须来自**握手回执**本身（不是本地
+ * 常量、也不是再发一次 `hello` —— 服务端握过手之后不再接受第二次 `hello`）。用例在这里钉的
+ * 就是那条路：`start()` 之后 `hello()` 说的必须是服务端自报的那一份。
+ */
+describe("组装根：服务端自报的身份（hello）", () => {
+  it("start() 之前是 null（还没握手），之后是服务端自报的协议版本与版本串", async () => {
+    const fixture = await startDaemon("hello");
+    const layer = layerFor(fixture.dir, { serverToken: fixture.token });
+
+    // 还没连上：没有身份可给（`ready` 里那两位会因此填 0 / ""，见 controller.test.ts）
+    expect(layer.hello()).toBeNull();
+
+    await layer.start();
+
+    expect(layer.hello()).toEqual({ protocol: 3, version: "0.0.0-test" });
   });
 });

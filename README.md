@@ -31,7 +31,7 @@ desktop/
 
 ```
 packages/main/src/
-├── main.ts            ← 入口（仅一行：new DesktopApp().start()）
+├── main.ts            ← 入口：new DesktopApp().start()（自带 .catch：启动路径上漏网的失败只留一行日志）
 ├── app.ts             ← DesktopApp 单根：窗口 / IPC / 原生对话框
 ├── config.ts          ← 路径常量 `AI_ZEN_DIR`（连接配置不在这个文件里）
 ├── preload.ts         ← contextBridge 暴露 window.electronAPI
@@ -53,7 +53,7 @@ packages/main/src/
 ```
 packages/render/src/
 ├── main.ts            ← Vue 入口（Pinia / ElementPlus）
-├── App.vue            ← 根：TitleBar + Guide/Main/Settings 视图切换；初始化订阅 chat:push
+├── App.vue            ← 根：TitleBar + 按连接状态放行（settings → status → guide/main）；订阅 chat:push 与 connection:state
 ├── components/
 │   ├── TitleBar.vue         ← 自定义标题栏（窗口控制）
 │   └── MarkdownContent.vue  ← markdown-it + highlight.js 渲染
@@ -65,7 +65,8 @@ packages/render/src/
 │   │   ├── ChatPanel.vue      ← 对话面板（模型选择 / 消息列表 / 输入）
 │   │   ├── MessageBubble.vue  ← 消息气泡（流式 Markdown / 工具结果折叠）
 │   │   └── NewChatDialog.vue  ← 新建对话（选 Agent）
-│   └── settings/index.vue     ← 设置页（服务端连接 / 默认模型 / 默认 Agent / API Key / 数据目录）
+│   ├── settings/index.vue     ← 设置页（服务端连接 / 默认模型 / 默认 Agent / API Key / 数据目录）
+│   └── status/index.vue       ← 连接状态屏（正在连接 / 连不上 + 重试 / 去设置）
 ├── composables/       ← 消息分页窗口 + 自动滚动策略
 ├── stores/            ← Pinia
 │   ├── ui.ts                  ← 当前视图 + Agent/Model 选项
@@ -73,12 +74,12 @@ packages/render/src/
 │   ├── conversation.ts        ← 会话列表（按 workspace 缓存）+ 激活 + 运行中标记
 │   ├── chat.ts                ← ★ 按会话隔离的消息/流式状态（事件投影）
 │   ├── agentView.ts           ← 子 Agent 栏目的纯逻辑（选中态修正 / Tab 循环）
-│   └── connection.ts          ← 本地 / 远程连接设置（读 / 保存并重连 / 测试连接）
+│   └── connection.ts          ← 本地 / 远程连接设置 + 连接状态（读 / 保存并重连 / 测试连接 / 查状态 / 手动重连）
 └── apis/              ← 与 main 的六个 service 一一对应（外加连接设置）
     ├── base.ts                ← invokeService + subscribeServiceEvent
     ├── workspace.ts / conversation.ts / agent.ts / model.ts / config.ts
     ├── chat.ts                ← sendChatMessage / getChatState / onChatPush
-    └── connection.ts          ← 连接的三条专用通道（不属那六个 service）
+    └── connection.ts          ← 连接的五条专用通道（不属那六个 service）
 ```
 
 ### shared — 共享契约
@@ -108,10 +109,12 @@ packages/shared/src/
 - **调用**：`invokeService(service, method, ...args)` 动态分发到对应 service（preload 暴露，极薄，零业务定义）
 - **推送**：`chat:push` 单通道事件流 `start → user → message… → done / error`（+ 独立的 `migrated` / `renamed` / `notice` / `agents`）
 - **出口**：main 不再自己跑 Agent —— 每个动作都是对常驻 `agents-server` 的一次协议调用（`session.*` / `workspace.*` / `config.*` …），事件由服务端推回
-- **例外是「连哪台服务端」**：它不进那六个分发键，走三条专用通道 `connection:get` / `save` / `test`（preload 暴露成 `window.electronAPI.connection`）—— 它要在服务端还不存在的时候回答，见「[设置页](#设置页)」
+- **例外是「连哪台服务端」**：它不进那六个分发键，走五条专用通道 `connection:get` / `save` / `test` / `state` / `reconnect`（preload 暴露成 `window.electronAPI.connection`）—— 它要在服务端还不存在的时候回答，见「[设置页](#设置页)」。其中 `connection:state` 同时是一条**推送**通道（与查询同名）：起始态 `connecting(attempt 0)` 不推送，所以界面挂载时**先查一次、再听推送**
 
 ## 核心设计（会话执行与存档都在服务端）
 
+- **窗口先出来、连接在后面**：`app.whenReady()` → 原生外观 / 菜单 → `registerIpc()` → `createMainWindow()` → `void connection.start()`（**不 await**）。IPC 必须早于窗口（render 一挂载就会 `invokeService`）；窗口**不依赖**连接（远程不可达时窗口照样出现 —— 连不上只是窗口里的一个状态）；`start()` 不 await，失败交给状态机，`main.ts` 的入口另带 `.catch`，启动路径上漏网的失败只留一行日志，不会变成「双击没反应」
+- **连接是一台三态机器**（`connection/controller.ts`）：`connecting`（含首次尝试与重试等待，靠 `attempt` / `nextRetryInMs` 分开）→ `ready`（带服务端自报的 `protocol` / `version`）或者 `error`（重试也失败之后的终态，带一句人话 `message`）；三态都带 `label`（本地「本机服务端」/ 远程那个地址，不含凭证）。首次失败后最多再试 **3 次**（退避 **1s / 2s / 5s**），每次都是**整层重建**（`dispose` → `build` → `start`，因为事件桥重复 `start()` 会覆盖 `onOpen` 订阅）；仍失败就只留手动「重试」
 - **agent 活服务端**：每个会话在服务端有一个 agent，会话活着它就活着（流式中可读），服务端按空闲宽限期回收；不运行时的状态由服务端的工作区存档接管（`workspaces/<id>/sessions/`）
 - **`session.snapshot` 是运行时唯一真相**（含流式进行中的 user + assistant 占位）；桌面端收到的 `done` / `migrated` 就是这份快照的全量替换
 - **send 只提交**：`session.send` 立刻回 `turnId`，过程与结果全走事件（一轮可能跑几分钟）
@@ -140,12 +143,16 @@ packages/shared/src/
 
 ## 设置页
 
+**界面按连接状态放行**（`App.vue`）：优先级 `设置页 → 未就绪时的状态屏 → guide / main`。`connecting` 显示「正在连接 …」（重试等待中多一句「第 N 次重试，约 X 秒后」），`error` 显示那句 `message` + 「重试」+「去设置」；主界面（含侧栏、会话列表）只在 `ready` 之后才挂载，所以不会出现「窗口出来了但一片空白、也没有提示」。
+
+**未连接时也进得去设置页** —— 它是用户唯一的自救路径：窗口出来（可能整屏是「正在连接…」，也可能是一条错误 + 「已重试 3 次仍未连上」）→ 点「去设置」→ 在「服务端连接」一节改回「本地」或改地址 / 凭证 → 「保存并重连」→ 连上后自动进主界面。那时设置页里「默认模型 / 默认 Agent / API Key / 数据目录」那半部分留空并给一条说明（它们全是服务端的事实），而「服务端连接」这一节照常可用（它读 main 本地，不依赖服务端）。
+
 设置页开头是「**服务端连接**」一节：单选**本地** / **远程**，远程时填**地址**（`ws://` / `wss://` / `http://` / `https://`，支持 path，如 `wss://example.com/ai-zen`）与**凭证**（留空 = 用本机 `<AI_ZEN_DIR>/run/token`）。
 
 - **这一节自带两个按钮：「测试连接」与「保存并重连」** —— 与页面底部那个「保存」是两件事。底部那个保存把「默认模型 / 默认 Agent / API Key」写给**服务端**（连的还是同一台），不换连接
 - **测试连接**只探测候选值：不落盘、不影响当前连接。成功显示服务端自报的 `protocol` / `version` / 耗时；失败显示客户端翻好的人话（例如引导去核对凭证）
 - **保存并重连**立刻生效：main 先落盘、再 dispose 旧连接、再按新配置建一条并 start，**不需要重启 App**；进行中的回答会中断（所以保存前有确认框）
-- 保存成功后界面会重拉所有来自服务端的数据（会话 / 工作区 / Agent / 模型列表）—— 换了服务端就是换了一整个世界
+- 保存成功后回到主界面，并重拉所有来自服务端的数据（会话 / 工作区 / Agent / 模型列表）—— 换了服务端就是换了一整个世界；而如果此刻用户正停在设置页，后台自动重试成功**不会**把他从设置页拽走（数据照常加载，只是不切视图）
 - 远程模式下看到的会话 / 工作区都属于那台机器；远程**不会**在本机拉起服务端，本地模式才是「发现文件 + 按需拉起」
 - 切到「**本地**」并保存，会把远端地址与凭证从 `desktop/connection.json` 里**清掉** —— 不用的时候不把钥匙留在盘上（`0600` 也只是同用户可读）；要再连那台，重新填一次即可（面板里的输入框在**保存前**只是临时副本，切来切去还能看见，但保存后盘上那份就没了）
 

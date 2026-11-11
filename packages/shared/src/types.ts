@@ -127,6 +127,38 @@ export type ConnectionProbe =
   | { ok: true; protocol: number; version: string; elapsedMs: number }
   | { ok: false; message: string };
 
+/**
+ * 「此刻这条连接是什么状态」（D23）—— render 靠它决定**该不该说话**。
+ *
+ * ## 为什么这个状态必须存在（而不是「连上了就是连上了」）
+ *
+ * 窗口现在**先出来**、连接放到后面（D25）。于是 render 挂载的那一刻，连接可能还没建立 ——
+ * 它在 `onMounted` 里发的 `workspace.list` / `config.get` 会撞在一条还没连上的连接上，
+ * 屏幕上就是一片空白且没有提示。三态是那次挂载唯一能问的东西：`connecting` 就等，
+ * `ready` 就照常干活，`error` 就把 `message` 显示出来（含「去设置页改回来」的入口）。
+ *
+ * ## 三态各自的含义
+ *
+ *   · `connecting` —— **包含**「首次尝试中」与「重试等待中」。两者的区别是最后两个字段：
+ *     `attempt: 0` = 首次尝试（`nextRetryInMs` 为 `undefined`）；`attempt: N > 0` = 正在
+ *     等待第 N 次重试，`nextRetryInMs` 是还要等多久（见 D24 的 1000 / 2000 / 5000）；
+ *   · `ready` —— 连上了。`protocol` / `version` 是服务端**自报**的（`hello` 回执），
+ *     拿不到时是 `0` / `""`（连上了但不知道自己连的是哪一版，比编一个数字诚实）；
+ *   · `error` —— **重试也失败之后**的终态（不是「这一次失败了」）。它带一句人话 `message`；
+ *     用户点「重连」（{@link ConnectionControls.reconnect}）才会离开这个状态。
+ *
+ * ## `label` 为什么由 main 产出
+ *
+ * render 不许自己拼地址、也不许猜模式（`local` / `remote` 是 main 的事实）：`label` 就是
+ * 它该显示的那一行字 —— 本地模式是 `"本机服务端"`，远程模式是那个地址。
+ * **它绝不包含凭证**（地址里的 userinfo 与任何 token 都不会进这里，见 main 的
+ * `connection/controller.ts`）。
+ */
+export type ConnectionState =
+  | { status: "connecting"; label: string; attempt: number; nextRetryInMs?: number }
+  | { status: "ready"; label: string; protocol: number; version: string }
+  | { status: "error"; label: string; message: string };
+
 // ==================== 子 Agent 视图 ====================
 
 /**
@@ -261,7 +293,8 @@ export interface ElectronAPI {
 }
 
 /**
- * 连接设置的**三条专用通道**（`connection:get` / `connection:save` / `connection:test`）。
+ * 连接设置的**五条专用通道**（`connection:get` / `connection:save` / `connection:test` /
+ * `connection:state` / `connection:reconnect`）。
  *
  * ## 为什么不走 `invokeService`
  *
@@ -277,8 +310,16 @@ export interface ConnectionControls {
   /**
    * 保存并**立即重建连接**（不要求重启 App）：先落盘、再换层。
    *
-   * 落盘失败就抛、且**一个字段都不动连接**；校验 / 落盘 / 重建任何一步失败都 reject，
-   * 界面据此提示「没保存成功」—— 不允许出现「界面显示远程、实际还连着本地」。
+   * ## 两条失败路径说的不是一件事，界面不许混着显示
+   *
+   *   · **落盘失败**（或校验不过）→ 抛原错误，连接**一个字段都不动**。界面该说「没保存
+   *     成功」，盘上那一份还是旧的；
+   *   · **落盘成功但连不上**（D27）→ 也抛，但措辞明说「已保存」（例如
+   *     「连接配置已保存，但连不上 …：…」），并且状态机已经落到 `connecting`（后台按 D24
+   *     重试）。这种情况下**绝不能**显示成「保存失败」：盘上确实已经改了，用户再点一次
+   *     「保存」也只是又存一遍同一份配置。
+   *
+   * 换层期间进行中的回答会中断（那是换连接的固有代价，界面上要提示）。
    */
   save: (settings: ConnectionSettings) => Promise<{ settings: ConnectionSettings }>;
   /**
@@ -288,6 +329,26 @@ export interface ConnectionControls {
    * 返回值就是给人看的一句话，抛错只会让界面多一条没头没尾的红字。
    */
   test: (candidate: { serverUrl: string; serverToken?: string }) => Promise<ConnectionProbe>;
+  /**
+   * **查询**当前连接状态（D26）。
+   *
+   * 为什么查询与推送（主进程 → render 的推送通道同名，也叫 `connection:state`）必须**都存在**：
+   * 窗口现在先出来（D25），它挂载的那一刻可能已经错过了一次状态变化 —— 只靠推送会漏，
+   * 只靠查询又拿不到之后的变化。两个合起来才完整：查一次当前值，之后听推送。
+   *
+   * 永不抛错：还没 `start()` 时它答 `{ status: "connecting", attempt: 0 }`（那正是事实 ——
+   * 连接还没来得及开始），`label` 由盘上那份配置算出。
+   */
+  state: () => Promise<ConnectionState>;
+  /**
+   * 手动重试一次（D24）：清掉挂起的重试计时器、`attempt` 归零、立刻再试一轮（含它自己的
+   * 3 次退避）。用户点「重连」与 `error` 态下那个按钮都走这里。
+   *
+   * **返回进入 `connecting` 之后的那一刻状态**（不是整轮的结果）：这一轮在后台跑，最多
+   * 8 秒（1000 + 2000 + 5000），把它 await 住会让界面在那 8 秒里既没有回执也没有反馈。
+   * 后续（`ready` / `connecting(N)` / `error`）全走推送。
+   */
+  reconnect: () => Promise<ConnectionState>;
 }
 
 declare global {

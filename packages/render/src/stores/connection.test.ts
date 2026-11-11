@@ -9,30 +9,48 @@
  *   - `save` 失败：`saving` 放下、`settings` 一个字段都不改（不允许界面显示「已保存」）；
  *   - `resetProbe` 清空。
  *
+ * 另一组是**连接状态**（`state` / `startWatching` / `reconnect` / `isReady`）—— 界面靠它决定
+ * 「现在该不该说话」（窗口先出来、连接在后面，D25 / D26）。那几条的重点全在**顺序**上：
+ * 起始态 main 不推，所以必须**先查一次再订阅**。
+ *
  * 换掉的东西只有两处：`apis/connection`（用 `vi.mock`，不打真 IPC）与
- * `window.electronAPI.invokeService`（一份假服务端）。`ui` / `workspace` / `conversation`
- * 三个 store 用的是**真件** —— 「保存后到底刷新了什么」必须是可断言的，而不是一句被 mock 掉的空话。
+ * `window.electronAPI`（一份假服务端 + 一对假的 `on` / `off`）。`ui` / `workspace` /
+ * `conversation` 三个 store 用的是**真件** —— 「保存后到底刷新了什么」必须是可断言的，
+ * 而不是一句被 mock 掉的空话。
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { Mock } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
-import type { AgentOption, ConversationSummary, ModelOption, Workspace } from "@ai-zen/desktop-shared";
+import type {
+  AgentOption,
+  ConnectionState,
+  ConversationSummary,
+  ModelOption,
+  Workspace,
+} from "@ai-zen/desktop-shared";
 import { useConnectionStore } from "./connection.js";
 import { useConversationStore } from "./conversation.js";
 import { useUiStore } from "./ui.js";
 import { useWorkspaceStore } from "./workspace.js";
 
-/** `apis/connection` 的三个入口（`vi.mock` 的工厂会被提升，所以用 `vi.hoisted` 拿变量） */
+/** `apis/connection` 的入口（`vi.mock` 的工厂会被提升，所以用 `vi.hoisted` 拿变量） */
 const mocks = vi.hoisted(() => ({
   getConnectionSettings: vi.fn(),
   saveConnectionSettings: vi.fn(),
   testConnection: vi.fn(),
+  getConnectionState: vi.fn(),
+  reconnectConnection: vi.fn(),
+  onConnectionState: vi.fn(),
 }));
 
 vi.mock("../apis/connection.js", () => ({
   getConnectionSettings: mocks.getConnectionSettings,
   saveConnectionSettings: mocks.saveConnectionSettings,
   testConnection: mocks.testConnection,
+  getConnectionState: mocks.getConnectionState,
+  reconnectConnection: mocks.reconnectConnection,
+  onConnectionState: mocks.onConnectionState,
 }));
 
 // 「新服务端」端上有什么：换连接之后界面显示的必须是这一份，而不是上一台留下的
@@ -53,6 +71,19 @@ const OLD_CONVERSATION: ConversationSummary = {
 
 let invokeService: ReturnType<typeof vi.fn>;
 
+/** 假的推送通道：`window.electronAPI.on` 往里登记，`pushState()` 往里发 */
+type ChannelListener = (payload: unknown) => void;
+/** `window.electronAPI` 上那对通用监听（preload 是 `ipcRenderer.on` / `removeListener` 的一层薄封装） */
+type ChannelFn = (channel: string, callback: ChannelListener) => void;
+let listeners: Record<string, ChannelListener[]> = {};
+let onMock: Mock<ChannelFn>;
+let offMock: Mock<ChannelFn>;
+
+/** 模拟 main 推来一条连接状态（`webContents.send("connection:state", state)`） */
+function pushState(state: ConnectionState): void {
+  for (const listener of [...(listeners["connection:state"] ?? [])]) listener(state);
+}
+
 beforeEach(() => {
   setActivePinia(createPinia());
   vi.clearAllMocks();
@@ -65,9 +96,28 @@ beforeEach(() => {
     if (service === "conversation" && method === "list") return [];
     return [];
   });
+
+  // 假的事件通道：preload 那对 `on` / `off` 就是一层 `ipcRenderer` 的登记 / 注销，这里照抄
+  listeners = {};
+  onMock = vi.fn<ChannelFn>((channel, callback) => {
+    (listeners[channel] ??= []).push(callback);
+  });
+  offMock = vi.fn<ChannelFn>((channel, callback) => {
+    listeners[channel] = (listeners[channel] ?? []).filter((item) => item !== callback);
+  });
+
   (globalThis as unknown as { window: unknown }).window = {
-    electronAPI: { invokeService },
+    electronAPI: { invokeService, on: onMock, off: offMock },
   };
+
+  // 订阅助手由 `on` / `off` 拼出来（与 `apis/base.ts` 的写法同一口径），
+  // 于是「推送真的送到了 store 里」是可断言的，而不是一句被 mock 掉的空话。
+  mocks.onConnectionState.mockImplementation((callback: (state: ConnectionState) => void) => {
+    // 与 `apis/base.ts` 的 `subscribeServiceEvent` 同一层包装：payload 由通道原样带过来
+    const listener: ChannelListener = (payload) => callback(payload as ConnectionState);
+    onMock("connection:state", listener);
+    return () => offMock("connection:state", listener);
+  });
 });
 
 describe("connection store · load", () => {
@@ -277,5 +327,161 @@ describe("connection store · resetProbe", () => {
     store.resetProbe();
 
     expect(store.probe).toBeNull();
+  });
+});
+
+// ==================== 连接状态（D23 / D26） ====================
+
+/** 三态里各取一个样本（字段就是 shared 的 `ConnectionState`，这里只挑最典型的） */
+const CONNECTING_FIRST: ConnectionState = { status: "connecting", label: "本机服务端", attempt: 0 };
+const CONNECTING_RETRY: ConnectionState = {
+  status: "connecting",
+  label: "wss://a.example/ai-zen",
+  attempt: 2,
+  nextRetryInMs: 2000,
+};
+const READY: ConnectionState = {
+  status: "ready",
+  label: "本机服务端",
+  protocol: 3,
+  version: "0.1.0-alpha.0",
+};
+const ERROR: ConnectionState = {
+  status: "error",
+  label: "wss://a.example/ai-zen",
+  message: "连不上（已重试 3 次仍未连上）",
+};
+
+describe("connection store · loadState", () => {
+  it("⑥ 把 main 的状态放进 state（查一次当前值）", async () => {
+    mocks.getConnectionState.mockResolvedValue(READY);
+    const store = useConnectionStore();
+    // 起始态：还没查到
+    expect(store.state).toBeNull();
+
+    await store.loadState();
+
+    expect(mocks.getConnectionState).toHaveBeenCalledTimes(1);
+    expect(store.state).toEqual(READY);
+  });
+});
+
+describe("connection store · startWatching", () => {
+  it("⑦ 先查一次再订阅（起始态 main 不推，先听再查会漏掉中间那次变化）", async () => {
+    mocks.getConnectionState.mockResolvedValue(CONNECTING_FIRST);
+    const store = useConnectionStore();
+
+    const stop = await store.startWatching();
+
+    // 两条都发生了，各恰好一次
+    expect(mocks.getConnectionState).toHaveBeenCalledTimes(1);
+    expect(mocks.onConnectionState).toHaveBeenCalledTimes(1);
+    // **顺序**才是这条用例的重点：查询在前、订阅在后
+    expect(mocks.getConnectionState.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.onConnectionState.mock.invocationCallOrder[0],
+    );
+    // 订阅落在与查询同名的通道上
+    expect(onMock).toHaveBeenCalledWith("connection:state", expect.any(Function));
+    // 查询的结果已经进 state（不是等推送才有东西）
+    expect(store.state).toEqual(CONNECTING_FIRST);
+
+    stop();
+  });
+
+  it("⑧ 推送到来时 state 被更新；取消订阅后不再更新", async () => {
+    mocks.getConnectionState.mockResolvedValue(CONNECTING_FIRST);
+    const store = useConnectionStore();
+    const stop = await store.startWatching();
+
+    // 重试等待中
+    pushState(CONNECTING_RETRY);
+    expect(store.state).toEqual(CONNECTING_RETRY);
+
+    // 连上 / 连不上，推送说了算
+    pushState(READY);
+    expect(store.state).toEqual(READY);
+
+    stop();
+    expect(offMock).toHaveBeenCalledWith("connection:state", expect.any(Function));
+
+    pushState(ERROR);
+    expect(store.state).toEqual(READY);
+    expect(mocks.getConnectionState).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("connection store · reconnect", () => {
+  it("⑨ 调 api，并把返回的那一刻状态放进 state（之后的变化靠推送）", async () => {
+    mocks.reconnectConnection.mockResolvedValue(CONNECTING_FIRST);
+    const store = useConnectionStore();
+    store.state = ERROR;
+
+    await store.reconnect();
+
+    expect(mocks.reconnectConnection).toHaveBeenCalledTimes(1);
+    // main 返回的是「进入 connecting 之后的那一瞬」：界面据此立刻从错误条切回转圈
+    expect(store.state).toEqual(CONNECTING_FIRST);
+    expect(store.reconnecting).toBe(false);
+  });
+
+  it("⑨ 重连之后推送继续更新 state（重试计数 / 最终结果都来自 main）", async () => {
+    mocks.getConnectionState.mockResolvedValue(ERROR);
+    mocks.reconnectConnection.mockResolvedValue(CONNECTING_FIRST);
+    const store = useConnectionStore();
+    const stop = await store.startWatching();
+
+    await store.reconnect();
+    expect(store.state).toEqual(CONNECTING_FIRST);
+
+    pushState(CONNECTING_RETRY);
+    expect(store.state).toEqual(CONNECTING_RETRY);
+
+    pushState(READY);
+    expect(store.state).toEqual(READY);
+
+    stop();
+  });
+
+  it("⑨ 重连进行中 reconnecting 为 true、失败时照样放下（不把按钮留在转圈里）", async () => {
+    let release: (state: ConnectionState) => void = () => {};
+    mocks.reconnectConnection.mockReturnValue(
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+    );
+    const store = useConnectionStore();
+
+    const pending = store.reconnect();
+    expect(store.reconnecting).toBe(true);
+
+    release(CONNECTING_FIRST);
+    await pending;
+    expect(store.reconnecting).toBe(false);
+
+    mocks.reconnectConnection.mockRejectedValue(new Error("IPC 挂了"));
+    await expect(store.reconnect()).rejects.toThrow("IPC 挂了");
+    expect(store.reconnecting).toBe(false);
+  });
+});
+
+describe("connection store · isReady", () => {
+  it("⑩ 只在 ready 时为 true（含 state === null 这个「还没查到」）", () => {
+    const store = useConnectionStore();
+
+    // 还没查到：不许当成「已就绪」（界面那时什么都还没开始拉）
+    expect(store.state).toBeNull();
+    expect(store.isReady).toBe(false);
+
+    store.state = CONNECTING_FIRST;
+    expect(store.isReady).toBe(false);
+
+    store.state = CONNECTING_RETRY;
+    expect(store.isReady).toBe(false);
+
+    store.state = ERROR;
+    expect(store.isReady).toBe(false);
+
+    store.state = READY;
+    expect(store.isReady).toBe(true);
   });
 });

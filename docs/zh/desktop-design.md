@@ -27,13 +27,13 @@ packages/
 
 ```
 packages/main/src/
-├── main.ts     入口：new DesktopApp().start()
+├── main.ts     入口：new DesktopApp().start()（自带 .catch：启动路径上漏网的失败只留一行日志）
 ├── app.ts      DesktopApp：窗口 / IPC / 原生对话框 / 事件推给 render
 ├── config.ts   路径常量 AI_ZEN_DIR（连接配置不在这个文件里）
 ├── preload.ts  contextBridge 暴露 window.electronAPI
 ├── connection/ 连本地还是远程（桌面端唯一一处自己的持久化）
 │   ├── settings.ts    连接配置读写：`<AI_ZEN_DIR>/desktop/connection.json`（0600 + 原子写；读不到回 `{ mode: "local" }`）
-│   └── controller.ts  ConnectionController：当前连着哪一层 / 保存即重连 / 测试连接
+│   └── controller.ts  ConnectionController：当前连着哪一层 / 保存即重连 / 测试连接 / 三态 + 有限重试
 └── server/     服务端门面（可直接被 vitest + 真 daemon 验收）
     ├── index.ts            组装根：createServerLayer
     ├── call.ts             一次协议调用（每次取一条活着的连接，不缓存 client）
@@ -50,6 +50,22 @@ packages/main/src/
 - **`server/` 不碰数据文件**。会话清单、消息、工作区、配置全部经协议向服务端要。例外只有「连接本身」那两件，且都只读：地址（`run/server.json`，默认路径）与凭证（`run/token`），由 `ServerConnection` 在每次取用时现读；以及 `launch.ts` 把一个**进程**拉起来 —— 它自己不读不写任何数据文件。
 
 「不碰数据文件」说的是**数据**：会话、工作区、Agent 定义、模型配置仍然只由服务端拥有。桌面端自己确实写一个文件 —— `<AI_ZEN_DIR>/desktop/connection.json`（`connection/settings.ts`：`0600`、原子写、内含凭证；读不到 / 坏 JSON / 字段不合法一律回退 `{ mode: "local" }` 且照常启动）。它必须落在本机而不是服务端，理由是**先有鸡先有蛋**：服务端手上有「该连哪儿」的全部业务配置，可要问它，得先知道**连哪台**；把「连哪台」也存到服务端，就等于要求用户先连上服务端才能选服务端。所以这是**唯一**一处本地写，除这一处不新增任何往本地写数据的入口 —— 有意的例外，不是松绑。
+
+### 启动顺序：窗口先出来，连接在后面
+
+```
+await app.whenReady()
+nativeTheme / Menu
+registerIpc()                 ← 早于窗口：render 一挂载就会 invoke
+createMainWindow()            ← 窗口先出来
+void connection.start()       ← 后台连，**不 await**
+```
+
+这个顺序是本文件里唯一必须按字面读的东西，三条理由各挡住一种失败：
+
+- **IPC 必须早于窗口**：render 一挂载就会 `invokeService`，`registerIpc()` 晚一步，界面上就什么都没有。
+- **窗口不依赖连接**：远程服务端不可达时，窗口照样出现 —— 「连不上」于是是**窗口里的一件事**（状态屏上的 `connecting` / `error` 加「重试」），而不是「应用没起来」。
+- **`connection.start()` 不 await**：它是后台的一轮尝试，失败只记一行日志 + 交给状态机（第 4 节的重试），启动路径不等它。`main.ts` 的入口另带 `.catch` —— 启动路径上任何漏网的失败只变成一行日志，而不是「双击没反应」。
 
 ## 4. 一条连接（`ServerConnection`）
 
@@ -73,14 +89,34 @@ packages/main/src/
 - **这一节自带按钮，与页面底部那个「保存」是两件事**。「测试连接」与「保存并重连」属于连接；底部那个「保存」把「默认模型 / 默认 Agent / API Key」写给**服务端**（连的还是同一台）。混成一个按钮的后果很具体：用户只想改默认模型，点一下却连到另一台机器上去了。
 - **「测试连接」只探测候选值**：不落盘、不影响当前连接。成功显示服务端自报的 `protocol` / `version` / 耗时；失败显示客户端翻好的人话（`explainUnauthorized` 的措辞，例如引导去核对凭证）。地址合法性只问客户端包的 `parseServerUrl`，桌面端不写第二份校验。
 - **「保存并重连」立刻换连接**：`ConnectionController.save()` 的顺序是 **先落盘 → `dispose()` 旧层 → 建新 → `start()`**，不需要重启 App。落盘失败就一个字段都不动连接（否则界面写着远程、实际还连着本地）；进行中的回答会中断，所以保存前有确认框。
-- **保存成功后界面重拉一切来自服务端的数据**（会话 / 工作区 / Agent / 模型列表）：换了服务端就是换了一整个世界，上一台的会话缓存留着只会让人点进一次永远失败的拉取。
+- **保存成功后回到主界面，并重拉一切来自服务端的数据**（会话 / 工作区 / Agent / 模型列表）：换了服务端就是换了一整个世界，上一台的会话缓存留着只会让人点进一次永远失败的拉取。
 - **远程模式不在本机拉起服务端**：本机拉起来的一定不在那个地址上；本地模式才是「发现文件 + 按需拉起」。
 
-配置落在 `<AI_ZEN_DIR>/desktop/connection.json`（`0600`、原子写），三条**专用** IPC `connection:get` / `connection:save` / `connection:test` 承载这条路径（不进下面那张 service 表）。
+配置落在 `<AI_ZEN_DIR>/desktop/connection.json`（`0600`、原子写），五条**专用** IPC `connection:get` / `connection:save` / `connection:test` / `connection:state` / `connection:reconnect` 承载这条路径（不进下面那张 service 表）。
+
+### 连不上时：三态 + 有限重试
+
+窗口先出来（第 3 节），于是「这条连接此刻是什么状态」必须是一个**能被问、也能被推**的值 —— 否则 render 挂载时那几句 `invokeService` 撞在一条还没连上的连接上，屏幕上就是一片空白且没有提示。三态由 `ConnectionController` 一处维护，render 只按它放行界面：
+
+- `connecting` —— **包含**「首次尝试中」与「重试等待中」。两者靠 `attempt`（`0` = 首次尝试）与 `nextRetryInMs`（还要等多久）分开；
+- `ready` —— 连上了，带服务端**自报**的 `protocol` / `version`（握手回执；拿不到时是 `0` / `""` —— 连上了但不知道自己连的是哪一版，比编一个数字诚实）；
+- `error` —— **重试也失败之后**的终态（不是「这一次失败了」），带一句人话 `message`。
+
+三态都带一个 `label`：本地是「本机服务端」，远程是那个地址。它由 main 产出（render 不许自己拼地址、也不许猜模式），并且**不含凭证** —— 地址里的 userinfo 会先被抹掉。
+
+**有限重试**：首次失败后最多再试 **3 次**，退避 **1s / 2s / 5s**；三次仍失败 → `error`，此后只剩用户手动「重试」（`connection:reconnect`）。自动重试只跑一批，不跑一辈子：一个连不上的远端不该让主进程永远每 5 秒敲一次门，而那种「安静地一直在试」在界面上和「停住了」长得一模一样。
+
+**重试是整层重建**（`dispose()` → `build()` → `start()`），不是再调一次 `start()`：`ChatEventBridge.start()` 把 `unsubscribeOpen` 直接覆盖而不会先退订，同一个桥重复 `start()` 会漏掉上一条 `onOpen` 订阅 —— 那条订阅管的正是「连接换了一条要重挂监听」，掉了就再也收不到事件，界面安静地不动。所以每一次尝试都是一层新的桥、新的连接，一条都不欠。
+
+一次尝试的四种出口（成功 `ready` / 排下一次重试 / 进 `error` / 已被新配置取代而不许再动状态）也都在那一处，`save()` 与 `reconnect()` 只负责换代（清掉挂起的计时器、让在飞的那次作废）。
 
 ## 5. 协议面
 
-业务面的入口只有一个：`electronAPI.invokeService(service, method, ...args)`，由 `ServicesManager` 查表分发到六个 Service。另有几条**不属这张表**的通道：连接设置 `connection:get` / `save` / `test`（第 4 节）、窗口控制 `window:xxx`、原生目录选择 `dialog:selectDirectory` —— 它们回答的不是服务端的方法，而是主进程自己的事。
+业务面的入口只有一个：`electronAPI.invokeService(service, method, ...args)`，由 `ServicesManager` 查表分发到六个 Service。另有几条**不属这张表**的通道：连接设置与连接状态 `connection:get` / `save` / `test` / `state` / `reconnect`（第 4 节）、窗口控制 `window:xxx`、原生目录选择 `dialog:selectDirectory` —— 它们回答的不是服务端的方法，而是主进程自己的事。
+
+连接那五条里的后两条是**查询**与**手动重试**：`connection:state` 问「此刻什么状态」，`connection:reconnect` 让用户自己再点一轮（清掉挂起的计时器、`attempt` 归零，立刻返回进入 `connecting` 的那一瞬，整轮在后台跑）。同名的 `connection:state` 还是一条**推送**通道（main → render），于是「查一次」与「听变化」对调用方是同一个名字。这两条同样**不进** service 表 —— 那六个键是服务端的方法面。
+
+**起始态不推送**：`connecting / attempt 0` 与 `start()` 之前 `state()` 给出的那一份逐字相同，推一遍只是噪声。所以 render 挂载时必须**先查询一次、再听推送** —— 只靠推送会漏掉挂载之前的那次变化，只靠查询又拿不到之后的变化。`preload` 把这几条暴露成 `electronAPI.connection = { get, save, test, state, reconnect }`。
 
 | 分发键 | 实现 | 主要动作 |
 |--------|------|----------|
@@ -113,15 +149,18 @@ packages/main/src/
 ```
 packages/render/src/
 ├── main.ts        Vue 入口（Pinia / ElementPlus）
-├── App.vue        根：TitleBar + Guide/Main/Settings 切换；订阅 chat:push
-├── views/         guide/index.vue、main/{index,Sidebar,ChatPanel,MessageBubble,NewChatDialog}.vue、settings/index.vue
+├── App.vue        根：TitleBar + 按连接状态放行（settings → status → guide/main）；订阅 chat:push 与 connection:state
+├── views/         guide/index.vue、main/{index,Sidebar,ChatPanel,MessageBubble,NewChatDialog}.vue、settings/index.vue、status/index.vue
 ├── components/    TitleBar.vue、MarkdownContent.vue
 ├── composables/   useMessageWindow（分页窗口）、useAutoScroll（滚动策略）
 ├── stores/        ui / workspace / conversation / chat / agentView / connection
 └── apis/          base + workspace / conversation / chat / agent / model / config + connection
 ```
 
-- **apis 只做转发**：`invokeService` 收敛成方法，错误统一成 `InvokeServerError`；`subscribeServiceEvent("chat:push", …)` 是唯一的事件入口。`apis/connection.ts` 是三条连接通道的同一套转发（它不经过 `invokeService`）。
+- **界面按状态放行**（这是 `App.vue` 的一层，不是各视图各自判断）：优先级 `设置页 → 未就绪时的状态屏 → guide / main`。**设置页在未连接时也进得去** —— 那是用户唯一的自救路径（改回本地 / 换一个地址）；主界面（含侧栏、会话列表）只在 `ready` 之后才挂载，避免「窗口出来了但一片空白、也没有提示」。状态屏按三态说话：`connecting` 是「正在连接 …」（重试等待中多一句「第 N 次重试，约 X 秒后」），`error` 是那句 `message` 加「重试」与「去设置」。
+- **未连接时设置页只让出一半**：「默认模型 / 默认 Agent / API Key / 数据目录」全是服务端的事实，读不到就留空并挂一条说明（不弹红条、不打日志 —— 那不是故障）；「服务端连接」那一节读的是 main 本地的 `connection:get`，照常可用。
+- **进入 `ready` 才拉数据**：`init()`（Agent / 模型 / 工作区，再按有没有 workspace 落到 guide 或 main）只在 `false → true` 那一刻跑一次。「保存并重连」成功（已连上）后回到主界面；而如果用户此刻正停在设置页，后台自动重试成功**不会**把他从设置页拽走 —— 数据照常加载，只是不切视图。
+- **apis 只做转发**：`invokeService` 收敛成方法，错误统一成 `InvokeServerError`；`subscribeServiceEvent("chat:push", …)` 是唯一的事件入口。`apis/connection.ts` 是五条连接通道的同一套转发（它不经过 `invokeService`），`connection:state` 那条推送走同一对 `on` / `off`。
 - **store 是唯一数据入口**：视图不调 `invokeService` 字符串。`chat` 按 `byConversation[id]` 分槽，切换会话只换视角，各会话的流式状态互不干扰。
 - **子 Agent 栏目与主对话并行**：`agents` 是 `SubAgentView[]` 的整份替换（服务端一变化就推全量），render 不做 diff；选中态修正与 Tab 循环抽在 `packages/render/src/stores/agentView.ts`，纯函数、可测。
 - **通知是 toast，不是状态**：`type: "notice"` 直接弹 element-plus，不进 `ConversationChatState` —— 尤其不碰 `error`（那是「本轮失败」的错误条，`done` 会把它清空）。
@@ -160,7 +199,7 @@ packages/render/src/
 
 `server/` 那一层可以被 vitest 直接验收：`packages/main/src/server/test-harness.ts` 起一个**真 daemon**（真端口、真帧、真 `SessionManager`）+ 一个**假 Agent**（用例自己决定什么时候推哪一片增量）。验的是协议映射本身，所以 Agent 的流式循环该是假件，socket 与发现文件必须是真的。用例读的是门面推出去的 `ChatStreamEvent` 序列 —— 翻译层唯一的验收口径就是这条通道。
 
-`connection/` 那一层走另一条路：`ConnectionController` 的依赖全部注入（建层工厂、配置读写、日志出口），用例拿**假层 + 计数器**就能把「先落盘 → dispose → 建新 → start」这条顺序咬死（落盘失败时 `dispose` 一次都不许被调），不必起真 daemon、也不必开窗口；`settings.ts` 的用例碰真磁盘（临时 `AI_ZEN_DIR`），验的是 `0600`、原子写与「读不炸」。当前两侧的规模：`packages/main` 9 个用例文件 / 111 条用例，`packages/render` 3 个文件 / 25 条（含 connection store 的「测试不刷数据、保存才刷」）。
+`connection/` 那一层走另一条路：`ConnectionController` 的依赖全部注入（建层工厂、配置读写、日志出口），用例拿**假层 + 计数器**就能把「先落盘 → dispose → 建新 → start」这条顺序咬死（落盘失败时 `dispose` 一次都不许被调），不必起真 daemon、也不必开窗口；`settings.ts` 的用例碰真磁盘（临时 `AI_ZEN_DIR`），验的是 `0600`、原子写与「读不炸」。当前两侧的规模：`packages/main` 9 个用例文件 / 128 条用例（含状态机的三态推送序列、退避重试、`reconnect` 换掉挂起的计时器），`packages/render` 3 个文件 / 38 条（含 connection store 的「测试不刷数据、保存才刷」与「先查一次再订阅」）。
 
 ## 11. 取舍
 

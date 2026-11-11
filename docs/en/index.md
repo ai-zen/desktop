@@ -38,6 +38,7 @@ desktop/
 
 - **Call**: `invokeService(service, method, ...args)` dynamically dispatches to the corresponding service in the main process (exposed via preload, very thin, zero business definitions)
 - **Push**: `chat:push` single-channel event stream `start → user → message… → done / error` (+ independent `migrated` / `renamed` / `notice` / `agents`)
+- **Exception: the connection**: `connection:get` / `save` / `test` / `state` / `reconnect` (`state` doubles as the push channel) do not belong to those six services — "which server" has to be answered while no server exists yet. The window comes up first and the connection after, so when it cannot connect the window shows a status screen (retry / go to settings)
 
 See [Architecture Design](./desktop-design.md) for details.
 

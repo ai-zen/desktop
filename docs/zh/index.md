@@ -38,6 +38,7 @@ desktop/
 
 - **调用**：`invokeService(service, method, ...args)` 动态分发到主进程对应 service（preload 暴露，极薄，零业务定义）
 - **推送**：`chat:push` 单通道事件流 `start → user → message… → done / error`（+ 独立的 `migrated` / `renamed` / `notice` / `agents`）
+- **例外：连接**：`connection:get` / `save` / `test` / `state` / `reconnect`（`state` 同时是推送通道）不属那六个 service —— 它要在服务端还不存在的时候回答「连哪台」。窗口先出来、连接在后面，连不上时窗口里是一块状态屏（重试 / 去设置）
 
 详细架构见 [架构设计](./desktop-design.md)。
 

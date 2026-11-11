@@ -15,8 +15,29 @@
  * 以前这里是 `private readonly server = createServerLayer({…})`：字段初始化，永远一份，换连接
  * 只能重启 App。现在换成 `ConnectionController`（`connection/controller.ts`）：它同样只拿
  * 非 electron 的事实（全部注入），于是「先落盘再换层」那套顺序能拿假层单测咬死；本文件只负责
- * 把 electron 的三个事实递进去，并在 IPC 里认领三条连接设置通道。
+ * 把 electron 的三个事实递进去（含状态推送与计时器），并在 IPC 里认领五条连接通道。
+ *
+ * ## 启动顺序：**窗口先出来，连接放后面**（D25）
+ *
+ * 这一段的顺序是本文件唯一必须按字面读的东西：
+ *
+ * ```
+ * await app.whenReady()
+ * nativeTheme / Menu
+ * registerIpc()                 ← 仍要早于窗口：render 一挂载就会 invoke
+ * createMainWindow()            ← 窗口先出来（它曾经在连接之后，见下）
+ * void this.connection.start()  ← 后台连，**不 await**
+ * ```
+ *
+ * 改动前的顺序是「先 await 连接 → 再建窗口」，而那个 await 没有 try/catch：远程服务端在
+ * 启动时不可达 ⇒ `start()` rejects ⇒ 后面两行都不执行 ⇒ **窗口根本不出现**，用户看到的是
+ * 「双击没反应」，而「改回本地」的设置页就在那个不存在的窗口里 —— 只能手删 `connection.json`。
+ *
+ * 现在连接在窗口之后、且在后台跑：连不上是**窗口里的一件事**（`ConnectionState` 的
+ * `connecting` / `error` 加上「重连」按钮），不再是「应用没起来」。`start()` 的 promise 自己
+ * 带 `.catch`（不浮空、不冒到顶），失败只记日志 + 交给状态机。
  */
+
 
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme } from "electron";
 import { join } from "path";
@@ -25,7 +46,7 @@ import { AI_ZEN_DIR } from "./config.js";
 import { ConnectionController } from "./connection/controller.js";
 import { readSettings, writeSettings } from "./connection/settings.js";
 import { createServerLayer } from "./server/index.js";
-import type { ChatStreamEvent, ConnectionSettings } from "@ai-zen/desktop-shared";
+import type { ChatStreamEvent, ConnectionSettings, ConnectionState } from "@ai-zen/desktop-shared";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 
@@ -46,6 +67,10 @@ export class DesktopApp {
     // 连接设置落在 `<AI_ZEN_DIR>/desktop/connection.json`（D17），路径拼法在 settings 里
     readSettings: () => readSettings(AI_ZEN_DIR),
     writeSettings: (settings) => writeSettings(AI_ZEN_DIR, settings),
+    // 状态变化 → 推给 render（`connection:state`，与查询同名：`subscribeServiceEvent(channel)`
+    // 于是对「查一次」与「听变化」是同一个名字）。窗口还没建时这里是个空操作，
+    // 那一段的真相由 `connection:state` 的查询补上（D26 说了为什么两条都要有）
+    onStateChange: (state) => this.pushConnectionState(state),
   });
 
   // ==================== 运行状态 ====================
@@ -53,20 +78,30 @@ export class DesktopApp {
   /** 目录选择器记住的上次位置（默认桌面） */
   private lastSelectedDir: string | null = null;
 
-  /** 启动：就绪 → 连服务端 → 注册 IPC → 创建窗口 → 绑定生命周期 */
+  /**
+   * 启动：就绪 → 注册 IPC → 窗口先出来 → 连接放后面（后台跑）→ 绑定生命周期。
+   *
+   * 顺序与理由见文件头（D25）。这里只剩一个必须口述的点：`connection.start()` 的 promise
+   * **自己 catch**（不浮空、不冒到顶）。它其实不会 reject（失败由状态机接住并进重试），
+   * 这一道是兜底 —— 启动路径上任何一处失败都只该变成一行日志，而不是「双击没反应」。
+   */
   async start(): Promise<void> {
     await app.whenReady();
-
-    // 连上服务端并开始收事件：必须早于任何 IPC 调用 —— 服务端在 `session.send` 的回执
-    // 之前就会推第一条阶段事件，订阅晚一步就会漏掉「这一轮开始了」
-    await this.connection.start();
 
     // 窗口外观跟随系统设置 + 去掉默认菜单栏
     nativeTheme.themeSource = "system";
     Menu.setApplicationMenu(null);
 
+    // IPC 先注册：render 一挂载就会 `invokeService`，晚一步就是「界面上什么都没有」
     this.registerIpc();
+
+    // 窗口先出来：远程不可达时它也一样出现（连不上的事交给窗口里的状态，不是交给启动失败）
     this.createMainWindow();
+
+    // 连接放后面、且**不 await**：结果靠 `connection:state` 的推送 + 查询
+    void this.connection.start().catch((error: unknown) => {
+      console.error(`连接启动失败（状态由 ConnectionController 记录）：${String(error)}`);
+    });
 
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) {
@@ -78,15 +113,26 @@ export class DesktopApp {
         app.quit();
       }
     });
-    // 退出前断开连接（服务端是常驻的，不跟着桌面端退出）
+    // 退出前断开连接（服务端是常驻的，不跟着桌面端退出）；顺手清掉挂起的重试计时器
     app.on("will-quit", () => {
       this.connection.dispose();
     });
   }
 
-  // ==================== 事件推送（render 订阅 chat:push） ====================
+  // ==================== 事件推送 ====================
+
   private pushChatEvent(evt: ChatStreamEvent): void {
     this.mainWindow?.webContents.send("chat:push", evt);
+  }
+
+  /**
+   * 连接状态 → render（`connection:state`，与查询通道同名）。
+   *
+   * 窗口还没建时是空操作：那一段的真相由 `connection:state` 的**查询**补上 —— 窗口挂载时
+   * 先查一次，之后再听这条推送（D26 说的就是这个组合）。
+   */
+  private pushConnectionState(state: ConnectionState): void {
+    this.mainWindow?.webContents.send("connection:state", state);
   }
 
   // ==================== 窗口 ====================
@@ -133,7 +179,7 @@ export class DesktopApp {
         this.connection.layer().manager.invokeService(service, method, ...args),
     );
 
-    // 连接设置（本地 / 远程）：三条**专用**通道，**不进** `invokeService` 的 service 表（D20）。
+    // 连接设置（本地 / 远程）：五条**专用**通道，**不进** `invokeService` 的 service 表（D20）。
     // 那六个分发键 = 服务端的方法表，而「连哪台服务端」在服务端还不存在的时候就要回答
     // （先有鸡先有蛋）—— 混进去会让「六个键 = 服务端调用面」这条边界失效。
     ipcMain.handle("connection:get", () => this.connection.get());
@@ -145,6 +191,10 @@ export class DesktopApp {
       (_event, candidate: { serverUrl: string; serverToken?: string }) =>
         this.connection.test(candidate),
     );
+    // 状态查询：窗口可能比第一次状态变化更晚挂载（D25 之后这是常态），光靠推送会漏
+    ipcMain.handle("connection:state", () => this.connection.state());
+    // 手动重试：清掉挂起的计时器、attempt 归零、立刻再试一轮；返回进入 connecting 的那一瞬
+    ipcMain.handle("connection:reconnect", () => this.connection.reconnect());
 
     // 窗口控制
     ipcMain.handle("window:minimize", (event) => {

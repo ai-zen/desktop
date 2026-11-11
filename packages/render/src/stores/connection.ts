@@ -16,10 +16,19 @@
  *
  * 两者混起来的后果很具体：测试按钮顺手把界面刷了（数据没变却闪一下，还白丢一次当前选中），
  * 或者保存按钮只落了盘（侧栏还挂着上一台的会话，点进去是一次永远失败的拉取）。
+ *
+ * ## 还有一件事：**此刻这条连接是什么状态**（`state` / `startWatching` / `reconnect`）
+ *
+ * 窗口现在**先出来**、连接放到后面（D25），于是 render 挂载的那一刻连接可能还没建立。三态
+ * （`ConnectionState`，D23）是那次挂载唯一能问的东西：`connecting` 就等、`ready` 就照常干活、
+ * `error` 就把 `message` 显示出来并给一个「重试」。
+ *
+ * 重试策略本身（首次失败后 1s / 2s / 5s 三次退避）全在 main，这个 store **一行重试逻辑都没有**：
+ * 它只负责「此刻是什么状态」与「用户点了重连」这两件事。
  */
 
 import { defineStore } from "pinia";
-import type { ConnectionProbe, ConnectionSettings } from "@ai-zen/desktop-shared";
+import type { ConnectionProbe, ConnectionSettings, ConnectionState } from "@ai-zen/desktop-shared";
 import * as api from "../apis/index.js";
 import { useUiStore } from "./ui.js";
 import { useWorkspaceStore } from "./workspace.js";
@@ -35,7 +44,26 @@ export const useConnectionStore = defineStore("connection", {
     saving: false,
     /** 「测试连接」进行中 */
     testing: false,
+    /**
+     * 此刻的连接状态（`connection:state`）；`null` = **还没查到**。
+     *
+     * `null` 不是一种状态，而是「还不知道」：界面在它上面显示「正在读取连接配置…」，
+     * **不许**把 `null` 当成失败（否则窗口一出来就闪一下错误，而实际只是查询还没回来）。
+     */
+    state: null as ConnectionState | null,
+    /** 用户点「重试」（`connection:reconnect`）进行中 */
+    reconnecting: false,
   }),
+
+  getters: {
+    /**
+     * 连接是不是**已经连上**（`ready`）。
+     *
+     * 界面靠它决定该不该说话：`false` → 整屏交给连接状态屏；`true` → 照常拉服务端数据。
+     * `null`（还没查到）同样是 `false`：不知道的时候什么都还没开始拉。
+     */
+    isReady: (state): boolean => state.state?.status === "ready",
+  },
 
   actions: {
     /**
@@ -90,6 +118,46 @@ export const useConnectionStore = defineStore("connection", {
     /** 清掉探测结果（切回「本地」时调用：那句话说的是某个远程地址，与本地已经无关了） */
     resetProbe() {
       this.probe = null;
+    },
+
+    /** 查一次当前连接状态（`connection:state`）：挂载时先问一遍，之后再听推送 */
+    async loadState() {
+      this.state = await api.getConnectionState();
+    },
+
+    /**
+     * 开始盯连接状态：**先查一次，再订阅推送**，返回取消订阅函数。
+     *
+     * ## 顺序不能反
+     *
+     * main 的起始态（`connecting` / `attempt 0`）**不推送** —— 它与 `state()` 在 `start()` 之前
+     * 给出的那一份逐字相同，推一遍只是噪声（见 `ConnectionController` 的 `seed()`）。于是如果
+     * 先订阅、再查询，两次动作之间正好发生的那次变化就两头都漏：推送还没听上，查询拿到的是
+     * 旧的。**先查、后听**反过来就安全 —— 中间的变化顶多让查询结果立刻被推送覆盖一次，
+     * 不会停在旧值上。
+     *
+     * 只靠查询也不行：查询只回答「那一刻」，之后的变化（重试计数、连上、失败）全靠推送。
+     */
+    async startWatching(): Promise<() => void> {
+      await this.loadState();
+      return api.onConnectionState((state) => {
+        this.state = state;
+      });
+    },
+
+    /**
+     * 手动重试一次（`connection:reconnect`）。
+     *
+     * 只把**返回的那一刻**（进入 `connecting`）放进 state：整轮在 main 后台跑，之后的变化靠推送
+     * 继续来（`startWatching` 那条订阅一直在听）。这里**不做任何重试/退避**：那是 main 的事。
+     */
+    async reconnect() {
+      this.reconnecting = true;
+      try {
+        this.state = await api.reconnectConnection();
+      } finally {
+        this.reconnecting = false;
+      }
     },
 
     /**
