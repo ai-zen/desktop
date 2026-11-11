@@ -45,6 +45,7 @@ import {
   type SubAgentSnapshotResult,
 } from "@ai-zen/agents-server";
 import {
+  resolveToken,
   SocketServerClient,
   type ClientInfo,
   type ServerClient,
@@ -727,9 +728,19 @@ export async function startTestServer(
   let probe: ServerClient | null = null;
   const probeClient = async (): Promise<ServerClient> => {
     if (probe && !probe.closed) return probe;
+    /**
+     * 凭证走客户端包那一个唯一的解析点（`resolve-target.ts`，D9）：服务端 `start()` 会在
+     * `<dir>/run/token` 落一把钥匙，探针连接不带它就是 `unauthorized` —— 而那条错与
+     * 被测的「方法名 / 参数 / 返回形状」毫无关系，它只是因为探针走了另一条建连路径。
+     *
+     * 每轮现读而不是启动时读一次：`restart()` 之后要重连，读到的必须是当前那把（服务端换
+     * 进程时凭证可以不变，但“不变”应由文件回答，不由这里假设）。
+     */
+    const { token } = await resolveToken({ aiZenDir: dir });
     probe = await SocketServerClient.connect({
       address: { host: "127.0.0.1", port: daemon.port },
       client: CLIENT_INFO,
+      token: token ?? undefined,
     });
     return probe;
   };

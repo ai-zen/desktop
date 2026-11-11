@@ -29,7 +29,7 @@ packages/
 packages/main/src/
 ├── main.ts     入口：new DesktopApp().start()
 ├── app.ts      DesktopApp：窗口 / IPC / 原生对话框 / 事件推给 render
-├── config.ts   唯一的路径常量 AI_ZEN_DIR
+├── config.ts   路径常量 AI_ZEN_DIR + 服务端连接配置 SERVER_CONFIG（默认 undefined）
 ├── preload.ts  contextBridge 暴露 window.electronAPI
 └── server/     服务端门面（可直接被 vitest + 真 daemon 验收）
     ├── index.ts            组装根：createServerLayer
@@ -44,19 +44,20 @@ packages/main/src/
 两条硬边界：
 
 - **`server/` 不碰 electron**。`createServerLayer` 只收四样非 electron 的事实（配置根、握手身份、默认工作目录、事件出口），所以它能被用例直接起起来；`app.getPath` / `dialog` / `webContents.send` 只出现在 `packages/main/src/app.ts` 里，以参数或回调递进去。
-- **`server/` 不碰磁盘**。会话清单、消息、工作区、配置全部经协议向服务端要。唯一例外是插件：`launch.ts` 把一个**进程**拉起来，它自己不读不写任何数据文件。
+- **`server/` 不碰数据文件**。会话清单、消息、工作区、配置全部经协议向服务端要。例外只有「连接本身」那两件，且都只读：地址（`run/server.json`，默认路径）与凭证（`run/token`），由 `ServerConnection` 在每次取用时现读；以及 `launch.ts` 把一个**进程**拉起来 —— 它自己不读不写任何数据文件。
 
 ## 4. 一条连接（`ServerConnection`）
 
-「连哪台、断了怎么办」收在 `@ai-zen/agents-client` 的 `agents/packages/client/src/transport/connection.ts` 一份实现里，`packages/main/src/server/index.ts` 只组装它一次：
+「连哪台、拿什么进门、断了怎么办」收在 `@ai-zen/agents-client` 的 `agents/packages/client/src/transport/connection.ts` 一份实现里，`packages/main/src/server/index.ts` 只组装它一次：
 
-- **连哪台**由服务发现文件回答（`<AI_ZEN_DIR>/run/server.json`）。服务端重启后换端口，文件跟着换，本层不缓存端口也不记 pid。
+- **连哪台**默认由服务发现文件回答（`<AI_ZEN_DIR>/run/server.json`）。服务端重启后换端口，文件跟着换，本层不缓存端口也不记 pid。配置里给了 `serverUrl`（`config.ts` 的 `SERVER_CONFIG`）时地址就来自那里，这条默认路让位 —— 本层同样不缓存、也不解释它（地址的形状只在客户端包的 `wire/server-url.ts` 里定义一次）。
+- **拿什么进门**：凭证默认读 `<AI_ZEN_DIR>/run/token`（服务端启动时读或生成，`0600`），显式 `serverToken` 优先。这两份值桌面端只**透传**，解析、优先级、`unauthorized` 时那句人话全在客户端包的 `resolve-target.ts` 一处。
 - **没有服务端时怎么拉起来**：`startServerProcess` 注入成 `server/launch.ts` —— 拉起**随包分发**的那份（`dist/server.mjs`，由 `rolldown.config.mjs` 的 `server` 入口打成一个自包含文件），用 Electron 自带的 Node 跑（`ELECTRON_RUN_AS_NODE=1`）。客户机上可能连 Node.js / npm 都没有，所以这里不走 `npx`（那是 CLI 的做法 —— 它假设机器上有 npm）。
 
-注意「优先用已经在跑的」不是本层的能力，而是 `ensureServer` 的顺序：先读发现文件、`ping` 一次，通了就直接连，拉进程只发生在没有活着的服务端时。
+注意「优先用已经在跑的」不是本层的能力，而是 `ensureServer` 的顺序：先读发现文件、`ping` 一次，通了就直接连，拉进程只发生在没有活着的服务端时。给了显式地址则**一次都不拉**：本机拉起来的那一份一定不在那个地址上，`launch.ts` 只留一条只说地址、不含凭证的 log。
 - **断了怎么办**：`client()` 每次取用都判 `closed`，关了就地重建；`watch()` 让这条连接开始收事件；`onOpen()` 在换了一条连接时通知上层重挂监听。
 
-这三件事缺一不可，其中最后一条最容易漏：监听挂在**具体那条** `ServerClient` 上，而客户端在断开那一刻会清空监听表。少了重挂，新连接能发请求却一个事件也收不到，症状是界面安静地不动（不报错、不重连、也没有提示）。
+这几件事缺一不可，其中断线重连那一条最容易漏：监听挂在**具体那条** `ServerClient` 上，而客户端在断开那一刻会清空监听表。少了重挂，新连接能发请求却一个事件也收不到，症状是界面安静地不动（不报错、不重连、也没有提示）。
 
 `packages/main/src/server/call.ts` 是这一层与连接之间的唯一接缝：`protocolCall(connection)` 每次 `await connection.client()` 再 `call(method, params)`，本身不持有任何状态 —— 没有第二个地方能偷偷存下一份会过期的 client。
 
@@ -118,10 +119,14 @@ packages/render/src/
 ├── agents/                      入口 Agent 定义
 ├── sub-agents/                  子 Agent 定义
 ├── workspaces/<workspaceId>/    workspace.json + sessions/<id>.json（含 .meta.json 清单）
-└── run/server.json              服务发现：常驻服务端此刻在哪个端口
+└── run/                         服务端自己写：怎么找到它
+    ├── server.json              服务发现：常驻服务端此刻在哪个端口
+    └── token                    凭证（服务端启动时读或生成，0600）
 ```
 
-桌面端只读 `<AI_ZEN_DIR>/run/server.json` 一件事。会话存活由服务端按空闲宽限期（`DEFAULT_SESSION_IDLE_TIMEOUT_MS`）回收，`session.close` 是「我不看这段了」的当场释放，两者都不删存档。
+桌面端从盘上只读 `<AI_ZEN_DIR>/run/` 下的两件事：`server.json`（**默认**的地址来源）与 `token`（凭证）；配置里给了 `serverUrl` 时连 `server.json` 都不读。会话存活由服务端按空闲宽限期（`DEFAULT_SESSION_IDLE_TIMEOUT_MS`）回收，`session.close` 是「我不看这段了」的当场释放，两者都不删存档。
+
+连接配置的两个字段（`packages/main/src/config.ts` 的 `SERVER_CONFIG`）今天都是 `undefined`：能连远端这件事在连接构造点已经成立（给了地址就只连、不拉起捆绑的 server），但**桌面端没有任何设置界面**，用户要改只能自己改配置文件。把这条只说成「分层上留了口子」而不是「支持远程连接」—— 后者会让人以为屏幕上有个地方能填地址。
 
 ## 9. 模型解析只有一份实现
 

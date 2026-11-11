@@ -108,7 +108,8 @@ cd packages/main && pnpm build
 ## 其他
 
 - 数据根目录：`~/.ai-zen/`（共享根，CLI/Desktop 共用）
-  - **桌面端不落盘**：工作区、会话存档、配置全在常驻 `agents-server` 那边（它的 `AI_ZEN_DIR`）。main 只读一个事实 —— `<AI_ZEN_DIR>/run/server.json`（服务发现：服务端此刻在哪个端口），见 `packages/main/src/server/index.ts`
+  - **桌面端不落盘**：工作区、会话存档、配置全在常驻 `agents-server` 那边（它的 `AI_ZEN_DIR`）。main 从盘上只读 `<AI_ZEN_DIR>/run/` 下的两件事：`server.json`（**默认**的地址来源：服务端此刻在哪个端口）与 `token`（凭证，服务端启动时读或生成，`0600`），见 `packages/main/src/server/index.ts`
+  - **连哪台、拿什么进门可以显式配 —— 但只有能力、没有界面**：`packages/main/src/config.ts` 的 `SERVER_CONFIG` 有 `serverUrl` / `serverToken` 两个字段，**默认都是 `undefined`**（= 走上面那条默认路：发现文件 + `run/token`）。给了 `serverUrl` 就**只连那个地址、不拉起**捆绑的 server（只打一条只说地址、不含凭证的 log）。本轮没有设置界面，用户目前只能改这个文件
   - 会话历史由服务端的 `<workspace>/workspace.json` + `<workspace>/sessions/*.json` 存档接管，main 侧没有本地库
   - 全局配置：`~/.ai-zen/config.json`（含 endpoints/models，DeepSeek apiKey 明文）——**由服务端读写**，桌面端只走 `config.get` / 窄方法
 - IPC 通道：`invokeService`（业务）+ `window:xxx`（窗口控制）+ `dialog:selectDirectory`（原生目录选择，默认桌面、记住上次位置）

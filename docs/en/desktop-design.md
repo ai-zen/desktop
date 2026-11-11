@@ -29,7 +29,7 @@ Dependency direction: `render → shared`, `main → shared + @ai-zen/agents-cli
 packages/main/src/
 ├── main.ts     entry: new DesktopApp().start()
 ├── app.ts      DesktopApp: window / IPC / native dialogs / events pushed to render
-├── config.ts   the only path constant: AI_ZEN_DIR
+├── config.ts   the path constant AI_ZEN_DIR + the server connection config SERVER_CONFIG (its two fields are undefined today)
 ├── preload.ts  contextBridge exposing window.electronAPI
 └── server/     the server facade (directly verifiable by vitest + a real daemon)
     ├── index.ts            assembly root: createServerLayer
@@ -44,19 +44,20 @@ packages/main/src/
 Two hard boundaries:
 
 - **`server/` never touches electron.** `createServerLayer` takes only four non-electron facts (config root, handshake identity, default working directory, event sink), so a test can start it directly; `app.getPath` / `dialog` / `webContents.send` appear only in `packages/main/src/app.ts`, passed in as arguments or callbacks.
-- **`server/` never touches disk.** Conversation lists, messages, workspaces and config all come from the server over the protocol. The one exception is a process, not data: `launch.ts` starts a server process; it reads and writes no data files itself.
+- **`server/` never touches data files.** Conversation lists, messages, workspaces and config all come from the server over the protocol. The only exceptions are the two facts the connection itself needs, both read-only: the address (`run/server.json`, the default path) and the credential (`run/token`), read fresh on every use by `ServerConnection`; plus `launch.ts` starting a **process**, which reads and writes no data files itself.
 
 ## 4. One connection (`ServerConnection`)
 
-"Which server, and what if the connection dies" lives in exactly one implementation: `agents/packages/client/src/transport/connection.ts` in `@ai-zen/agents-client`. `packages/main/src/server/index.ts` assembles it once:
+"Which server, which key, and what if the connection dies" lives in exactly one implementation: `agents/packages/client/src/transport/connection.ts` in `@ai-zen/agents-client`. `packages/main/src/server/index.ts` assembles it once:
 
-- **Which server** is answered by the discovery file (`<AI_ZEN_DIR>/run/server.json`). A restarted server switches ports and rewrites the file; this layer caches no port and remembers no pid.
+- **Which server** is answered by the discovery file (`<AI_ZEN_DIR>/run/server.json`) **by default**. A restarted server switches ports and rewrites the file; this layer caches no port and remembers no pid. When the config carries a `serverUrl` (`SERVER_CONFIG` in `config.ts`), the address comes from there instead and this default path steps aside — this layer still caches nothing and interprets nothing (the shape of an address is defined once, in the client package's `wire/server-url.ts`).
+- **Which key gets you in**: the credential defaults to `<AI_ZEN_DIR>/run/token` (read or created by the server at startup, `0600`); an explicit `serverToken` wins. Desktop only **passes both values through** — parsing, precedence and the plain sentence printed on `unauthorized` all live in one place, `resolve-target.ts` in the client package.
 - **Launching one when none is running**: `startServerProcess` is injected as `server/launch.ts`, which starts the copy **shipped with the app** (`dist/server.mjs`, built as a self-contained file by the `server` entry in `rolldown.config.mjs`) on Electron's bundled Node (`ELECTRON_RUN_AS_NODE=1`). A customer machine may have neither Node.js nor npm, so this path cannot use `npx` — that is the CLI's route, and it assumes npm is there.
 
-Note that "prefer one that is already running" is not this layer's doing: it is `ensureServer`'s order — read the discovery file, `ping` once, use it if it answers. Spawning only happens when no live server exists.
+Note that "prefer one that is already running" is not this layer's doing: it is `ensureServer`'s order — read the discovery file, `ping` once, use it if it answers. Spawning only happens when no live server exists. With an explicit address it never happens at all: whatever would be started on this machine is not listening on that address, so `launch.ts` only leaves one log line carrying the address and no credential.
 - **What if it dies**: `client()` checks `closed` on every use and rebuilds in place when shut; `watch()` makes that connection start receiving events; `onOpen()` tells the layer above to re-attach its listeners when the connection was replaced.
 
-All three matter, and the last one is the easiest to miss: listeners are attached to one **specific** `ServerClient`, and the client clears its listener table the moment the socket drops. Without re-attaching, the new connection can send requests but receives no events at all — the UI just sits there silently (no error, no reconnect, no notice).
+All of these matter, and re-attaching after a reconnect is the easiest to miss: listeners are attached to one **specific** `ServerClient`, and the client clears its listener table the moment the socket drops. Without re-attaching, the new connection can send requests but receives no events at all — the UI just sits there silently (no error, no reconnect, no notice).
 
 `packages/main/src/server/call.ts` is the only seam between this layer and the connection: `protocolCall(connection)` awaits `connection.client()` and then `call(method, params)` on every invocation. It holds no state, so there is no second place that could stash a stale client.
 
@@ -118,10 +119,14 @@ Everything on disk belongs to the server (its `AI_ZEN_DIR`):
 ├── agents/                      entry Agent definitions
 ├── sub-agents/                  sub-agent definitions
 ├── workspaces/<workspaceId>/    workspace.json + sessions/<id>.json (with .meta.json listing)
-└── run/server.json              service discovery: which port the resident server is on
+└── run/                         written by the server: how to reach it
+    ├── server.json              service discovery: which port the resident server is on
+    └── token                    credential (read or created by the server, 0600)
 ```
 
-Desktop reads exactly one thing here: `<AI_ZEN_DIR>/run/server.json`. Session lifetime is reclaimed by the server on an idle grace period (`DEFAULT_SESSION_IDLE_TIMEOUT_MS`); `session.close` releases a session immediately because the user stopped looking at it. Neither deletes the archive.
+Desktop reads two things from disk here: `server.json` (the **default** source of the address) and `token` (the credential), both under `<AI_ZEN_DIR>/run/`; when the config carries a `serverUrl`, it does not even read `server.json`. Session lifetime is reclaimed by the server on an idle grace period (`DEFAULT_SESSION_IDLE_TIMEOUT_MS`); `session.close` releases a session immediately because the user stopped looking at it. Neither deletes the archive.
+
+Both fields of that connection config (`SERVER_CONFIG` in `packages/main/src/config.ts`) are `undefined` today: reaching another machine already works at the point where the connection is built (an explicit address means connect there and never start the bundled server), but **Desktop has no settings UI at all** — the only way for a user to set it is editing that file. This is a seam in the layering, not "remote connection support": the latter would suggest there is somewhere on screen to type an address.
 
 ## 9. Model resolution has exactly one implementation
 

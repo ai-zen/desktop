@@ -14,7 +14,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme } from "electron";
 import { join } from "path";
 import { fileURLToPath } from "url";
-import { AI_ZEN_DIR } from "./config.js";
+import { AI_ZEN_DIR, SERVER_CONFIG } from "./config.js";
 import { createServerLayer, type ServerLayer } from "./server/index.js";
 import type { ChatStreamEvent } from "@ai-zen/desktop-shared";
 
@@ -28,6 +28,10 @@ export class DesktopApp {
     // 用户不填工作目录时的默认值：桌面端就是"桌面"，这是 electron 的事实，注入进去
     defaultCwd: () => app.getPath("desktop"),
     push: (event) => this.pushChatEvent(event),
+    // 「连哪台服务端 + 拿什么进门」：只从配置里读、原样透传（D9 / D14）。
+    // 今天两个都是 `undefined`（= 老路：发现文件 + 本机 token）；不做设置界面。
+    serverUrl: SERVER_CONFIG.serverUrl,
+    serverToken: SERVER_CONFIG.serverToken,
   });
 
   // ==================== 运行状态 ====================

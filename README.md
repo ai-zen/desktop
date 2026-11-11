@@ -33,7 +33,7 @@ desktop/
 packages/main/src/
 ├── main.ts            ← 入口（仅一行：new DesktopApp().start()）
 ├── app.ts             ← DesktopApp 单根：窗口 / IPC / 原生对话框
-├── config.ts          ← 路径常量（只剩 `AI_ZEN_DIR` 一个）
+├── config.ts          ← 路径常量 `AI_ZEN_DIR` + 服务端连接配置 `SERVER_CONFIG`
 ├── preload.ts         ← contextBridge 暴露 window.electronAPI
 └── server/            ← 常驻服务端的门面（组装根 = index.ts）
     ├── index.ts       ← createServerLayer：六个 Service + 事件翻译器 + 那一条常驻连接
@@ -121,10 +121,13 @@ packages/shared/src/
 ├── agents/                   ← Agent 定义（入口 Agent）
 ├── sub-agents/               ← 子 Agent 定义
 ├── workspaces/<id>/          ← 每个工作区一个目录（workspace.json + sessions/*.json 存档）
-└── run/server.json           ← 服务发现：常驻服务端此刻在哪个端口
+└── run/                      ← 服务端自己写：怎么找到它
+    ├── server.json           ← 服务发现：常驻服务端此刻在哪个端口
+    └── token                 ← 凭证（服务端启动时读或生成，0600）
 ```
 
-- 桌面端**不读写**这里的任何数据文件：它只读 `<AI_ZEN_DIR>/run/server.json` 找到服务端，之后一切读写都发生在服务端那一侧
+- 桌面端**不读写**这里的任何数据文件：默认从 `<AI_ZEN_DIR>/run/server.json` 读地址、从 `<AI_ZEN_DIR>/run/token` 读凭证，之后一切读写都发生在服务端那一侧
+- **连远端只有能力、没有界面**：`packages/main/src/config.ts` 的 `SERVER_CONFIG` 有 `serverUrl` / `serverToken` 两个字段，默认都是 `undefined`（= 走上面那条默认路）。填了 `serverUrl` 就只连那个地址、**不拉起**捆绑的 server（只留一条只说地址、不含凭证的 log）。目前**没有设置界面**，改这个文件是唯一途径 —— 地址与凭证都得自己填
 - 协议里没有「本地存档」这条路：会话清单、消息、工作区都由服务端给（`session.list` / `session.snapshot` / `workspace.list`）
 
 ## 开发

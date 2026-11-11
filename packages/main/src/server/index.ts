@@ -24,16 +24,28 @@
  *
  * ## 组装根为什么不需要再判一次「要不要重建」
  *
- * 「连的是哪台服务端」由**发现文件**回答（`<aiZenDir>/run/server.json`）：重启后的服务端
- * 会把它换成新端口，`ensureServer` 于是自然连到新的那个。本层不缓存端口、也不记 pid。
+ * 「连的是哪台服务端」**默认**由**发现文件**回答（`<aiZenDir>/run/server.json`）：重启后的
+ * 服务端会把它换成新端口，`ensureServer` 于是自然连到新的那个。配置里给了 `serverUrl` 时
+ * 地址来自那里、不走发现文件（见下一节）。本层不缓存端口、也不记 pid。
+ *
+ * ## 地址与凭证：只**透传**，不解释（D9 / D14）
+ *
+ * 配置里若给了显式地址 / 凭证（`config.ts` 的 `SERVER_CONFIG`，今天两个都是 `undefined`），
+ * 本层原样递给 `ServerConnection` 的 `serverUrl` / `serverToken`，一个字段都不改：解析、
+ * 优先级与「本机 token 兜底」全在客户端的 `resolve-target.ts`（那是唯一一份）。
+ *
+ * 本层唯一多做的一件事是 D10：给了显式地址就**不拉起本机 server** —— 这件事交给
+ * `./launch.ts` 的 `createStartBundledServer`（它会留下一条只说地址、不说凭证的日志）。
+ * 桌面端不为这两个值做任何界面（D14：只接能力）。
  */
 
 import type { ClientInfo } from "@ai-zen/agents-client";
 import { ServerConnection } from "@ai-zen/agents-client";
 import type { ChatStreamEvent } from "@ai-zen/desktop-shared";
+import type { ServerConnectionConfig } from "../config.js";
 import { ServicesManager } from "./ServicesManager.js";
 import { protocolCall } from "./call.js";
-import { startBundledServer } from "./launch.js";
+import { createStartBundledServer } from "./launch.js";
 import { ChatEventBridge } from "./events.js";
 import {
   ServerAgentService,
@@ -53,6 +65,15 @@ export interface ServerLayerOptions {
   defaultCwd: () => string;
   /** `chat:push` 的出口（桌面端 = `webContents.send`） */
   push: (event: ChatStreamEvent) => void;
+  /**
+   * 显式服务端地址（`SERVER_CONFIG.serverUrl`）：给了就**只连、永不拉起**本机 server（D10）。
+   *
+   * 不在这里解析它（不 parse、不补 `ws://`）：地址的形状只有一个定义处（客户端包的
+   * `wire/server-url.ts`），本层多写一行就是一个能静默跑偏的第二份实现。
+   */
+  serverUrl?: string;
+  /** 显式凭证（`SERVER_CONFIG.serverToken`）：透传；不给就退回 `<aiZenDir>/run/token`（D9） */
+  serverToken?: string;
 }
 
 export interface ServerLayer {
@@ -68,12 +89,23 @@ export function createServerLayer(options: ServerLayerOptions): ServerLayer {
   // 「连哪台、断了怎么办」全在这一个对象里（发现 → 探活 → 复用 / 拉起 → 断了重建）。
   // 组装根拿到的只是它的 `client` / `watch` / `onOpen` 三面，**发请求的入口是另一个**：
   // 收在一个 `call` 上（见 `./call.ts`），六处调用点就不可能各自存一份会过期的 client
+  // 配置原样收成一份（既喂连接、也喂拉起器）：两个值走的是同一条路，不会出现
+  // 「连接用配置里的地址、拉起器却以为没有配置」这种半截状态
+  const config: ServerConnectionConfig = {
+    serverUrl: options.serverUrl,
+    serverToken: options.serverToken,
+  };
+
   const connection = new ServerConnection({
     aiZenDir: options.aiZenDir,
     clientInfo: options.clientInfo,
+    // 显式地址 / 凭证：透传给包里那个唯一的解析点（D9），本层不判断、不降级
+    serverUrl: config.serverUrl,
+    serverToken: config.serverToken,
     // 拉起的是**随包分发**的那份（客户机可能连 Node.js 都没有）。
     // 「优先用系统里已经在跑的」不在这里：`ensureServer` 先读发现文件并 ping，通了就直接连。
-    startServerProcess: startBundledServer,
+    // 给了显式地址时它只打一条日志、不拉起（D10）。
+    startServerProcess: createStartBundledServer({ config }),
   });
   const call = protocolCall(connection);
   const events = new ChatEventBridge({ connection, call, push: options.push });
