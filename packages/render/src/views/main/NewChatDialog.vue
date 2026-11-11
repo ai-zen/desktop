@@ -25,13 +25,14 @@
     </el-form>
     <template #footer>
       <el-button @click="cancel">取消</el-button>
-      <el-button type="primary" @click="confirm">创建</el-button>
+      <el-button type="primary" :loading="creating" @click="confirm">创建</el-button>
     </template>
   </el-dialog>
 </template>
 
 <script setup lang="ts">
 import { ref, watch } from "vue";
+import { ElMessage } from "element-plus";
 import { useUiStore } from "../../stores/ui.js";
 import { useWorkspaceStore } from "../../stores/workspace.js";
 import { useConversationStore } from "../../stores/conversation.js";
@@ -46,6 +47,8 @@ const workspaceStore = useWorkspaceStore();
 const conversationStore = useConversationStore();
 
 const agentId = ref("");
+/** 提交中：按钮转圈，防连点（连点两次就是两段会话） */
+const creating = ref(false);
 
 // 打开时默认预选第一个 Agent
 watch(
@@ -64,8 +67,26 @@ function cancel() {
 async function confirm() {
   const wsId = workspaceStore.activeWorkspaceId;
   if (!wsId || !agentId.value) return;
-  await conversationStore.create(wsId, agentId.value);
-  emit("update:modelValue", false);
+  creating.value = true;
+  try {
+    const conv = await conversationStore.create(wsId, agentId.value);
+    emit("update:modelValue", false);
+    // 建好了，第二件事：把它打开。这一步跟服务端要一次快照（`attach` + `snapshot`），它会抛
+    // —— 会话刚建出来就撞上连接断了这类。**单独报**：说成「新建失败」会让用户再点一次「创建」，
+    // 于是盘上多出一段重复的会话（而第一段其实已经建好了）。
+    try {
+      await conversationStore.select(wsId, conv.id);
+    } catch (err) {
+      ElMessage.error(
+        `对话已创建，但打开它失败：${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  } catch (err) {
+    // 对话框不关：关上等于把这次操作连同原因一起藏起来，用户只会以为没点中
+    ElMessage.error(`新建对话失败：${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    creating.value = false;
+  }
 }
 </script>
 

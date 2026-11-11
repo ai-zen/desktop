@@ -161,8 +161,9 @@
         <!--
           一条汇总提示（不是每个端点一条）：哪些端点在服务端那一侧已经不存在 / 新加了出来。
           「不存在」的那几个，用户填在框里的 API Key 是**写不进去**的（main 按 id 匹配，匹配不上
-          就 `continue`）—— 所以保存前先把这句话说出来，保存后 `reload()` 把表单拉回盘上的
-          样子，这条提示跟着自然消失（它是 computed，不靠谁去清标记）。
+          就跳过）—— 所以在他**正在敲字就告诉他，而不是等他点完保存再假装已保存。
+          保存后 `reload()` 把表单拉回盘上的样子，这条提示跟着自然消失（它是 computed，
+          不靠谁去清标记）。
         -->
         <el-alert
           v-if="endpointMismatchNotice"
@@ -195,7 +196,11 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { useUiStore } from "../../stores/ui.js";
 import { useConnectionStore } from "../../stores/connection.js";
 import * as api from "../../apis/index.js";
-import type { ConfigSettings, ConnectionSettings } from "@ai-zen/desktop-shared";
+import type {
+  ConfigSettings,
+  ConfigUpdateReport,
+  ConnectionSettings,
+} from "@ai-zen/desktop-shared";
 
 const uiStore = useUiStore();
 const connectionStore = useConnectionStore();
@@ -495,44 +500,62 @@ async function reload() {
 }
 
 /**
+ * 把 `ConfigUpdateReport` 里「没写进去的那部分」说成一句人话（全写进去了就返回空串）。
+ *
+ * 端点只报名字不报 id：用户认的是面板上那一行，id 是内部的东西。名字从表单那份取 —— 报告里的
+ * id 本来就是从这份表单发出去的，两边同一份。
+ */
+function describeDropped(report: ConfigUpdateReport): string {
+  const parts: string[] = [];
+  if (report.missingEndpointIds.length) {
+    const names = report.missingEndpointIds
+      .map((id) => form.endpoints.find((ep) => ep.id === id)?.name ?? id)
+      .join("、");
+    parts.push(
+      `有 ${report.missingEndpointIds.length} 个端点已在别处删除（${names}），它们的改动没有保存`,
+    );
+  }
+  if (report.skippedDefaults.includes("defaultModel")) {
+    parts.push("默认模型当前是空的，没有写入（服务端不接受空值，盘上仍是原来的默认模型）");
+  }
+  if (report.skippedDefaults.includes("defaultAgent")) {
+    parts.push("默认 Agent 当前是空的，没有写入（同上）");
+  }
+  return parts.join("；");
+}
+
+/**
  * 保存（页面底部那个按钮）：只发默认模型 / 默认 Agent / 各端点的 API Key。
  *
- * 这个按钮最容易骗人的地方在 main 的 `ServerConfigService.update()`：它有两处**静默丢弃** ——
- *   1. 空串不写（`if (input.defaultModel)` / `if (input.defaultAgent)`）：服务端的窄方法
- *      只收非空 id（空串是 `bad-params`）。于是「盘上那个模型已被删除 → 下拉框空白 → 点保存」
- *      什么都不会写，盘上仍是那个旧 id；
- *   2. 端点按 id 匹配（`if (!target) continue`）：面板开着期间被 CLI 等外部删掉的端点，
- *      用户在那个已消失端点的框里改的 apiKey 直接丢掉。
+ * main 的 `ServerConfigService.update()` 有两处**故意不写**：
+ *   1. 空串不写（服务端的窄方法只收非空 id，空串是 `bad-params`）：盘上那个模型已被删除 →
+ *      下拉框空白 → 点保存，盘上是那个旧 id，不会变成空；
+ *   2. 端点按 id 匹配：面板开着期间被 CLI 等外部删掉的端点，用户在那个已消失端点的框里改的
+ *      apiKey 写不进去。
  *
- * 两处语义都是**有意**的（窄方法只接受非空 id；整份写回会抹掉对方刚改的字段），不在这里改，
- * 也不改发给 main 的数据形状。界面能做的是**说实话**：保存之后重新读一遍盘上的事实。
+ * 两处语义都是有意为之（凭空把删掉的端点加回来、或猜一个默认值回来，都比不写更糟），但
+ * 「发出去了就等于写进去了」是错的。所以 `update()` 现在**自己报**（`ConfigUpdateReport`）：
+ * 写了哪些、哪些没写、为什么没写。这里据此说一句真话。
  *
- * 不重读就会让「静默丢弃」变成「界面**说谎**」—— 用户看到的是自己想填的值（空白的新模型、
- * 在已删端点上敲的 Key），盘上是另一个值（旧 id、根本没有这个端点），而且只有点「恢复」
- * 才看得出差别。
+ * 以前这里是「保存前先只读地读一遍，猜哪些会被丢掉，先弹一句」。改成让写入方回报，是因为
+ * 那次读与这次写之间**还有一个窗口**：猜得对只是运气，猜错了就变成两句互相打架的话。
+ *
+ * 之后照旧重读一遍（`reload()`）把界面拉回盘上的样子：不重读的话，「框里还留着用户敲的字」
+ * 就成了「保存后的样子」，只有点「恢复」才看得出差别。
  */
 async function save() {
   saving.value = true;
   try {
-    // 保存前先只读地看一眼服务端**此刻**的端点清单：这一屏是面板打开那一刻的快照，开着的
-    // 这段时间里别的客户端可能已经删掉 / 加过端点。读不到不要紧（就不比），不能因此让保存失败。
-    try {
-      const latest = await api.getConfigSettings();
-      serverEndpointIds.value = latest.endpoints.map((ep) => ep.id);
-    } catch {
-      // 一次只读探测的失败不是保存的失败：下面的写入照常进行
-    }
-    // 说在写之前：这几个端点的改动马上就会被 main 丢掉，等 `reload()` 把表单拉回盘上的样子，
-    // 那条提示（computed）就跟着消失了 —— 所以要在这里弹一次，用户才真的读到它。
-    if (endpointMismatchNotice.value) ElMessage.warning(endpointMismatchNotice.value);
-
-    await api.updateConfigSettings({
+    const report = await api.updateConfigSettings({
       defaultModel: form.defaultModel,
       defaultAgent: form.defaultAgent,
       endpoints: form.endpoints,
     });
 
-    ElMessage.success("设置已保存");
+    // 有东西被丢掉时是 warning（这次打了折扣），全写进去了才是 success
+    const dropped = describeDropped(report);
+    if (dropped) ElMessage.warning(dropped);
+    else ElMessage.success("设置已保存");
     try {
       // 保存已经生效了：下面两行只是把界面拉回盘上的事实，重读失败只报「重读失败」，
       // 绝不能把这次保存说成失败。

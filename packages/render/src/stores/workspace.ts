@@ -69,7 +69,9 @@ export const useWorkspaceStore = defineStore("workspace", {
       const target = this.workspaces.find((w) => w.id === workspaceId) ?? this.workspaces[0];
       this.activeWorkspaceId = target.id;
       await useConversationStore().load(target.id);
-      useConversationStore().select(target.id, conversationId);
+      // 必须 await：`select()` 要跟服务端要一次快照（它会抛）。当同步调用发射出去，
+      // 失败就飘在一个没人接的 promise 上 —— 见 `conversation.ts` 里 `select` 的注释。
+      await useConversationStore().select(target.id, conversationId);
     },
   },
 });

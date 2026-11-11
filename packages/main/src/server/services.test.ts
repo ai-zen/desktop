@@ -18,6 +18,7 @@ import { join } from "node:path";
 import type {
   AgentOption,
   ConfigSettings,
+  ConfigUpdateReport,
   Conversation,
   ConversationState,
   ConversationSummary,
@@ -768,19 +769,23 @@ describe("agent / model / config", () => {
         endpoints: Array<{ id: string; name: string; apiKey: string }>;
       };
 
-    await invoke<void>("config", "update", {
+    await invoke<ConfigUpdateReport>("config", "update", {
       defaultModel: MODEL_ID,
       defaultAgent: "default",
     });
     // 空串不写（服务端的窄方法只接受非空 id）：不影响另一个字段
-    await invoke<void>("config", "update", {
+    // —— 但这次「没写」必须**报回来**，而不是让调用方事后重读一遍去猜
+    const skipped = await invoke<ConfigUpdateReport>("config", "update", {
       defaultModel: "",
       defaultAgent: "",
     });
+    expect(skipped.skippedDefaults).toEqual(["defaultModel", "defaultAgent"]);
+    expect(skipped.writtenEndpointIds).toEqual([]);
+    expect(skipped.missingEndpointIds).toEqual([]);
     expect(readConfig().defaultModel).toBe(MODEL_ID);
     expect(readConfig().defaultAgent).toBe("default");
 
-    await invoke<void>("config", "update", {
+    const written = await invoke<ConfigUpdateReport>("config", "update", {
       endpoints: [
         {
           id: "e1",
@@ -790,6 +795,9 @@ describe("agent / model / config", () => {
         },
       ],
     });
+    expect(written.writtenEndpointIds).toEqual(["e1"]);
+    expect(written.missingEndpointIds).toEqual([]);
+
     const config = readConfig();
     expect(
       config.endpoints.find((endpoint) => endpoint.id === "e1")?.apiKey,
@@ -798,5 +806,25 @@ describe("agent / model / config", () => {
     expect(
       config.endpoints.find((endpoint) => endpoint.id === "e2")?.apiKey,
     ).toBe("key-2");
+
+    // 服务端上已经不存在的端点（面板开着时被 CLI 删掉那个）：跳过是**对的**（凭空把它加回来
+    // 等于撤销别人的删除），但那个 id 必须在回报里 —— 否则用户敲的 apiKey 就无声无息地消失了
+    const missing = await invoke<ConfigUpdateReport>("config", "update", {
+      endpoints: [
+        {
+          id: "e-deleted",
+          name: "已删端点",
+          baseUrl: "http://127.0.0.1:9/v9",
+          apiKey: "敲在已消失端点里的 key",
+        },
+      ],
+    });
+    expect(missing.missingEndpointIds).toEqual(["e-deleted"]);
+    expect(missing.writtenEndpointIds).toEqual([]);
+    // 盘上没有多出这个端点，也没有被改成它的值
+    expect(readConfig().endpoints.map((endpoint) => endpoint.id)).toEqual([
+      "e1",
+      "e2",
+    ]);
   });
 });

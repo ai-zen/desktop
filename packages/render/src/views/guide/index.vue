@@ -41,7 +41,7 @@
             @keyup.enter="handleCreate"
           >
             <template #append>
-              <el-button :icon="Folder" @click="pickDirectory">选择</el-button>
+              <el-button :icon="Folder" @click="chooseDirectory">选择</el-button>
             </template>
           </el-input>
         </el-form-item>
@@ -56,7 +56,9 @@
 
 <script setup lang="ts">
 import { ref, reactive } from "vue";
+import { ElMessage } from "element-plus";
 import { Plus, MagicStick, Folder } from "@element-plus/icons-vue";
+import { pickDirectory } from "../../apis/index.js";
 import { useWorkspaceStore } from "../../stores/workspace.js";
 import { useUiStore } from "../../stores/ui.js";
 
@@ -70,8 +72,9 @@ function openForm() {
   showForm.value = true;
 }
 
-async function pickDirectory() {
-  const dir = await window.electronAPI.selectDirectory();
+async function chooseDirectory() {
+  // 失败（选择框打不开）已经在 `pickDirectory()` 里说过一句，这里只关心拿到目录没有
+  const dir = await pickDirectory();
   if (dir) form.cwd = dir;
 }
 
@@ -80,7 +83,16 @@ async function handleCreate() {
   const name = form.name.trim();
   const cwd = form.cwd.trim();
 
-  await workspaceStore.create({ name, cwd });
+  try {
+    await workspaceStore.create({ name, cwd });
+  } catch (err) {
+    // 以前这里不接：创建失败时对话框既不关、也不报，用户只看到「点了没反应」（再点一次
+    // 还是没反应）。目录不存在 / 没权限这类原因由 main 给出来，直接转给用户看。
+    // 表单**不清空**：用户填的名称/目录还留着，改完直接再点一次创建。
+    ElMessage.error(`创建工作空间失败：${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+
   form.name = "";
   form.cwd = "";
   showForm.value = false;

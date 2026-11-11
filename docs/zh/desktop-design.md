@@ -158,14 +158,15 @@ packages/render/src/
 ├── components/    TitleBar.vue、MarkdownContent.vue
 ├── composables/   useMessageWindow（分页窗口）、useAutoScroll（滚动策略）
 ├── stores/        ui / workspace / conversation / chat / agentView / connection
-└── apis/          base + workspace / conversation / chat / agent / model / config + connection
+└── apis/          base + workspace / conversation / chat / agent / model / config + connection + dialog
 ```
 
 - **界面按状态放行**（这是 `App.vue` 的一层，不是各视图各自判断）：优先级 `设置页 → 首启引导屏（unset）→ 未就绪时的状态屏 → guide / main`。**设置页在未连接时也进得去** —— 那是用户唯一的自救路径（改回本地 / 换一个地址）；主界面（含侧栏、会话列表）只在 `ready` 之后才挂载，避免「窗口出来了但一片空白、也没有提示」。状态屏按状态说话：`connecting` 是「正在连接 …」（重试等待中多一句「第 N 次重试，约 X 秒后」），`error` 是那句 `message` 加「重试」与「去设置」。
 - **未连接时设置页只让出一半**：「默认模型 / 默认 Agent / API Key / 数据目录」全是服务端的事实，读不到就留空并挂一条说明（不弹红条、不打日志 —— 那不是故障）；「服务端连接」那一节读的是 main 本地的 `connection:get`，照常可用。
 - **进入 `ready` 才拉数据**：`init()`（Agent / 模型 / 工作区，再按有没有 workspace 落到 guide 或 main）只在 `false → true` 那一刻跑一次。「保存并重连」成功（已连上）后回到主界面；而如果用户此刻正停在设置页，后台自动重试成功**不会**把他从设置页拽走 —— 数据照常加载，只是不切视图。
-- **apis 只做转发**：`invokeService` 收敛成方法，错误统一成 `InvokeServerError`；`subscribeServiceEvent("chat:push", …)` 是唯一的事件入口。`apis/connection.ts` 是五条连接通道的同一套转发（它不经过 `invokeService`），`connection:state` 那条推送走同一对 `on` / `off`。
-- **store 是唯一数据入口**：视图不调 `invokeService` 字符串。`chat` 按 `byConversation[id]` 分槽，切换会话只换视角，各会话的流式状态互不干扰。
+- **apis 只做转发**：`invokeService` 收敛成方法，错误统一成 `InvokeServerError`；`subscribeServiceEvent("chat:push", …)` 是唯一的事件入口。`apis/connection.ts` 是五条连接通道的同一套转发（它不经过 `invokeService`），`connection:state` 那条推送走同一对 `on` / `off`。`apis/dialog.ts` 是同一件事的另一半，只是走 main 的 `dialog:selectDirectory`（原生目录选择）—— 失败在那个函数里就收口（用户取消与选择框打不开都回 `null`，但后一种说一句），两个调用点（侧栏与引导页）因此不再各写一份无 `try/catch` 的同形代码。
+- **`config.update` 回报 `ConfigUpdateReport`**：main 有两处**故意不写**（服务端配置里已经不存在的端点、空的默认值），它自己把「写了哪些 / 哪些没写 / 为什么」报回来。设置页据此说真话 —— 「发出去了」不等于「写进去了」。
+- **store 是唯一数据入口**：视图不调 `invokeService` 字符串。`chat` 按 `byConversation[id]` 分槽，切换会话只换视角，各会话的流式状态互不干扰。`conversation.select()` 是**可等**的：它内部要向服务端要一次快照（`attach` + `snapshot`），失败会抛给调用方，由视图当场说清 —— 同步发射的后果是界面上留下「左边选中了、右边空白」，那和「这段会话本来就没消息」长得一模一样。
 - **子 Agent 栏目与主对话并行**：`agents` 是 `SubAgentView[]` 的整份替换（服务端一变化就推全量），render 不做 diff；选中态修正与 Tab 循环抽在 `packages/render/src/stores/agentView.ts`，纯函数、可测。
 - **通知是 toast，不是状态**：`type: "notice"` 直接弹 element-plus，不进 `ConversationChatState` —— 尤其不碰 `error`（那是「本轮失败」的错误条，`done` 会把它清空）。
 

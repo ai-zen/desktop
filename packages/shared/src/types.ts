@@ -82,6 +82,26 @@ export interface ConfigSettings {
   dataDir: string;
 }
 
+/**
+ * `config.update` 的回报：**这次真的写进去了什么**。
+ *
+ * main 的 `ServerConfigService.update()` 有两处「故意不写」—— 端点按 id 匹配不上、空的
+ * 默认值没有窄方法可写。两处都不该改成别的写法（见那边的注释），但**不吭声**是另一回事：
+ * 调用方拿到的 `void` 让它只能靠「保存后再读一遍」去猜自己写进去没有，而那次重读与这次
+ * 写入之间还隔着一个窗口。
+ *
+ * 所以让它**自己报**：写了哪些、哪些没写、为什么没写。界面据此说一句真话，而不是替用户
+ * 把「没落盘」当成「已保存」。
+ */
+export interface ConfigUpdateReport {
+  /** 这次真的落到盘上的端点 id */
+  writtenEndpointIds: string[];
+  /** 服务端配置里已经没有、这次没写进去的端点 id（用户在那些框里改的 apiKey 丢了） */
+  missingEndpointIds: string[];
+  /** 值是空串、因此没有写入的默认字段（服务端的窄方法只接受非空 id） */
+  skippedDefaults: Array<"defaultModel" | "defaultAgent">;
+}
+
 // ==================== 连接设置（本地 / 远程） ====================
 
 /**

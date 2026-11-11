@@ -200,6 +200,7 @@ import {
 } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import NewChatDialog from "./NewChatDialog.vue";
+import { pickDirectory } from "../../apis/index.js";
 import { useWorkspaceStore } from "../../stores/workspace.js";
 import { useConversationStore } from "../../stores/conversation.js";
 import { useUiStore } from "../../stores/ui.js";
@@ -342,13 +343,41 @@ function onNodeCollapse(data: TreeNode) {
  *
  * 所以这里收口成一个带提示的包装，调用点仍然是 `void`：点击处理函数保持同步返回，
  * 失败由这个包装自己报，不会变成 unhandled rejection。
+ *
+ * 返回值是「切过去了没有」：打开某段会话前要先切过去，切失败就该停在那儿 —— 再往下走只会
+ * 在同一个故障上多弹一条看不懂的错误。
  */
-async function activateWorkspace(id: string) {
+async function activateWorkspace(id: string): Promise<boolean> {
   try {
     await workspaceStore.setActive(id);
+    return true;
   } catch (err) {
     // 说清是哪件事：切换过去了、但那个空间的会话没能读出来
     ElMessage.error(`切换工作空间失败：${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
+/**
+ * 打开一段会话（左键点节点、右键选中节点都走这里）。
+ *
+ * 跨工作空间时先把激活的那个切过去：侧栏高亮、会话列表、树三处必须落在同一处。
+ *
+ * `select()` 会跟服务端要一次快照（`attach` + `snapshot`），**它会抛**：会话在盘上已被删、
+ * 连接断了、服务端报错。以前这里是个同步调用、promise 没人接，于是界面上只剩「左边选中了、
+ * 右边空白」—— 那和「这段会话本来就没消息」长得一模一样。失败必须当场说出来。
+ */
+async function openConversation(workspaceId: string, id: string): Promise<void> {
+  // 没有所属工作空间的节点打不开：`select()` 在 workspaceId 为空时会走「取消激活」，
+  // 结果是侧栏高亮了一段会话、右边什么都没有 —— 那种状态没人能看懂
+  if (!workspaceId) return;
+  if (workspaceId !== workspaceStore.activeWorkspaceId) {
+    if (!(await activateWorkspace(workspaceId))) return;
+  }
+  try {
+    await conversationStore.select(workspaceId, id);
+  } catch (err) {
+    ElMessage.error(`打开对话失败：${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -356,11 +385,7 @@ function onNodeClick(data: TreeNode) {
   if (data.type === "workspace") {
     void activateWorkspace(data.id);
   } else {
-    // 会话：若跨 workspace，先把激活工作空间切过去
-    if (data.workspaceId && data.workspaceId !== workspaceStore.activeWorkspaceId) {
-      void activateWorkspace(data.workspaceId);
-    }
-    conversationStore.select(data.workspaceId ?? "", data.id);
+    void openConversation(data.workspaceId ?? "", data.id);
   }
 }
 
@@ -370,11 +395,8 @@ function onContextMenu(event: MouseEvent, data: TreeNode) {
   // 右键即选中该节点（与左键一致），操作目标 = 右键的节点
   if (data.type === "workspace") {
     void activateWorkspace(data.id);
-  } else if (data.workspaceId) {
-    if (data.workspaceId !== workspaceStore.activeWorkspaceId) {
-      void activateWorkspace(data.workspaceId);
-    }
-    conversationStore.select(data.workspaceId, data.id);
+  } else {
+    void openConversation(data.workspaceId ?? "", data.id);
   }
   // 菜单定位在鼠标处，视口边缘自动收拢
   // workspace 有「新建对话/重命名/删除」3 项，conversation 2 项
@@ -435,7 +457,8 @@ onUnmounted(() => {
 
 // ----- workspace CRUD -----
 async function pickWorkspaceDir() {
-  const dir = await window.electronAPI.selectDirectory();
+  // 失败（选择框打不开）已经在 `pickDirectory()` 里说过一句，这里只关心拿到目录没有
+  const dir = await pickDirectory();
   if (dir) wsForm.cwd = dir;
 }
 

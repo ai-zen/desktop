@@ -41,7 +41,7 @@ export const useConversationStore = defineStore("conversation", {
       this.currentWorkspaceId = workspaceId;
       // 激活的会话若不在当前 workspace 列表，清空
       if (!list.some((c) => c.id === this.activeConversationId)) {
-        this.select(workspaceId, "");
+        await this.select(workspaceId, "");
       }
     },
 
@@ -61,23 +61,41 @@ export const useConversationStore = defineStore("conversation", {
       useChatStore().clear();
     },
 
+    /**
+     * 建一段会话并刷新列表。
+     *
+     * **不在这里顺手打开它**：「新建」与「打开」是两件事，失败也该分开说。建成了但打不开时
+     * 说成「新建失败」，用户会再点一次「创建」—— 于是多出一段重复的会话（而第一段其实已经
+     * 在盘上了）。所以这里只做「建 + 刷新列表」，打开哪一段由调用方接着 `select()`，那边
+     * 也才知道该怎么把两件事分别说清。
+     */
     async create(workspaceId: string, agentId: string) {
       const conv = await api.createConversation(workspaceId, agentId);
       await this.load(workspaceId);
-      this.select(workspaceId, conv.id);
       return conv;
     },
 
     /**
      * 选中会话，切换查看视角。
+     *
      * 各会话的消息/流式状态由 chat store 按会话隔离（byConversation），
      * 首次打开才加载，已加载过的会话（含流式进行中）切回即恢复，互不覆盖。
+     *
+     * ## 为什么是 async、为什么调用方**必须** await
+     *
+     * `chatStore.activate()` 要跟服务端要一次快照（`attach` + `snapshot` 两个往返），它会抛
+     * —— 会话在盘上已被删、连接断了、服务端报错。以前这里是个同步函数，`activate()` 的
+     * promise 没人接：失败既不提示、也没人知道，界面上留下的是「左边选中了、消息区空白」，
+     * 而那正是**最容易**被当成「这段会话本来就没有消息」的样子（甚至会被当成「消息丢了」）。
+     *
+     * 现在它是可等、可抛的：失败由调用方（视图）当场说清。选中态不因此回滚 —— 用户点的就是
+     * 那一段，回滚等于自作主张把他挪到另一段上；「没读出来」这件事用一句话说比用一次跳转说更准。
      */
-    select(workspaceId: string, id: string) {
+    async select(workspaceId: string, id: string): Promise<void> {
       this.activeConversationId = id;
       if (workspaceId && id) {
         this.currentWorkspaceId = workspaceId;
-        useChatStore().activate(workspaceId, id);
+        await useChatStore().activate(workspaceId, id);
       } else {
         useChatStore().deactivate();
       }
@@ -86,7 +104,7 @@ export const useConversationStore = defineStore("conversation", {
     async remove(workspaceId: string, id: string) {
       await api.removeConversation(workspaceId, id);
       useChatStore().remove(id);
-      if (this.activeConversationId === id) this.select(workspaceId, "");
+      if (this.activeConversationId === id) await this.select(workspaceId, "");
       await this.load(workspaceId);
     },
 

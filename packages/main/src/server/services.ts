@@ -52,6 +52,7 @@ import type { AgentDefinition, AppConfig } from "@ai-zen/agents-sdk";
 import type {
   AgentOption,
   ConfigSettings,
+  ConfigUpdateReport,
   Conversation,
   ConversationState,
   ConversationSummary,
@@ -396,18 +397,33 @@ export class ServerConfigService {
    *
    * 空串**不写**：空串的含义是"这个字段没值"，而服务端的窄方法只接受非空 id
    * （空串是 `bad-params`）。也没有"清空默认值"的协议方法，所以没有等价的写入。
+   *
+   * ## 两处「故意不写」都如实回报，不做静默丢弃
+   *
+   * 这两处语义是对的（窄方法只收非空 id、猜一个端点回来更糟），但**不吭声**是错的：调用方
+   * 拿 `void` 就只能事后重读一遍去猜自己写进去没有。所以返回 `ConfigUpdateReport` —— 写了
+   * 哪些、哪些没写、为什么没写，由这个函数自己说，而不是让调用方反推。
    */
-  async update(input: Partial<ConfigSettings>): Promise<void> {
+  async update(input: Partial<ConfigSettings>): Promise<ConfigUpdateReport> {
+    const skippedDefaults: ConfigUpdateReport["skippedDefaults"] = [];
     if (input.defaultModel) {
       await this.options.call("config.defaultModel.set", {
         modelId: input.defaultModel,
       });
+    } else if (input.defaultModel === "") {
+      // 调用方确实给了空串（盘上那个模型已被删除 → 下拉框空白）：「没写」要能被说出来
+      skippedDefaults.push("defaultModel");
     }
     if (input.defaultAgent) {
       await this.options.call("config.defaultAgent.set", {
         agentId: input.defaultAgent,
       });
+    } else if (input.defaultAgent === "") {
+      skippedDefaults.push("defaultAgent");
     }
+
+    const writtenEndpointIds: string[] = [];
+    const missingEndpointIds: string[] = [];
     if (input.endpoints) {
       const result = await this.options.call<ConfigGetResult>("config.get");
       const config = result.config as AppConfig;
@@ -415,13 +431,22 @@ export class ServerConfigService {
         const target = config.endpoints.find(
           (endpoint) => endpoint.id === edit.id,
         );
-        if (!target) continue;
+        if (!target) {
+          // 服务端那份配置里已经没有这个端点（面板开着的时候被 CLI / 另一台桌面端删了）。
+          // 跳过是对的（凭空把它加回来等于撤销别人的删除），但要记下来往上抛，
+          // 别让用户在那个框里敲的 apiKey 消失得无声无息。
+          missingEndpointIds.push(edit.id);
+          continue;
+        }
         if (edit.apiKey !== undefined) target.apiKey = edit.apiKey;
         if (edit.baseUrl !== undefined) target.baseUrl = edit.baseUrl;
         if (edit.name !== undefined) target.name = edit.name;
+        writtenEndpointIds.push(edit.id);
       }
       await this.options.call("config.save", { config });
     }
+
+    return { writtenEndpointIds, missingEndpointIds, skippedDefaults };
   }
 }
 
