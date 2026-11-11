@@ -17,7 +17,12 @@ import type {
   ConversationState,
 } from "@ai-zen/desktop-shared";
 import type { AgentNS } from "@ai-zen/agents-core";
-import type { HandoffMode, SessionSaveAsResult } from "@ai-zen/agents-client";
+import type {
+  HandoffMode,
+  NoticeListResult,
+  SessionSaveAsResult,
+  SessionSnapshotResult,
+} from "@ai-zen/agents-client";
 import { noticeText } from "./notices.js";
 import {
   FakeSubAgent,
@@ -799,10 +804,10 @@ describe("提问：桌面端没有提问 UI，收到就按「跳过」回答", (
     // ……而且**认领了它**：`answered:true` 只会在问题还挂在表里时出现（超时之后是 false）
     expect(claimed).toEqual({ answered: true });
     expect(server.answerCalls).toHaveLength(1);
-    expect(server.answerCalls[0]).toMatchObject({
-      sessionId: conversationId,
-      choice: null,
-    });
+    // 只带 `questionId` + `choice`：题目 id 是 UUID，服务端靠它唯一定位那道题。
+    // `sessionId` 在协议里已经没有这个字段了 —— 带上就是一处「两个 id 要配对」的机会
+    expect(server.answerCalls[0]).toMatchObject({ choice: null });
+    expect(server.answerCalls[0]).not.toHaveProperty("sessionId");
     expect(typeof server.answerCalls[0]!.questionId).toBe("string");
 
     // 提问方拿到的就是「跳过」——与服务端超时后自己走 fallback 是同一个答案
@@ -879,9 +884,9 @@ describe("通知：服务端推来的通知不再被丢掉", () => {
   });
 
   it("server-notice 也进 render，且**不带** conversationId（它不属于任何会话）", async () => {
-    // 服务端今天还没有全局通知的生产者（协议先立住 code）；组装根的职责就是往 hub 里发
-    server.hub.publish({
-      event: "server-notice",
+    // 服务端今天还没有全局通知的生产者（协议先立住 code）；组装根的职责就是「存槽位 + 播一声」
+    // （`ServerApp.publishNotice`，脚手架这一侧同形）
+    server.publishNotice({
       level: "warn",
       code: "mcpUnavailable",
       params: { name: "filesystem" },
@@ -898,6 +903,167 @@ describe("通知：服务端推来的通知不再被丢掉", () => {
     });
     // 不能拿空串糊：`conversationId: ""` 在 render 那边等于「有一个 key 为空的会话」
     expect(notice).not.toHaveProperty("conversationId");
+  });
+
+  /**
+   * 通知是**有状态的槽位**（不是一次性广播）：上屏之后要确认掉，否则槽位一直挂着，
+   * 下一次连上来会把它重新报一遍。
+   *
+   * 确认用的是广播**自带的** id（`ServerNoticeEvent.id` 与 `GlobalNoticeSlot.id` 是同一个值,
+   * 决策 A35）—— 不必再走一趟 `notice.list` 把 id 捡回来。
+   */
+  it("实时的全局通知：上屏之后用事件自带的 id 把槽位确认掉（不确认的话每次重连都会重弹一遍）", async () => {
+    const slot = server.publishNotice({
+      level: "warn",
+      code: "mcpUnavailable",
+      params: { name: "filesystem" },
+    });
+    // 槽位 id 是 UUID（不是自增计数器：跨会话跨进程不该撞号）
+    expect(slot.id).toMatch(/^[0-9a-f-]{36}$/);
+
+    await waitFor(() => eventsOf("notice")[0], "实时那条 notice");
+    // 确认是异步的一趟往返，所以轮询到它消失（不写死 sleep）
+    await waitFor(
+      async () =>
+        (await server.call<NoticeListResult>("notice.list")).notices.length ===
+        0,
+      "槽位被确认掉",
+    );
+  });
+
+  /**
+   * 「登记的那一刻没人在听」是正常情形：桌面端没开着、或者连接正在重连。
+   *
+   * 只认广播的话这些通知等于不存在 —— 用户看到的还是「什么都没发生」。所以拿到一条**新**
+   * 连接就要查一次未确认的（`notice.list`），显示后确认。
+   */
+  it("登记时没人在听：换一条连接之后靠 notice.list 补看并确认", async () => {
+    // 让桌面端那条连接先死掉：重启 daemon（新端口、新监听）
+    await server.restart();
+    // 这条通知登记在一片**没有订阅者**的连接上（广播发往一条已经关掉的 socket）
+    server.publishNotice({
+      level: "error",
+      code: "storeUnavailable",
+      params: { error: "磁盘只读" },
+    });
+    // 登记之后、重建连接之前：一个 notice 都没上屏 —— 它确实只是躺在服务端的槽位里
+    expect(eventsOf("notice")).toEqual([]);
+
+    // 下次取用会重建连接：补看就发生在那之后（异步，所以轮询）
+    await invoke("workspace", "list");
+    const notice = await waitFor(
+      () => eventsOf("notice")[0],
+      "重建连接之后补看回来的 notice",
+    );
+    expect(notice).toEqual({
+      type: "notice",
+      level: "error",
+      text: noticeText("storeUnavailable", { error: "磁盘只读" }),
+    });
+    expect(notice).not.toHaveProperty("conversationId");
+    // 显示之后随即确认：槽位表清空
+    await waitFor(
+      async () =>
+        (await server.call<NoticeListResult>("notice.list")).notices.length ===
+        0,
+      "补看之后槽位被确认掉",
+    );
+  });
+
+  /**
+   * 会话内通知也是有状态的槽位（跟着会话生死），它的两个出口 —— 实时那条 `session-notice`
+   * 与快照里的 `pendingNotices` —— 带的是**同一个 id**（决策 A35）。所以上屏之后直接拿事件
+   * 自带的 id 确认掉，打开会话时那次快照就再也看不到它了。
+   *
+   * 反面就是上一轮的绕法：没有 id 可确认，只能按「会话 + code + params」本地记账，那份槽位
+   * 永远挂着，每次快照都会再报一遍，全靠客户端自己挡。
+   */
+  it("会话内通知：实时那条上屏后就按事件自带的 id 确认掉（打开会话的快照不再报它）", async () => {
+    await openServer({ askTimeoutMs: ASK_TIMEOUT_MS });
+    await send("你好");
+    server.agent.emitDelta("答");
+    // 提问 → 答「跳过」→ 服务端登记一条会话内通知（`migrationSkipped`）并推出来
+    await expect(askHandoffMode()).resolves.toBeNull();
+    await waitFor(() => eventsOf("notice")[0], "实时那条 session-notice");
+
+    // 确认是异步的一趟往返：轮询到服务端的槽位空掉（不写死 sleep）。
+    // 这里看的是**快照**（会话内通知的槽位表只能从快照看），而不是 `notice.list`
+    await waitFor(
+      async () =>
+        (
+          await server.call<SessionSnapshotResult>("session.snapshot", {
+            sessionId: conversationId,
+          })
+        ).pendingNotices.length === 0,
+      "会话内通知被确认掉（快照里不再挂着它）",
+    );
+
+    // render 每次点开会话都会走这条路（`chat.getState` → `session.snapshot`）：快照里已经
+    // 没有它了，所以不会「同一句话说两次」
+    await invoke("chat", "getState", workspaceId, conversationId);
+    expect(eventsOf("notice")).toHaveLength(1);
+    await invoke("chat", "getState", workspaceId, conversationId);
+    expect(eventsOf("notice")).toHaveLength(1);
+  });
+
+  /**
+   * 「登记的那一刻没人在看」对会话内通知同样成立（桌面端没开着、连接正在重连、用户切到了
+   * 别的会话）。
+   *
+   * 会话内通知没有 `notice.list` 那样的入口 —— 它的补看出口是**快照**
+   * （`SessionSnapshotResult.pendingNotices`）。这条用例咬的正是那一整条：登记（没人看）→
+   * 打开会话 → 快照把人错过的那些带回来 → 上屏 → 按快照里的 id 确认掉。
+   *
+   * 上一轮这条路只能验成单元用例（`noticeSlots.test.ts` 里手喂一份 `pendingNotices`）：
+   * 当时产物里的 `pendingNotices` 永远是空数组，集成这条路根本走不通。产物重建之后它填的
+   * 是真值（决策 A29 + A35），所以这里走真链路。
+   */
+  it("登记时没人在看：打开会话时从快照补看会话内通知，并按快照里的 id 确认掉", async () => {
+    // 让桌面端那条连接先死掉：重启 daemon（新端口、新监听）
+    await server.restart();
+    // 订阅者清零 = 此刻确实没有任何人在看。（`EventHub.watcherCount` 今天不挂任何判定，它
+    // 的意义就是把「槽位与订阅解耦」这件事变成可观测的判据）
+    await waitFor(
+      () => server.hub.watcherCount() === 0,
+      "桌面端那条连接的订阅已经摘掉",
+    );
+    // 这条通知登记在一片**没有订阅者**的连接上（广播发往一条已经关掉的 socket）
+    const registered = server.publishSessionNotice(conversationId, {
+      level: "warn",
+      code: "persistFailed",
+      params: { error: "磁盘只读" },
+    });
+    // 槽位 id 是 UUID：快照报的、日后确认用的都是它
+    expect(registered.id).toMatch(/^[0-9a-f-]{36}$/);
+    // 登记之后、打开会话之前：一个 notice 都没上屏 —— 它只是躺在会话的槽位表里
+    expect(eventsOf("notice")).toEqual([]);
+
+    // render 点开这段会话：`chat.getState` → `session.attach` + `session.snapshot`
+    await invoke("chat", "getState", workspaceId, conversationId);
+    const notice = await waitFor(
+      () => eventsOf("notice")[0],
+      "从快照补看回来的会话内通知",
+    );
+    // 带 conversationId：它属于 render 认识的这段会话
+    expect(notice).toEqual({
+      conversationId,
+      type: "notice",
+      level: "warn",
+      text: noticeText("persistFailed", { error: "磁盘只读" }),
+    });
+
+    // 上屏之后按快照里那个 id 确认掉：槽位空了（不确认的话每开一次会话都重弹一启）
+    await waitFor(
+      async () =>
+        (
+          await server.call<SessionSnapshotResult>("session.snapshot", {
+            sessionId: conversationId,
+          })
+        ).pendingNotices.length === 0,
+      "补看之后会话内通知被确认掉",
+    );
+    await invoke("chat", "getState", workspaceId, conversationId);
+    expect(eventsOf("notice")).toHaveLength(1);
   });
 });
 

@@ -52,7 +52,16 @@
  *
  * 通知（`session-notice` / `server-notice`）服务端只给 `code + params`，文案由本端出
  * （`notices.ts`，全桌面端就这一份）。丢掉它们的后果不是「少一条提示」，而是**用户看不到
- * 为什么什么都没发生**。子 Agent 的增量（带 `subAgentId`）**不进主对话**（那是另一层对话）：
+ * 为什么什么都没发生**。而通知在服务端是**有状态的槽位**（不是一次性广播）：实时的这一条
+ * 只是「又发生了一件事」，登记的那一刻未必有人在听 —— 所以除了上屏，还要在有连接时**补看**
+ * 一次未确认的、上屏后**确认**掉。那一套收在 `noticeSlots.ts`，本文件只在两个时刻叫它
+ * （连接就绪、快照到手）。
+ *
+ * 事件里的 `id` 一路递到 `NoticeSlots`（整个事件对象递过去，不在这里拆开）：它是 `notice.ack`
+ * 唯一要的东西，且与槽位是**同一个值**（决策 A35）—— 少了它，本层就得为了一次确认再查一遍
+ * 列表，或者自己造一份「按 code + params 去重」的本地账。
+ *
+ * 子 Agent 的增量（带 `subAgentId`）**不进主对话**（那是另一层对话）：
  * 状态机把它拼进那个子 Agent 自己的临时消息，本层把 `stream.state.subAgents` **整份**推给
  * render —— 整份替换让 render 一个合并口径都不需要。
  */
@@ -65,10 +74,8 @@ import {
   type AgentToolCallEndEvent,
   type ServerClient,
   type ServerConnection,
-  type ServerNoticeEvent,
   type SessionAnswerResult,
   type SessionIdChangedEvent,
-  type SessionNoticeEvent,
   type SessionPhaseEvent,
   type SessionQuestionEvent,
   type SessionSnapshotResult,
@@ -82,7 +89,7 @@ import {
 import { AgentNS } from "@ai-zen/agents-core";
 import type { ChatStreamEvent } from "@ai-zen/desktop-shared";
 import type { ProtocolCall } from "./call.js";
-import { noticeText } from "./notices.js";
+import { NoticeSlots } from "./noticeSlots.js";
 
 /**
  * 占位 assistant 消息的 role。
@@ -150,8 +157,22 @@ export class ChatEventBridge {
   private bound: ServerClient | null = null;
   /** 对「一条新连接就绪」的订阅（`dispose` 时摘掉） */
   private unsubscribeOpen: (() => void) | null = null;
+  /**
+   * 通知槽位的补看与确认（`notice.list` / `notice.ack`）。
+   *
+   * 确认用的是**事件自带的 id**（实时那条与槽位是同一个值）；本文件只负责在正确的时刻把
+   * 事件（带着 id）递给它，并在快照到手时把 `pendingNotices` 也递过去。
+   */
+  private readonly notices: NoticeSlots;
 
-  constructor(private readonly options: ChatEventBridgeOptions) {}
+  constructor(private readonly options: ChatEventBridgeOptions) {
+    // 在构造函数里造（不能写成字段初始化）：它要拿 `this.options` 里的两样，而字段初始化
+    // 跑在参数属性赋值**之前**
+    this.notices = new NoticeSlots({
+      call: options.call,
+      push: options.push,
+    });
+  }
 
   /**
    * 连上服务端、订阅事件、让这条连接开始收事件。
@@ -176,16 +197,21 @@ export class ChatEventBridge {
   }
 
   /**
-   * 在**当前**那条连接上挂好监听，并让它开始收事件。
+   * 在**当前**那条连接上挂好监听，并让它开始收事件，最后补看一次未确认的通知。
    *
    * 顺序是必须的：**先挂监听，再 `watch()`**。反过来的话，「服务端已登记订阅者」到「客户端
    * 挂上监听」之间有一个窗口，那期间推来的事件没有接收者。`watch()` 幂等（包里按连接记账），
    * 多发一帧的后果是服务端每帧多注册一个订阅者，屏幕上的答案会被切成两遍。
+   *
+   * 补看放在最后：它发的是普通请求（`notice.list`），不需要连接已经在收事件，但**必须**在
+   * 这条连接可用之后 —— 它要的正是「这条（新）连接上还什么都没查过」这个时刻。
+   * 失败静默：槽位还在服务端，下一次连接会再对一次账，不必让一次补看失败变成连接失败。
    */
   private async rebind(): Promise<void> {
     const client = await this.options.connection.client();
     this.attach(client);
     await this.options.connection.watch();
+    await this.notices.sync().catch(() => {});
   }
 
   /** 把这一组订阅挂到 `client` 上（同一个对象重复调用是空操作：连接没换就不重订） */
@@ -203,8 +229,13 @@ export class ChatEventBridge {
       client.on("session-id-changed", (event) => this.onIdChanged(event)),
       client.on("session-title-changed", (event) => this.onTitleChanged(event)),
       client.on("session-question", (event) => this.onQuestion(event)),
-      client.on("session-notice", (event) => this.onNotice(event)),
-      client.on("server-notice", (event) => this.onServerNotice(event)),
+      // 通知是**有状态的槽位**：实时的这一条只是「又发生了一件事」，未确认的那批要另外
+      // 查一次（`notice.list`，见 `rebind()`）；两条路都收在 `NoticeSlots` 里。
+      // 事件对象整份递过去 —— 里面的 `id` 就是 `notice.ack` 要的那个（与槽位同一个值）
+      client.on("session-notice", (event) =>
+        this.notices.session(event, this.keyOf(event.sessionId)),
+      ),
+      client.on("server-notice", (event) => this.notices.live(event)),
     );
   }
 
@@ -431,6 +462,10 @@ export class ChatEventBridge {
     if (this.turns.get(key)?.turnId === event.turnId) this.turns.delete(key);
 
     stream.settle(snapshot);
+    // 快照是「还没被确认的会话内通知」的第二个出口：这一轮里登记的那些（存档没写成功、
+    // 交接文档落在哪）如果推送恰好被漏掉，这里补上。每一项都带着自己的 id，`NoticeSlots`
+    // 上屏之后直接拿它确认（与实时那条同一个 id，重复的那批按 id 挡住）
+    this.notices.pending(key, snapshot.pendingNotices);
     // 失败进状态（`failed` 是终态，文案由 render 显示，状态机只收 code + 原话）
     if (event.error)
       stream.failTurn({ code: event.error.code, message: event.error.message });
@@ -511,44 +546,14 @@ export class ChatEventBridge {
   private onQuestion(event: SessionQuestionEvent): void {
     void this.options
       .call<SessionAnswerResult>("session.answer", {
-        // 用服务端给的 id（不是 `keyOf`）：回答这条请求认的是服务端自己的会话键
-        sessionId: event.sessionId,
+        // 只带 `questionId` + `choice`：题目 id 是 UUID，服务端靠它唯一定位那道题
+        // （协议里已经**没有** `sessionId` 这个字段 —— 多一个只是多一处配对的机会）
         questionId: event.questionId,
         choice: null,
       })
       .catch(() => {
         // 见上面「失败不报人看」：服务端自己会走 fallback，这条路不该出现在 render 里
       });
-  }
-
-  /**
-   * 对话内通知 → `notice`（**带** `conversationId`，走 `keyOf`）。
-   *
-   * 报服务端 id 的话，换过 id 的会话（迁移 / 另存为）会把通知贴到一段 render 从没见过、
-   * 也永远不会选中过的会话上，等于又回到「什么都没发生」。
-   */
-  private onNotice(event: SessionNoticeEvent): void {
-    this.options.push({
-      conversationId: this.keyOf(event.sessionId),
-      type: "notice",
-      level: event.level,
-      text: noticeText(event.code, event.params),
-    });
-  }
-
-  /**
-   * 服务端通知（`server-notice`）→ `notice` 且**不给** `conversationId`。
-   *
-   * 它不属于任何会话（存档目录不可用、MCP 连不上是服务本身的事）：填个空串等于声称
-   * 「有一个 key 为空的会话」，render 会照着这个 key 开一个假槽位；省掉这个字段才是
-   * 「没有会话」—— `ChatStreamEvent.notice` 把它定义成可选就是为了这个。
-   */
-  private onServerNotice(event: ServerNoticeEvent): void {
-    this.options.push({
-      type: "notice",
-      level: event.level,
-      text: noticeText(event.code, event.params),
-    });
   }
 
   /** 服务端自动标题（只发「起好了」这一条）→ 旧的 `renamed`（侧栏直接改名，不刷列表） */
@@ -590,6 +595,9 @@ export class ChatEventBridge {
 
   /** 以服务端快照为新基线；顺手把手上的残影轮次丢掉（见 {@link noteSnapshot}） */
   private adoptSnapshot(key: string, snapshot: SessionSnapshotResult): void {
+    // 快照里带着「还没被确认的会话内通知」：后连上来的客户端靠这里补看错过的那些
+    // （上屏后按各自的 id 确认；实时那条已经弹过的按 id 挡住，快照在一轮收尾时会再来一次）
+    this.notices.pending(key, snapshot.pendingNotices);
     const track = this.turns.get(key);
     if (track && snapshot.turnId < track.turnId) {
       // 计数在往回走 = 手上这一轮属于上一个进程（或属于一次被回收后重新装回的会话）：

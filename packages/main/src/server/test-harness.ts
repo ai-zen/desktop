@@ -16,6 +16,7 @@
  * 做这些。假件少做一步，测出来的就是想象里的服务端。
  */
 
+import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,12 +28,17 @@ import {
   SessionManager,
   createAgentHandlers,
   createConfigHandlers,
+  createNoticeHandlers,
   createSessionHandlers,
   type AgentLike,
   type CreateAgentInput,
   type AnyHandler,
+  type GlobalNoticePayload,
+  type GlobalNoticeSlot,
   type MethodHandlers,
   type ModelLevel,
+  type NoticePayload,
+  type PendingNotice,
   type SessionAnswerParams,
   type SessionAnswerResult,
   type SubAgentSnapshotParams,
@@ -424,6 +430,27 @@ export interface TestServer {
   /** 门面推给 render 的全部事件（按到达顺序） */
   pushed: ChatStreamEvent[];
   /**
+   * 登记一条**全局**通知：**存槽位 + 广播一声**，与 `ServerApp.publishNotice` 同一只手。
+   *
+   * 与 {@link TestServer.hub} 的区别就是那两半：`hub.publish` 只播不存（协议还只有事件时
+   * 的做法），而通知现在是有状态的槽位 —— 只播不存的话 `notice.list` 永远是空的，「后连上来
+   * 的客户端补看」这条路就无从验起。
+   */
+  publishNotice: (notice: GlobalNoticePayload) => GlobalNoticeSlot;
+  /**
+   * 登记一条**会话内**通知：同样存槽位 + 广播一声，入口是 `SessionManager.notice`（真件里
+   * 那个唯一的入口，`noticeIfAlive` 也走它）。
+   *
+   * 为什么要把它递出来：会话内通知的补看出口是**快照**（`pendingNotices`），而「登记的那一刻
+   * 没人在看」在一条真连接上凑不出来 —— 只有先让桌面端那条连接死掉（{@link TestServer.restart}），
+   * 再登记，才能验「打开会话时从快照补看并确认」这条路。登记必须走真入口（存与播一起），
+   * 自己往 hub 里发一条只会让快照永远是空的。
+   */
+  publishSessionNotice: (
+    sessionId: string,
+    notice: NoticePayload,
+  ) => PendingNotice;
+  /**
    * 会话层交给 Agent 装配的入参（每次 `createAgent` 一条，按先后）。
    *
    * 里面有 `resolveMode`：真件里 SDK 的自动迁移插件在上下文到阈值时调它，服务端因此向
@@ -467,6 +494,9 @@ export interface TestServer {
    * 管 —— 那是服务本身的事，由组装根直接往 hub 里发」），而本脚手架**就是**那个组装根（它
    * 自己也 `new SessionManager` 并注入 hub）。所以用例在这里发一条，走的是真链路：hub → 真
    * socket → 桌面端的事件翻译；没有替任何一侧演动作。
+   *
+   * 要验「有状态的槽位」那一套（`notice.list` / `notice.ack`）则用
+   * {@link TestServer.publishNotice}：它多一步「存进槽位表」，与真件同一个口径。
    */
   hub: EventHub;
   stop: () => Promise<void>;
@@ -593,11 +623,36 @@ export async function startTestServer(
     },
   });
 
+  /**
+   * 全局通知的槽位表（**进程作用域**的东西，真件里归 `ServerApp`）。
+   *
+   * 与 `ServerApp` 同一份职责：存与播都在 {@link publishNotice} 那一处，`notice.list` /
+   * `notice.ack` 只读与消。不这里做一份「只播不存」的简化版：那样 `notice.list` 永远空，
+   * 「补看」那条路就永远验不到。
+   */
+  const globalNotices = new Map<string, GlobalNoticeSlot>();
+
   const handlers: Record<string, AnyHandler> = {
     ...createSessionHandlers({
       manager,
       workspacesRoot: join(dir, "workspaces"),
       defaultWorkspacePath: projectDir,
+    }),
+    ...createNoticeHandlers({
+      list: () => ({
+        notices: [...globalNotices.values()].map((slot) => ({ ...slot })),
+      }),
+      /**
+       * 确认一批 id。与真件的 `ServerApp.ackNotices` 逐字同形：**两类都认**（决策 A30）——
+       * 先查本进程的全局槽位表，再问会话层（`SessionManager.ackNotice` 按 id 扫各段会话的
+       * 通知表）。客户端因此不必先分类再选方法：一个 id 就指那一条。
+       */
+      ack: (ids) => {
+        const acked: string[] = [];
+        for (const id of ids)
+          if (globalNotices.delete(id) || manager.ackNotice(id)) acked.push(id);
+        return { acked };
+      },
     }),
     ...createAgentHandlers({
       // 只有 `agent.model.set` 用它（写定义 + 清思考参数）；render 没有调用点，
@@ -716,6 +771,27 @@ export async function startTestServer(
     call: async <T>(method: string, params?: unknown) =>
       await (await probeClient()).call<T>(method, params),
     hub,
+    /** 存槽位 + 广播一声（真件：`ServerApp.publishNotice`，两半写在一起是硬要求） */
+    publishNotice: (notice: GlobalNoticePayload): GlobalNoticeSlot => {
+      const slot: GlobalNoticeSlot = {
+        ...notice,
+        id: randomUUID(),
+        createdAt: new Date().toISOString(),
+      };
+      globalNotices.set(slot.id, slot);
+      // 广播里带的是**槽位自己的 id**：两个出口说的是同一条通知，id 不一致就逼客户端为了
+      // 一次确认多跑一趟往返（决策 A35 要消掉的正是那一趟）
+      hub.publish({
+        event: "server-notice",
+        id: slot.id,
+        level: slot.level,
+        code: slot.code,
+        ...(slot.params !== undefined ? { params: slot.params } : {}),
+      });
+      return slot;
+    },
+    /** 会话内通知：直接调会话层那个唯一入口（存 + 播都由它做，见 `SessionManager.notice`） */
+    publishSessionNotice: (sessionId, notice) => manager.notice(sessionId, notice),
     restart: async () => {
       await daemon.stop("test restart");
       /**

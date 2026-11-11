@@ -56,7 +56,13 @@ export default defineConfig([
      *
      * 桌面端是唯一能替用户「准备好服务端」的形态 —— 客户机上可能连 Node.js 和 npm 都没有
      * （CLI 那边用 `npx` 现下现起，这里没有那个奢侈）。所以 `external` 一个都不给：
-     * `@ai-zen/agents-{core,sdk,server}`、`openai`、MCP SDK、`dayjs` 全部内联。
+     * `@ai-zen/agents-{core,sdk,server}`、`openai`、MCP SDK、`dayjs`、**`ws`** 全部内联。
+     *
+     * `ws` 是服务端换 WebSocket 之后**新增的运行期依赖**（`agents/packages/server` 的
+     * `dependencies`）。它必须走这条内联：客户机上没有 `node_modules`，一经外置就是
+     * 「装机后第一次连服务端才炸」。它内部那两处 `require("bufferutil")` /
+     * `require("utf-8-validate")` 是**可选的原生加速件**，各自包在 `try/catch` 里，
+     * 打进来之后照旧是「没有就不用」—— 不是外置依赖。
      *
      * 代价是体积（几十 MB 量级），而 Electron 应用本来就按这个量级分发。
      */

@@ -41,6 +41,7 @@ packages/main/src/
     ├── services.ts    ← 六个 Service：render 的形状 ↔ 协议调用
     ├── ServicesManager.ts ← invokeService 动态分发（薄）
     ├── events.ts      ← 服务端事件 → `ChatStreamEvent`（订阅随连接重建自动重挂）
+    ├── noticeSlots.ts ← 通知槽位：连上就补看未确认的（`notice.list`），显示后确认（`notice.ack`）
     └── notices.ts     ← 通知 code → 中文文案
 ```
 

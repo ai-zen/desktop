@@ -28,6 +28,7 @@
  * 搅乱），而且是真链路 —— `EventHub` → 真 socket → `events.ts` 的翻译 → `chat:push`。
  */
 
+import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import type {
   Conversation,
@@ -154,9 +155,15 @@ describe("连接：daemon 重启之后", () => {
      *
      * 探针用 `server-notice`：它不绑会话，`EventHub` 一 publish，所有在 watch 的连接都该
      * 收到一份。
+     *
+     * 这里故意直调 `hub.publish`（不用 `server.publishNotice`）：本条要的只是一个"能到
+     * `chat:push` 那头"的事件，顺带验明「只播不存也不会报错」—— 客户端会拿着这个 id 去
+     * `notice.ack`，服务端不认得它（不在任何槽位表里），回一个空的 `acked` 即可，不是错误。
      */
     server.hub.publish({
       event: "server-notice",
+      // 真实广播里这个 id 是槽位的 UUID（决策 A35）；探针不存槽位，所以只能自己造一个
+      id: randomUUID(),
       level: "warn",
       code: "mcpUnavailable",
       params: { name: "filesystem" },
