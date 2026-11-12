@@ -215,13 +215,46 @@ export interface SubAgentView {
 
 // ==================== 推送事件 DTO ====================
 
+/**
+ * 生成六态（PRD L8 / F-I3）：连上 / 等首字 / 在想 / 在输出 / 拼工具调用 / 等工具。
+ *
+ * 取值与服务端 `GenerationState.phase` 逐字一致（事件里用的就是这组值）：main 不另造一套词，
+ * 只是把它搬进 render 认的形状里。
+ */
+export type StreamPhase =
+  | "connected"
+  | "awaiting_first_token"
+  | "thinking"
+  | "generating"
+  | "assembling_tool_calls"
+  | "awaiting_tools";
+
 /** chat:push 单通道推送（discriminated union）
  *  状态源是常驻服务端：send 只提交（快速返回），user/start/message/done 全由事件回流 */
 export type ChatStreamEvent =
   | { conversationId: string; type: "start" }
   /** 本轮的用户消息上屏（render 据此上屏，不本地乐观插入）
-   *  id 由 main 编（`${会话}:user:${turnId}`）：协议不推用户消息，id 只为给 render 一个稳定的 v-for key */
+   *  id 是服务端在受理时就分配好的 `userMessageId`（L6），所以 `done` 那次全量替换里同一条消息
+   *  用的是同一个 id —— 不会画成两条 */
   | { conversationId: string; type: "user"; id: string; content: string }
+  /**
+   * 这一轮的生成状态（六态 + 正在跑的工具）。
+   *
+   * 服务端的 `run.state` 是一份**全量快照**、而且带的东西远多于界面今天要显示的（六态、子 Agent、
+   * 用量、结局）。这里只挑「界面上真能显示的那部分」搬过来，其余留在 main（要用的那天再加字段，
+   * 而不是先塞一堆没人读的）。
+   *
+   * 与 `start` / `done` 的关系：`start` / `done` 说的是「这一轮开始了 / 结束了」（render 用它切
+   * 流式态），这一条说的是「此刻在哪一态」，两件事分开之后，六态变化不必重发 `start`。
+   */
+  | {
+      conversationId: string;
+      type: "stream";
+      /** 空闲时为 `null`（这一轮不在跑） */
+      phase: StreamPhase | null;
+      /** 「在等哪几个工具」的工具名（并行时只含还在跑的，PRD L8） */
+      runningTools: string[];
+    }
   /** 一条完整消息的实时同步（流式中的 assistant 消息：正文/reasoning/tool_calls/status；
    *  以及每轮结束补推的工具结果消息）。id 是服务端消息 id，流式那条由 main 编并随后被 `done` 里的真 id 取代；
    *  render 按 id 就地 upsert：有则替换、无则追加末尾 —— 事件到达顺序即消息顺序 */
@@ -245,13 +278,13 @@ export type ChatStreamEvent =
    *
    * ## 为什么 `text` 到了这一层已经是人话
    *
-   * 服务端刻意不产文案（协议只给 `level + code + params`，见 `SessionNoticeEvent`），
-   * 翻译发生在 main 的词典里（`packages/main/src/server/notices.ts`）—— 那里是唯一一份，
-   * render 只管把拿到的这句话弹出来，不再查第二份词典。
+   * 文案归服务端（PRD D8）：`NoticeView.text` 是按**这条连接的语言**渲染好的句子，main 原样搬
+   * 过来，自己不查第二份词典（两份词典的下场是同一句提示有两种说法，其中一份还不会跟着语言变）。
    *
    * ## 为什么 `conversationId` 是可选的
    *
-   * `server-notice` **不属于任何会话**（存档目录不可用、MCP 连不上是服务本身的事）。
+   * 全局通知**不属于任何会话**（存档目录不可用、MCP 连不上是服务本身的事），服务端给的
+   * `NoticeView.conversationId` 那时就是 `null`。
    * 空串不是它的替身：空串的意思是「有一个会话，它的 key 是空字符串」，与「没有会话」是
    * 两件事 —— render 按 key 取状态槽位，空串会凭空开出一个谁都不认识的假槽位。
    */

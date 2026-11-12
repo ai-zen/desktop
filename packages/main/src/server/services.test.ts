@@ -1,830 +1,532 @@
 /**
- * 六个 Service 的**映射**用例：方法名 / 参数 / 返回形状是否与 render 的调用面一致，
- * 以及每一步在服务端立了什么事实。
+ * 六个 Service 用例：**render 要的形状 ↔ 契约方法**这两头对不对得上。
  *
- * 全部走 `ServicesManager.invokeService`（render 真实走的那条路），不直接 new 服务类 ——
- * 分发键（`workspace` / `conversation` / `chat` / …）本身就是契约的一部分。
+ * 每个方法都只有一件事要做（翻译），所以这里的用例也就是一句话一条：给一份契约出参，断言
+ * render 拿到的那份、以及发出去的那个方法名与入参。真服务端在这里只会有噪声 —— 它会把这层
+ * 唯一要验的东西（字段名、参数名、降级到哪一步）藏进一次网络往返里。
+ *
+ * 有几条是**故意**这么定的，别顺手「修」掉：
+ *   · `model.list` 只给能用的（下拉框里选一个不可用的，发出去必然失败）；
+ *   · `agent.list` 不列子 Agent（它们不是「开一段对话」的入口）；
+ *   · `config.update` 里端点密钥**只在真的改了时才写**（框里显示的是掩码，原样回写会把掩码当密钥）。
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { AgentNS } from "@ai-zen/agents-core";
+import type { ConversationState as WireConversationState, RunState } from "@ai-zen/agents-client";
+import { ClientError as ClientErrorValue } from "@ai-zen/agents-client";
+import type { ChatStreamEvent } from "@ai-zen/desktop-shared";
+import { describe, expect, it } from "vitest";
+import type { ContractConnection } from "./contract.js";
+import { ChatEventBridge } from "./events.js";
 import {
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  utimesSync,
-  writeFileSync,
-} from "node:fs";
-import { join } from "node:path";
-import type {
-  AgentOption,
-  ConfigSettings,
-  ConfigUpdateReport,
-  Conversation,
-  ConversationState,
-  ConversationSummary,
-  ModelOption,
-  Workspace,
-} from "@ai-zen/desktop-shared";
-import type {
-  SessionListResult,
-  SessionSnapshotResult,
-  WorkspaceListResult,
-} from "@ai-zen/agents-client";
-import {
-  startTestServer,
-  waitFor,
-  MODEL_ID,
-  type TestServer,
-} from "./test-harness.js";
+  ServerAgentService,
+  ServerChatService,
+  ServerConfigService,
+  ServerConversationService,
+  ServerModelService,
+  ServerWorkspaceService,
+  type ServiceContext,
+} from "./services.js";
 
-let server: TestServer;
+const CONVERSATION = "conv-1";
+const WORKSPACE = "ws-1";
 
-beforeEach(async () => {
-  server = await startTestServer();
-});
+// ==================================================================
+// 假连接 + 收事件的篮子
+// ==================================================================
 
-afterEach(async () => {
-  await server.stop();
-});
-
-/** render 的那条路：`window.electronAPI.invokeService(service, method, ...args)` */
-async function invoke<T>(
-  service: string,
-  method: string,
-  ...args: unknown[]
-): Promise<T> {
-  return (await server.layer.manager.invokeService(
-    service,
-    method,
-    ...args,
-  )) as T;
+interface Recorded {
+  method: string;
+  params: unknown;
 }
 
-async function createWorkspace(name = ""): Promise<Workspace> {
-  return await invoke<Workspace>(
-    "workspace",
-    "create",
-    name,
-    server.projectDir,
-  );
+interface Harness {
+  ctx: ServiceContext;
+  /** 这一层发出去的每一次请求 */
+  calls: Recorded[];
+  /** 推给 render 的事件 */
+  events: ChatStreamEvent[];
+  /** `track` 记下的锚点 */
+  tracked: Map<string, string | undefined>;
 }
 
-async function createConversation(agentId = "default"): Promise<Conversation> {
-  const workspace = await createWorkspace();
-  return await invoke<Conversation>(
-    "conversation",
-    "create",
-    workspace.id,
-    agentId,
-  );
-}
+function harness(reply: (method: string, params: unknown) => unknown = () => ({})): Harness {
+  const calls: Recorded[] = [];
+  const tracked = new Map<string, string | undefined>();
+  const connection = {
+    hello: null,
+    call: async (method: string, params: unknown) => {
+      calls.push({ method, params });
+      return reply(method, params);
+    },
+    subscribe: () => () => {},
+    onClose: () => () => {},
+    onResume: () => () => {},
+    resume: async (conversationId: string) => ({ conversationId }),
+    track: (conversationId: string, anchor?: string) => {
+      tracked.set(conversationId, anchor);
+    },
+    untrack: (conversationId: string) => {
+      tracked.delete(conversationId);
+    },
+    reconnect: async () => {},
+    close: async () => {},
+  } as unknown as ContractConnection;
 
-/**
- * 会话级覆盖用的另一个模型 id。
- *
- * 只有 `MODEL_ID` 一个模型时，「有覆盖」与「没覆盖」会得到同一个值，用例就分辨不出
- * 「客户端读的是生效值」还是「读的是定义那个」—— 所以临时给配置补一个。
- */
-const OVERRIDE_MODEL_ID = "model-y";
+  const events: ChatStreamEvent[] = [];
+  const bridge = new ChatEventBridge({
+    // 收尾 / 改名那几条这里用不到；`chat` 那组只用 beginTurn / pushError
+    call: connection.call,
+    push: (event) => events.push(event),
+    log: () => {},
+  });
 
-/** 往 `config.json` 里补一个模型：覆盖值必须指向配置里真有的模型（服务端装配与解析都要查它） */
-function addModelToConfig(id: string): void {
-  const file = join(server.dir, "config.json");
-  const config = JSON.parse(readFileSync(file, "utf-8")) as {
-    models: Array<Record<string, unknown>>;
+  return {
+    calls,
+    events,
+    tracked,
+    ctx: {
+      call: connection.call,
+      connection: () => connection,
+      events: bridge,
+      defaultCwd: () => "/home/user/Desktop",
+    },
   };
-  config.models.push({ id, name: `模型 ${id}`, endpointId: "e1" });
-  writeFileSync(file, JSON.stringify(config));
 }
+
+const zeroUsage: AgentNS.Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+
+function wireConversationState(run: Partial<RunState> = {}): WireConversationState {
+  return {
+    conversationId: CONVERSATION,
+    run: {
+      conversationId: CONVERSATION,
+      status: "idle",
+      assistantMessageId: null,
+      startedAt: null,
+      settledAt: null,
+      generation: null,
+      outcome: null,
+      problem: null,
+      subagents: [],
+      usage: {
+        turn: zeroUsage,
+        total: zeroUsage,
+        subAgent: zeroUsage,
+        rate: { value: 0, unit: "tokens_per_second", basis: "completion" },
+        updatedAt: "a",
+      },
+      ...run,
+    },
+    context: { usage: zeroUsage, handoffThreshold: 0, guardThreshold: 0, overHandoff: false, overGuard: false },
+    thinking: { preset: null, levels: [], selected: null, source: "not_adjustable", params: {} },
+    usage: {
+      turn: zeroUsage,
+      total: zeroUsage,
+      subAgent: zeroUsage,
+      rate: { value: 0, unit: "tokens_per_second", basis: "completion" },
+      updatedAt: "a",
+    },
+    questions: [],
+    statusBlocks: [],
+    updatedAt: "a",
+  };
+}
+
+// ==================================================================
+// workspace
+// ==================================================================
 
 describe("workspace", () => {
-  it("create：返回 render 的 Workspace 形状；名字落成服务端的 title，目录用服务端规范化的路径", async () => {
-    const created = await createWorkspace("我的项目");
+  it("list：`folder.cwd` 就是 render 那个 `cwd`（目录事实原样搬）", async () => {
+    const h = harness(() => ({
+      workspaces: [
+        { id: "ws-1", name: "我的项目", folder: { cwd: "/code/a", exists: true } },
+        { id: "ws-2", name: "已删除目录", folder: { cwd: "/code/b", exists: false } },
+      ],
+    }));
 
-    expect(created).toEqual({
-      id: expect.any(String),
-      name: "我的项目",
-      cwd: server.projectDir,
-    });
+    const workspaces = await new ServerWorkspaceService(h.ctx).list();
 
-    // 名字不是客户端的私事：它进了 `workspace.json` 的 title（`workspace.rename` 那条窄方法）
-    const listed = await server.call<WorkspaceListResult>("workspace.list");
-    expect(listed.workspaces).toEqual([
-      {
-        workspaceId: created.id,
-        title: "我的项目",
-        path: server.projectDir,
-        pathExists: true,
-      },
+    expect(workspaces).toEqual([
+      { id: "ws-1", name: "我的项目", cwd: "/code/a" },
+      { id: "ws-2", name: "已删除目录", cwd: "/code/b" },
     ]);
   });
 
-  it("create：同一个目录再来一次是同一个工作区（服务端幂等），没给名字时用目录名兜底", async () => {
-    const first = await createWorkspace("我的项目");
-    const second = await createWorkspace();
+  it("create：没填 cwd 时用桌面端的默认目录（那是本机的事实，服务端不可能知道）", async () => {
+    const h = harness(() => ({
+      workspace: { id: "ws-9", name: "桌面", folder: { cwd: "/home/user/Desktop", exists: true } },
+    }));
 
-    expect(second.id).toBe(first.id);
-    expect(second.name).toBe("proj");
+    const workspace = await new ServerWorkspaceService(h.ctx).create("", "");
+
+    expect(h.calls[0]).toEqual({ method: "workspace.create", params: { cwd: "/home/user/Desktop" } });
+    expect(workspace).toEqual({ id: "ws-9", name: "桌面", cwd: "/home/user/Desktop" });
   });
 
-  it("list：id/name/cwd 逐个对位，没起过名的工作区用目录名（不是空串）", async () => {
-    const other = join(server.dir, "另一个目录");
-    mkdirSync(other, { recursive: true });
-    const named = await createWorkspace("起过名的");
-    await invoke<Workspace>("workspace", "create", "", other);
+  it("create：填了名字就一起交出去", async () => {
+    const h = harness(() => ({
+      workspace: { id: "ws-9", name: "甲", folder: { cwd: "/code/a", exists: true } },
+    }));
 
-    const list = await invoke<Workspace[]>("workspace", "list");
-    const byId = new Map(list.map((item) => [item.id, item]));
-    expect(byId.get(named.id)).toEqual({
-      id: named.id,
-      name: "起过名的",
-      cwd: server.projectDir,
+    await new ServerWorkspaceService(h.ctx).create("甲", "/code/a");
+
+    expect(h.calls[0]).toEqual({
+      method: "workspace.create",
+      params: { cwd: "/code/a", name: "甲" },
     });
-    // 顺序由服务端定（显示名码位序），客户端不重排
-    expect(list.map((item) => item.name)).toEqual(["另一个目录", "起过名的"]);
   });
 
-  it("rename / remove：改名只动显示名；删除连它的会话一起删，且幂等", async () => {
-    const workspace = await createWorkspace("旧名字");
-    await invoke<void>("workspace", "rename", workspace.id, "新名字");
-    expect((await invoke<Workspace[]>("workspace", "list"))[0]!.name).toBe(
-      "新名字",
-    );
-    // cwd 一个字都不动
-    expect((await invoke<Workspace[]>("workspace", "list"))[0]!.cwd).toBe(
-      server.projectDir,
-    );
+  it("rename / remove：参数名是契约里的 `workspaceId`", async () => {
+    const h = harness();
+    const service = new ServerWorkspaceService(h.ctx);
 
-    const conversation = await invoke<Conversation>(
-      "conversation",
-      "create",
-      workspace.id,
-      "default",
-    );
-    expect(conversation.id).toEqual(expect.any(String));
+    await service.rename("ws-1", "新名字");
+    await service.remove("ws-1");
 
-    await invoke<void>("workspace", "remove", workspace.id);
-    expect(await invoke<Workspace[]>("workspace", "list")).toEqual([]);
-    // 工作区没了，它下面的会话也一并没了（`session.list` 读不到任何存档）
-    const sessions = await server.call<SessionListResult>("session.list", {
-      workspaceId: workspace.id,
-    });
-    expect(sessions.sessions).toEqual([]);
-    // 幂等：本来就不存在不算错
-    await expect(
-      invoke<void>("workspace", "remove", workspace.id),
-    ).resolves.toBeUndefined();
+    expect(h.calls).toEqual([
+      { method: "workspace.rename", params: { workspaceId: "ws-1", name: "新名字" } },
+      { method: "workspace.remove", params: { workspaceId: "ws-1" } },
+    ]);
   });
 });
+
+// ==================================================================
+// conversation
+// ==================================================================
 
 describe("conversation", () => {
-  it("create：模型由服务端三级解析给出，消息要再要一次快照才有", async () => {
-    // 真件的初始消息来自 Agent 定义的预设；假件照抄这个形态
-    server.agent.messages = [
-      { id: "preset_1", role: "system", content: "你是助手" },
-    ] as never;
+  it("list：name / messageCount / running / modelId 都取自服务端那一项", async () => {
+    const h = harness(() => ({
+      conversations: [
+        {
+          id: "conv-1",
+          workspaceId: "ws-1",
+          agentId: "agent-1",
+          modelId: "model-1",
+          name: "第一段",
+          messageCount: 3,
+          updatedAt: "2026-01-01T00:00:00.000Z",
+          running: true,
+        },
+      ],
+      total: 1,
+    }));
 
-    const conversation = await createConversation();
+    const list = await new ServerConversationService(h.ctx).list("ws-1");
 
-    expect(conversation.id).toEqual(expect.any(String));
-    expect(conversation.agentId).toBe("default");
-    // 客户端没有能力指定模型：这是服务端解析出来的（Agent 定义上那个）
-    expect(conversation.modelId).toBe(MODEL_ID);
-    expect(conversation.messages.map((message) => message.role)).toEqual([
-      "system",
-    ]);
-    expect(conversation.createdAt).toEqual(expect.any(String));
-    expect(conversation.updatedAt).toEqual(expect.any(String));
-  });
-
-  it("list：id/name/messageCount/updatedAt 对位；running = live && phase !== null；title 缺省走兜底名", async () => {
-    const workspace = await createWorkspace();
-    server.agent.messages = [
-      { id: "preset_1", role: "system", content: "你是助手" },
-    ] as never;
-    const conversation = await invoke<Conversation>(
-      "conversation",
-      "create",
-      workspace.id,
-      "default",
-    );
-
-    const list = await invoke<ConversationSummary[]>(
-      "conversation",
-      "list",
-      workspace.id,
-    );
-    expect(list).toHaveLength(1);
-    expect(list[0]).toMatchObject({
-      id: conversation.id,
-      workspaceId: workspace.id,
-      agentId: "default",
-      // 没有会话级覆盖不等于「没有模型」：这一位是下拉框的当前值，服务端给的是三级解析后
-      // 的生效值（Agent 定义那一档）。只读覆盖值的话下拉框会空着
-      modelId: MODEL_ID,
-      messageCount: 1,
-      // 还没起名：兜底名是一个**常量**（不掺时间戳）。按 `updatedAt` 拼名字的话，同一段
-      // 会话每改一次名、每发一轮都会换个名字 —— 一个随事实变化的名字就是第二个状态
-      name: "未命名对话",
-      running: false,
-    });
-    expect(list[0]!.updatedAt).toEqual(expect.any(String));
-  });
-
-  it("list：没有会话级覆盖时 modelId 是 Agent 定义里那个模型（下拉框不能空着）", async () => {
-    const workspace = await createWorkspace();
-    const conversation = await invoke<Conversation>(
-      "conversation",
-      "create",
-      workspace.id,
-      "default",
-    );
-
-    // 先看服务端侧的事实：这一条**没有**会话级覆盖（清单里 `modelId` 缺省），而生效值落在
-    // Agent 定义那一档。两者是两个字段，客户端要的是后者
-    const raw = await server.call<SessionListResult>("session.list", {
-      workspaceId: workspace.id,
-    });
-    expect("modelId" in raw.sessions[0]!).toBe(false);
-    expect(raw.sessions[0]!.effectiveModelId).toBe(MODEL_ID);
-
-    // 下拉框读的就是这一位：空串 = 用户看到「没选模型」
-    const list = await invoke<ConversationSummary[]>(
-      "conversation",
-      "list",
-      workspace.id,
-    );
-    expect(list[0]).toMatchObject({ id: conversation.id, modelId: MODEL_ID });
-  });
-
-  it("list：有会话级覆盖时 modelId 是覆盖值", async () => {
-    addModelToConfig(OVERRIDE_MODEL_ID);
-    const workspace = await createWorkspace();
-    const conversation = await invoke<Conversation>(
-      "conversation",
-      "create",
-      workspace.id,
-      "default",
-    );
-    await invoke<void>(
-      "conversation",
-      "setModel",
-      workspace.id,
-      conversation.id,
-      OVERRIDE_MODEL_ID,
-    );
-
-    // 服务端侧：有覆盖时两个字段同值，档位说清是会话级赢了
-    const raw = await server.call<SessionListResult>("session.list", {
-      workspaceId: workspace.id,
-    });
-    expect(raw.sessions[0]).toMatchObject({
-      modelId: OVERRIDE_MODEL_ID,
-      effectiveModelId: OVERRIDE_MODEL_ID,
-      effectiveModelLevel: "session",
-    });
-
-    const list = await invoke<ConversationSummary[]>(
-      "conversation",
-      "list",
-      workspace.id,
-    );
-    expect(list[0]!.modelId).toBe(OVERRIDE_MODEL_ID);
-  });
-
-  it("list：服务端省略 effectiveModelId（定义已删）时 modelId 是空串，不退回会话级覆盖值", async () => {
-    addModelToConfig(OVERRIDE_MODEL_ID);
-    const workspace = await createWorkspace();
-    // 两段会话都指向 default：一段有会话级覆盖，一段没有
-    const overridden = await invoke<Conversation>(
-      "conversation",
-      "create",
-      workspace.id,
-      "default",
-    );
-    await invoke<void>(
-      "conversation",
-      "setModel",
-      workspace.id,
-      overridden.id,
-      OVERRIDE_MODEL_ID,
-    );
-    const plain = await invoke<Conversation>(
-      "conversation",
-      "create",
-      workspace.id,
-      "default",
-    );
-
-    // 落盘再放回存档：只有**存档条目**才走服务端那个解析器（活会话的生效模型来自 Agent 实例，
-    // 定义删了也不影响它 → 造不出「解析不出来」）
-    await server.call("session.save", { sessionId: overridden.id });
-    await server.call("session.save", { sessionId: plain.id });
-    await invoke<void>("chat", "release", overridden.id);
-    await invoke<void>("chat", "release", plain.id);
-
-    // 先确认「有 → 没有」只由删定义引起：放回存档之后、删定义之前，两条都还解析得出来
-    // （否则下面「字段被省略」可能只是假件根本没接解析器，用例就变成永远为真）
-    const archived = new Map(
-      (
-        await server.call<SessionListResult>("session.list", {
-          workspaceId: workspace.id,
-        })
-      ).sessions.map((entry) => [entry.sessionId, entry.effectiveModelId]),
-    );
-    expect(archived.get(overridden.id)).toBe(OVERRIDE_MODEL_ID);
-    expect(archived.get(plain.id)).toBe(MODEL_ID);
-
-    // 用户把 Agent 定义删了：这两段会话此刻指着一个不存在的定义
-    rmSync(join(server.dir, "agents", "default.json"));
-
-    // 先确认场景在真 daemon 上成立：两条都**省略**了 effectiveModelId（解析不出来就不猜值）
-    const raw = await server.call<SessionListResult>("session.list", {
-      workspaceId: workspace.id,
-    });
-    expect(raw.sessions).toHaveLength(2);
-    for (const entry of raw.sessions) {
-      expect("effectiveModelId" in entry).toBe(false);
-      expect("effectiveModelLevel" in entry).toBe(false);
-    }
-
-    // 客户端：字段被省略时**就是没有**生效模型 —— 空串（下拉框显示成没选）。不退回会话级
-    // 覆盖值：那个值是「用户给这段会话设过的覆盖」，而它此刻指着的定义已经不在了，拿它
-    // 冒充「现在在用的模型」只会让 UI 更有底气地撜谎（协议写得很直：拿不到就省略，不伪造）
-    const list = await invoke<ConversationSummary[]>(
-      "conversation",
-      "list",
-      workspace.id,
-    );
-    const byId = new Map(list.map((item) => [item.id, item]));
-    expect(byId.get(overridden.id)!.modelId).toBe("");
-    expect(byId.get(plain.id)!.modelId).toBe("");
-  });
-
-  it("list：run 起来之后 running 为 true（live 只说明在内存里，phase 才说明正在跑）", async () => {
-    const workspace = await createWorkspace();
-    const conversation = await invoke<Conversation>(
-      "conversation",
-      "create",
-      workspace.id,
-      "default",
-    );
-    await invoke<void>("chat", "send", workspace.id, conversation.id, "你好");
-
-    await waitFor(async () => {
-      const list = await invoke<ConversationSummary[]>(
-        "conversation",
-        "list",
-        workspace.id,
-      );
-      return list[0]?.running === true;
-    }, "侧栏看到 running");
-
-    // 收尾之后回到 false（live 仍为 true —— 会话还在服务端内存里）
-    server.agent.messages.push({
-      id: "tool_1",
-      role: "tool",
-      content: "结果",
-      tool_call_id: "call_1",
-    } as never);
-    server.agent.finish();
-    await waitFor(async () => {
-      const list = await invoke<ConversationSummary[]>(
-        "conversation",
-        "list",
-        workspace.id,
-      );
-      return list[0]?.running === false;
-    }, "收尾后 running 落回 false");
-  });
-
-  it("rename：名字进 title（list 立刻反映），空名字被服务端拒掉", async () => {
-    const workspace = await createWorkspace();
-    const conversation = await invoke<Conversation>(
-      "conversation",
-      "create",
-      workspace.id,
-      "default",
-    );
-
-    await invoke<void>(
-      "conversation",
-      "rename",
-      workspace.id,
-      conversation.id,
-      "改过的名字",
-    );
-    const list = await invoke<ConversationSummary[]>(
-      "conversation",
-      "list",
-      workspace.id,
-    );
-    expect(list[0]!.name).toBe("改过的名字");
-
-    // 协议里 title 是必填非空：空名字当场报错，而不是悄悄改名
-    await expect(
-      invoke<void>("conversation", "rename", workspace.id, conversation.id, ""),
-    ).rejects.toThrow(/title/);
-  });
-
-  it("read：活会话直读；盘上的历史先 attach 再取；不存在的会话回 null", async () => {
-    const workspace = await createWorkspace();
-    const conversation = await invoke<Conversation>(
-      "conversation",
-      "create",
-      workspace.id,
-      "default",
-    );
-    await invoke<void>("chat", "send", workspace.id, conversation.id, "留个痕");
-    server.agent.emitDelta("答");
-    server.agent.finish();
-    await waitFor(
-      () => server.pushed.some((event) => event.type === "done"),
-      "本轮收尾",
-    );
-
-    const live = await invoke<Conversation | null>(
-      "conversation",
-      "read",
-      workspace.id,
-      conversation.id,
-    );
-    expect(live?.messages.map((message) => message.role)).toEqual([
-      "user",
-      "assistant",
-    ]);
-
-    // 把会话从内存里放掉：只剩盘上的存档。`session.snapshot` 只认活会话，这时取不到，
-    // 所以 read 必须先 attach
-    await invoke<void>("chat", "release", conversation.id);
-    expect(
-      (
-        await server.call<SessionListResult>("session.list", {
-          workspaceId: workspace.id,
-        })
-      ).sessions[0]?.live,
-    ).toBe(false);
-    const archived = await invoke<Conversation | null>(
-      "conversation",
-      "read",
-      workspace.id,
-      conversation.id,
-    );
-    expect(archived?.messages.map((message) => message.role)).toEqual([
-      "user",
-      "assistant",
-    ]);
-
-    expect(
-      await invoke<Conversation | null>(
-        "conversation",
-        "read",
-        workspace.id,
-        "chat_nope",
-      ),
-    ).toBeNull();
-  });
-
-  it("read：name 是服务端的 title（不是「未命名对话」）", async () => {
-    const workspace = await createWorkspace();
-    const conversation = await invoke<Conversation>(
-      "conversation",
-      "create",
-      workspace.id,
-      "default",
-    );
-    await invoke<void>(
-      "conversation",
-      "rename",
-      workspace.id,
-      conversation.id,
-      "服务端记得的名字",
-    );
-
-    const read = await invoke<Conversation | null>(
-      "conversation",
-      "read",
-      workspace.id,
-      conversation.id,
-    );
-    expect(read?.name).toBe("服务端记得的名字");
-  });
-
-  it("read：updatedAt 与清单里那一条一致（存档的最后活动时间，不是「此刻」）", async () => {
-    const workspace = await createWorkspace();
-    const conversation = await invoke<Conversation>(
-      "conversation",
-      "create",
-      workspace.id,
-      "default",
-    );
-    await invoke<void>("chat", "send", workspace.id, conversation.id, "留个痕");
-    server.agent.emitDelta("答");
-    server.agent.finish();
-    await waitFor(
-      () => server.pushed.some((event) => event.type === "done"),
-      "本轮收尾",
-    );
-    await invoke<void>("chat", "release", conversation.id);
-
-    // 把这段存档的最后活动时间挪到过去：服务端从清单（清单不在时取正文文件的 mtime）读它。
-    // 这样「read 报的是清单里那个时间」与「read 报的是此刻」之间才有一眼可辨的差距 ——
-    // 两边都是「刚才」，断言相等就什么也证不了
-    const sessionsDir = join(
-      server.dir,
-      "workspaces",
-      workspace.id,
-      "sessions",
-    );
-    rmSync(join(sessionsDir, `${conversation.id}.meta.json`));
-    const past = new Date("2020-01-02T03:04:05.000Z");
-    utimesSync(join(sessionsDir, `${conversation.id}.json`), past, past);
-
-    const listed = await invoke<ConversationSummary[]>(
-      "conversation",
-      "list",
-      workspace.id,
-    );
-    expect(listed[0]!.updatedAt).toBe(past.toISOString());
-
-    const read = await invoke<Conversation | null>(
-      "conversation",
-      "read",
-      workspace.id,
-      conversation.id,
-    );
-    expect(read?.updatedAt).toBe(listed[0]!.updatedAt);
-    // 协议没有创建时间：这一段取的就是最后一次更新时间（同一处判断，这里锁住它，
-    // 免得以后有人在上面「顺手」填一个 now）
-    expect(read?.createdAt).toBe(listed[0]!.updatedAt);
-  });
-
-  it("setModel：只写会话级覆盖（服务端随即重建 Agent）", async () => {
-    const workspace = await createWorkspace();
-    const conversation = await invoke<Conversation>(
-      "conversation",
-      "create",
-      workspace.id,
-      "default",
-    );
-
-    await invoke<void>(
-      "conversation",
-      "setModel",
-      workspace.id,
-      conversation.id,
-      MODEL_ID,
-    );
-
-    // 服务端侧的事实：存档里的会话级 modelId 就是它（假件的 `definition.modelId` 没被改）
-    const listed = await server.call<SessionListResult>("session.list", {
-      workspaceId: workspace.id,
-    });
-    expect(listed.sessions[0]!.modelId).toBe(MODEL_ID);
-    const list = await invoke<ConversationSummary[]>(
-      "conversation",
-      "list",
-      workspace.id,
-    );
-    expect(list[0]!.modelId).toBe(MODEL_ID);
-  });
-
-  it("remove：物理删会话，幂等（本来就没有不算错）", async () => {
-    const workspace = await createWorkspace();
-    const conversation = await invoke<Conversation>(
-      "conversation",
-      "create",
-      workspace.id,
-      "default",
-    );
-
-    await invoke<void>("conversation", "remove", workspace.id, conversation.id);
-    expect(
-      await invoke<ConversationSummary[]>("conversation", "list", workspace.id),
-    ).toEqual([]);
-    await expect(
-      invoke<void>("conversation", "remove", workspace.id, conversation.id),
-    ).resolves.toBeUndefined();
-  });
-});
-
-describe("chat", () => {
-  it("send：立刻返回（过程走事件）；随后 getState 能看到消息与 streaming", async () => {
-    const workspace = await createWorkspace();
-    const conversation = await invoke<Conversation>(
-      "conversation",
-      "create",
-      workspace.id,
-      "default",
-    );
-
-    // 假件的 `send()` 不会自己结束 —— 所以这行返回时本轮仍在跑，正是「立刻回 turnId」
-    await invoke<void>("chat", "send", workspace.id, conversation.id, "你好");
-
-    expect(server.agent.sent).toEqual(["你好"]);
-    // 服务端侧：这一轮的编号已经是 1（`session.send` 的返回值就是它）
-    const snapshot = await server.call<SessionSnapshotResult>(
-      "session.snapshot",
+    expect(h.calls[0]).toEqual({ method: "conversation.list", params: { workspaceId: "ws-1" } });
+    expect(list).toEqual([
       {
-        sessionId: conversation.id,
+        id: "conv-1",
+        workspaceId: "ws-1",
+        agentId: "agent-1",
+        modelId: "model-1",
+        name: "第一段",
+        messageCount: 3,
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        running: true,
       },
-    );
-    expect(snapshot.turnId).toBe(1);
-    expect(snapshot.phase).not.toBeNull();
-
-    const state = await invoke<ConversationState>(
-      "chat",
-      "getState",
-      workspace.id,
-      conversation.id,
-    );
-    expect(state.streaming).toBe(true);
-    expect(state.messages.map((message) => message.role)).toEqual(["user"]);
+    ]);
   });
 
-  it("send：撞上 turn-busy 时静默忽略（重复提交不弹错）", async () => {
-    const workspace = await createWorkspace();
-    const conversation = await invoke<Conversation>(
-      "conversation",
-      "create",
-      workspace.id,
-      "default",
-    );
-
-    await invoke<void>("chat", "send", workspace.id, conversation.id, "第一句");
-    await waitFor(
-      () => server.pushed.some((event) => event.type === "start"),
-      "本轮开始",
-    );
-    const pushedBefore = server.pushed.length;
-
-    // 上一轮还没收尾，再发一次：服务端回 `turn-busy`，客户端不弹错
-    await expect(
-      invoke<void>("chat", "send", workspace.id, conversation.id, "第二句"),
-    ).resolves.toBeUndefined();
-    // render 侧什么都没多看到（既没有 error，也没有第二条 user）
-    expect(server.pushed.slice(pushedBefore)).toEqual([]);
-    // 服务端的消息里也只有第一句
-    expect(server.agent.sent).toEqual(["第一句"]);
-  });
-
-  it("abort：请求服务端掐掉本轮（会话本身还在）", async () => {
-    const workspace = await createWorkspace();
-    const conversation = await invoke<Conversation>(
-      "conversation",
-      "create",
-      workspace.id,
-      "default",
-    );
-    await invoke<void>("chat", "send", workspace.id, conversation.id, "跑起来");
-    await waitFor(
-      () => server.pushed.some((event) => event.type === "start"),
-      "本轮开始",
-    );
-
-    await invoke<void>("chat", "abort", conversation.id);
-    expect(server.agent.aborted).toBe(true);
-  });
-
-  it("release：会话从内存里退场（存档留着），getState 照样读得回来", async () => {
-    const workspace = await createWorkspace();
-    const conversation = await invoke<Conversation>(
-      "conversation",
-      "create",
-      workspace.id,
-      "default",
-    );
-    await invoke<void>("chat", "send", workspace.id, conversation.id, "留档");
-    server.agent.emitDelta("答");
-    server.agent.finish();
-    await waitFor(
-      () => server.pushed.some((event) => event.type === "done"),
-      "本轮收尾",
-    );
-
-    await invoke<void>("chat", "release", conversation.id);
-    const listed = await server.call<SessionListResult>("session.list", {
-      workspaceId: workspace.id,
+  it("create：建完再取一次消息（助手定义的预设消息由服务端写进会话）", async () => {
+    const preset = { id: "m-system", role: AgentNS.Role.System, content: "你是助手" };
+    const h = harness((method) => {
+      if (method === "conversation.create") {
+        return {
+          conversation: {
+            id: "conv-1",
+            workspaceId: "ws-1",
+            agentId: "agent-1",
+            modelId: "model-1",
+            name: "2026-01-01 10:00",
+            messageCount: 1,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            running: false,
+            model: { modelId: "model-1" },
+          },
+        };
+      }
+      if (method === "message.list") {
+        return { conversationId: "conv-1", anchor: null, messages: [preset] };
+      }
+      return {};
     });
-    expect(listed.sessions[0]!.live).toBe(false);
 
-    // 点回来：getState 先 attach 把存档装回内存，再取快照
-    const state = await invoke<ConversationState>(
-      "chat",
-      "getState",
-      workspace.id,
-      conversation.id,
-    );
-    expect(state.streaming).toBe(false);
-    expect(state.messages.map((message) => message.role)).toEqual([
-      "user",
-      "assistant",
+    const conversation = await new ServerConversationService(h.ctx).create("ws-1", "agent-1");
+
+    expect(h.calls.map((call) => call.method)).toEqual(["conversation.create", "message.list"]);
+    expect(h.calls[0]?.params).toEqual({ workspaceId: "ws-1", agentId: "agent-1" });
+    expect(conversation.id).toBe("conv-1");
+    // 生效模型来自 `model.modelId`（创建时定死的那一个，PRD L7）
+    expect(conversation.modelId).toBe("model-1");
+    expect(conversation.messages).toEqual([preset]);
+  });
+
+  it("create：目录还没登记成项目 → 抛一句说清原因的话（桌面端还没有提问界面）", async () => {
+    const h = harness(() => ({
+      conversation: null,
+      requiresRegistration: true,
+      questionId: "q1",
+      cwd: "/code/new",
+    }));
+
+    const error: unknown = await new ServerConversationService(h.ctx)
+      .create("ws-1", "agent-1")
+      .catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("还没登记成项目");
+    expect((error as Error).message).toContain("/code/new");
+  });
+
+  it("read：服务端说 `not_found` 就翻回 `null`（调用方不必认识业务码）", async () => {
+    const h = harness(() => {
+      throw new ClientErrorValue("not_found", "这段对话不存在");
+    });
+
+    expect(await new ServerConversationService(h.ctx).read("ws-1", "conv-x")).toBeNull();
+  });
+
+  it("remove / rename / setModel：只认会话 id（render 那个 workspaceId 参数不再转发）", async () => {
+    const h = harness();
+    const service = new ServerConversationService(h.ctx);
+
+    await service.remove("ws-1", "conv-1");
+    await service.rename("ws-1", "conv-1", "新名字");
+    await service.setModel("ws-1", "conv-1", "model-2");
+
+    expect(h.calls).toEqual([
+      { method: "conversation.delete", params: { conversationId: "conv-1" } },
+      { method: "conversation.rename", params: { conversationId: "conv-1", name: "新名字" } },
+      { method: "conversation.setModel", params: { conversationId: "conv-1", modelId: "model-2" } },
     ]);
   });
 });
 
-describe("agent / model / config", () => {
-  it("agent.list：只列入口 Agent（子 Agent 由服务端分好，不再靠 `function` 过滤）", async () => {
-    const agents = await invoke<AgentOption[]>("agent", "list");
-    expect(agents).toEqual([
-      { id: "default", name: "默认助手", description: "入口 Agent" },
+// ==================================================================
+// agent / model
+// ==================================================================
+
+describe("agent / model", () => {
+  it("agent.list：子 Agent 不进入口列表（服务端用 `isSubAgent` 明说了）", async () => {
+    const h = harness(() => ({
+      agents: [
+        { id: "a1", name: "助手甲", description: "会写代码", isSubAgent: false },
+        { id: "a2", name: "子助手", description: null, isSubAgent: true },
+      ],
+      defaultAgentId: "a1",
+    }));
+
+    expect(await new ServerAgentService(h.ctx).list()).toEqual([
+      { id: "a1", name: "助手甲", description: "会写代码" },
     ]);
   });
 
-  it("model.list：来自 config.get 的 models（协议里没有 model.list）", async () => {
-    const models = await invoke<ModelOption[]>("model", "list");
-    expect(models).toEqual([{ id: MODEL_ID, name: "模型 X" }]);
-  });
+  it("model.list：只给能用的", async () => {
+    const h = harness(() => ({
+      models: [
+        { id: "m1", name: "能用", available: true },
+        { id: "m2", name: "端点缺密钥", available: false, unavailableReason: { message: "缺密钥" } },
+      ],
+    }));
 
-  it("config.get：端点 / 默认模型 / 默认 Agent / 数据目录（dataDir 由 config.json 的路径取目录）", async () => {
-    const settings = await invoke<ConfigSettings>("config", "get");
+    expect(await new ServerModelService(h.ctx).list()).toEqual([{ id: "m1", name: "能用" }]);
+  });
+});
+
+// ==================================================================
+// config
+// ==================================================================
+
+describe("config", () => {
+  it("get：密钥是掩码，dataDir 用服务端给的 configDir", async () => {
+    const h = harness(() => ({
+      config: {
+        endpoints: [
+          { id: "e1", name: "DeepSeek", baseUrl: "https://api.deepseek.com", apiKeyMasked: "sk-…9f3a", apiKeySet: true, description: "主用" },
+        ],
+        defaults: { defaultModel: "m1", defaultAgent: "a1", defaultImageModel: null, defaultMigrationModel: null, namingModel: null, autoTitle: true },
+        configDir: "/home/user/.ai-zen",
+      },
+      issues: [],
+    }));
+
+    const settings = await new ServerConfigService(h.ctx).get();
+
     expect(settings).toEqual({
       endpoints: [
-        {
-          id: "e1",
-          name: "端点一",
-          baseUrl: "http://127.0.0.1:9/v1",
-          apiKey: "key-1",
-          description: undefined,
-        },
-        {
-          id: "e2",
-          name: "端点二",
-          baseUrl: "http://127.0.0.1:9/v2",
-          apiKey: "key-2",
-          description: undefined,
-        },
+        { id: "e1", name: "DeepSeek", baseUrl: "https://api.deepseek.com", apiKey: "sk-…9f3a", description: "主用" },
       ],
-      defaultModel: MODEL_ID,
-      defaultAgent: "default",
-      dataDir: server.dir,
+      defaultModel: "m1",
+      defaultAgent: "a1",
+      dataDir: "/home/user/.ai-zen",
     });
   });
 
-  it("config.update：默认模型/默认 Agent 走窄方法，端点只有整份 save 一条路", async () => {
-    const readConfig = () =>
-      JSON.parse(readFileSync(join(server.dir, "config.json"), "utf-8")) as {
-        defaultModel: string;
-        defaultAgent: string;
-        endpoints: Array<{ id: string; name: string; apiKey: string }>;
-      };
-
-    await invoke<ConfigUpdateReport>("config", "update", {
-      defaultModel: MODEL_ID,
-      defaultAgent: "default",
+  it("update：掩码原样提交 ⇒ 不写密钥（否则会把掩码当密钥存起来）", async () => {
+    const h = harness((method) => {
+      if (method === "config.get") {
+        return {
+          config: {
+            endpoints: [
+              { id: "e1", name: "DeepSeek", baseUrl: "https://api.deepseek.com", apiKeyMasked: "sk-…9f3a", apiKeySet: true },
+            ],
+            defaults: {},
+            configDir: "/d",
+          },
+          issues: [],
+        };
+      }
+      return {};
     });
-    // 空串不写（服务端的窄方法只接受非空 id）：不影响另一个字段
-    // —— 但这次「没写」必须**报回来**，而不是让调用方事后重读一遍去猜
-    const skipped = await invoke<ConfigUpdateReport>("config", "update", {
-      defaultModel: "",
-      defaultAgent: "",
-    });
-    expect(skipped.skippedDefaults).toEqual(["defaultModel", "defaultAgent"]);
-    expect(skipped.writtenEndpointIds).toEqual([]);
-    expect(skipped.missingEndpointIds).toEqual([]);
-    expect(readConfig().defaultModel).toBe(MODEL_ID);
-    expect(readConfig().defaultAgent).toBe("default");
 
-    const written = await invoke<ConfigUpdateReport>("config", "update", {
-      endpoints: [
-        {
-          id: "e1",
-          name: "端点一",
-          baseUrl: "http://127.0.0.1:9/v1",
-          apiKey: "换过的 key",
-        },
-      ],
+    const report = await new ServerConfigService(h.ctx).update({
+      endpoints: [{ id: "e1", name: "DeepSeek", baseUrl: "https://api.deepseek.com", apiKey: "sk-…9f3a" }],
     });
-    expect(written.writtenEndpointIds).toEqual(["e1"]);
-    expect(written.missingEndpointIds).toEqual([]);
 
-    const config = readConfig();
-    expect(
-      config.endpoints.find((endpoint) => endpoint.id === "e1")?.apiKey,
-    ).toBe("换过的 key");
-    // 没被编辑的端点原样保留（整份 save 用的是服务端刚读到的那一份，不是客户端的副本）
-    expect(
-      config.endpoints.find((endpoint) => endpoint.id === "e2")?.apiKey,
-    ).toBe("key-2");
-
-    // 服务端上已经不存在的端点（面板开着时被 CLI 删掉那个）：跳过是**对的**（凭空把它加回来
-    // 等于撤销别人的删除），但那个 id 必须在回报里 —— 否则用户敲的 apiKey 就无声无息地消失了
-    const missing = await invoke<ConfigUpdateReport>("config", "update", {
-      endpoints: [
-        {
-          id: "e-deleted",
-          name: "已删端点",
-          baseUrl: "http://127.0.0.1:9/v9",
-          apiKey: "敲在已消失端点里的 key",
-        },
-      ],
+    expect(report.writtenEndpointIds).toEqual(["e1"]);
+    const save = h.calls.find((call) => call.method === "config.saveEndpoint");
+    expect(save?.params).toEqual({
+      endpoint: { id: "e1", name: "DeepSeek", baseUrl: "https://api.deepseek.com" },
     });
-    expect(missing.missingEndpointIds).toEqual(["e-deleted"]);
-    expect(missing.writtenEndpointIds).toEqual([]);
-    // 盘上没有多出这个端点，也没有被改成它的值
-    expect(readConfig().endpoints.map((endpoint) => endpoint.id)).toEqual([
-      "e1",
-      "e2",
+  });
+
+  it("update：真换了密钥就写进去", async () => {
+    const h = harness((method) => {
+      if (method === "config.get") {
+        return {
+          config: {
+            endpoints: [
+              { id: "e1", name: "DeepSeek", baseUrl: "https://api.deepseek.com", apiKeyMasked: "sk-…9f3a", apiKeySet: true },
+            ],
+            defaults: {},
+            configDir: "/d",
+          },
+          issues: [],
+        };
+      }
+      return {};
+    });
+
+    await new ServerConfigService(h.ctx).update({
+      endpoints: [{ id: "e1", name: "DeepSeek", baseUrl: "https://api.deepseek.com", apiKey: "sk-new" }],
+    });
+
+    const save = h.calls.find((call) => call.method === "config.saveEndpoint");
+    expect(save?.params).toMatchObject({ endpoint: { apiKey: "sk-new" } });
+  });
+
+  it("update：服务端已经没有的端点如实回报（不凭空加回来）", async () => {
+    const h = harness(() => ({ config: { endpoints: [], defaults: {}, configDir: "/d" }, issues: [] }));
+
+    const report = await new ServerConfigService(h.ctx).update({
+      endpoints: [{ id: "gone", name: "x", baseUrl: "y", apiKey: "k" }],
+    });
+
+    expect(report.missingEndpointIds).toEqual(["gone"]);
+    expect(h.calls.filter((call) => call.method === "config.saveEndpoint")).toEqual([]);
+  });
+
+  it("update：空的默认值不写，但要说出来（窄方法只收非空 id）", async () => {
+    const h = harness();
+
+    const report = await new ServerConfigService(h.ctx).update({ defaultModel: "", defaultAgent: "" });
+
+    expect(report.skippedDefaults).toEqual(["defaultModel", "defaultAgent"]);
+    expect(h.calls).toEqual([]);
+  });
+
+  it("update：默认值走 `config.setDefaults`", async () => {
+    const h = harness();
+
+    await new ServerConfigService(h.ctx).update({ defaultModel: "m2", defaultAgent: "a2" });
+
+    expect(h.calls).toEqual([
+      { method: "config.setDefaults", params: { defaults: { defaultModel: "m2", defaultAgent: "a2" } } },
+    ]);
+  });
+});
+
+// ==================================================================
+// chat
+// ==================================================================
+
+describe("chat", () => {
+  it("send：受理之后立刻回显 user + start（id 用服务端分的那个）", async () => {
+    const h = harness(() => ({
+      userMessageId: "m-user",
+      assistantMessageId: "m-assistant",
+      attachments: [],
+      acceptedAt: "2026-01-01T00:00:00.000Z",
+    }));
+
+    await new ServerChatService(h.ctx).send("ws-1", CONVERSATION, "你好");
+
+    expect(h.calls[0]).toEqual({
+      method: "conversation.send",
+      params: { conversationId: CONVERSATION, input: { content: "你好" } },
+    });
+    expect(h.events).toEqual([
+      { conversationId: CONVERSATION, type: "user", id: "m-user", content: "你好" },
+      { conversationId: CONVERSATION, type: "start" },
+    ]);
+  });
+
+  it("send 撞上 busy：什么都不推（那是多点了一下发送，不是错误）", async () => {
+    const h = harness(() => {
+      throw new ClientErrorValue("busy", "这段对话正在跑一轮");
+    });
+
+    await new ServerChatService(h.ctx).send("ws-1", CONVERSATION, "你好");
+
+    expect(h.events).toEqual([]);
+  });
+
+  it("send 撞上 question_pending：推 error（用户得知道「有题没答」挡着）", async () => {
+    const h = harness(() => {
+      throw new ClientErrorValue("question_pending", "这个问题还没回答，这段对话暂时不能发消息");
+    });
+
+    await new ServerChatService(h.ctx).send("ws-1", CONVERSATION, "你好");
+
+    const error = h.events[0];
+    if (error?.type !== "error") throw new Error("应当推一条 error");
+    expect(error.message).toContain("还没回答");
+  });
+
+  it("abort：发 `conversation.abort`（收尾照常走 run.state）", async () => {
+    const h = harness();
+    await new ServerChatService(h.ctx).abort(CONVERSATION);
+    expect(h.calls[0]).toEqual({ method: "conversation.abort", params: { conversationId: CONVERSATION } });
+  });
+
+  it("getState：先状态后消息，并把锚点记成最后一条的 id（重连补拉的 after）", async () => {
+    const messages = [
+      { id: "m1", role: AgentNS.Role.User, content: "问题" },
+      { id: "m2", role: AgentNS.Role.Assistant, content: "写了一半" },
+    ];
+    const h = harness((method) => {
+      if (method === "conversation.state") {
+        return { state: wireConversationState({ status: "running", generation: { phase: "generating", since: "…", chars: 4 } }) };
+      }
+      if (method === "message.list") {
+        return { conversationId: CONVERSATION, anchor: null, messages };
+      }
+      return {};
+    });
+
+    const state = await new ServerChatService(h.ctx).getState("ws-1", CONVERSATION);
+
+    expect(h.calls.map((call) => call.method)).toEqual(["conversation.state", "message.list"]);
+    expect(state).toEqual({ messages, streaming: true });
+    expect(h.tracked.get(CONVERSATION)).toBe("m2");
+    // 六态也交给了事件层：切回来不该显示成「什么都没在跑」
+    expect(h.events).toEqual([
+      { conversationId: CONVERSATION, type: "stream", phase: "generating", runningTools: [] },
     ]);
   });
 });

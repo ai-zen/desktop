@@ -1,54 +1,24 @@
 /**
- * 六个 Service 的「瘦客户端」实现 —— 每个方法只做一件事：**把 render 要的形状翻译成
- * 协议调用，再把结果翻译回去**。没有业务规则、没有本地状态、不碰磁盘。
+ * 六个 Service —— 每个方法只做一件事：**把 render 要的形状翻成契约调用，再把结果翻回来**。
+ * 没有业务规则、没有本地状态、不碰磁盘。
+ *
+ * ## 分发键是 render 的调用面，不许跟着实现改名
+ *
+ * `workspace` / `conversation` / `agent` / `model` / `chat` / `config` 这六个键、以及每个键下面
+ * 的方法名与参数顺序，全部来自 render 的 `apis/*.ts`（`invokeService(service, method, ...args)`）。
+ * render 一行不动是这一波的硬约束，所以这里的方法名照旧，只是**另一头**换成了新契约。
  *
  * ## 三条纪律
  *
- * 1. **对外方法签名跟着 render 的调用面走**（含参数顺序与返回类型），
- *    `ServicesManager` 的分发键（`workspace` / `conversation` / `agent` / `model` /
- *    `chat` / `config`）也一样 —— 这两处就是 render 的调用面，签名一漂就等于改了 render。
- * 2. **不自己算规则**：模型走服务端三级解析（`会话级 > Agent 定义 > 全局`）、会话清单的
- *    排序与 `live/phase` 由服务端给、删工作区连会话一起删也在服务端。客户端再算一遍
- *    就是第二份会漂的实现。
- * 3. **协议没有的东西不造**：`session.snapshot` 只认活会话、`session.list` 里没有消息
- *    正文、`SessionListEntry.modelId` 只是会话级覆盖 —— 这些都在下面各自的注释里写清
- *    降级到哪一步。
- *
- * ## 为什么直接调协议方法，而不是包里的 `RemoteSessions` / `RemoteConfig`
- *
- * 那两个门面已经是**全量**的了（协议方法表全覆盖，见包里的 `facade/coverage.test-d.ts`），
- * 但它们绑的是**构造那一刻**的那一条 `ServerClient`。在本层留一个长期存活的
- * `new RemoteSessions(client)` 字段，等于把「哪条连接」缓存进对象里 —— 连接一换
- * （daemon 重启、socket 断了重建）它就再也发不出请求 —— 所有调用一律 `client is closed`，
- * 而界面上看起来只是「没反应」。
- *
- * 所以这里要的是「每个动作都问一次活着的连接」：它落在 `call` 上（见 `./call.ts`）。方法名
- * 与结果类型仍来自 `@ai-zen/agents-client` 转出的契约类型 —— 改协议时这里编译不过，而不是
- * 运行期 500。这六个类一个都不需要「连接」这件事本身（不订阅、不判活、不重连），只需
- * 「把这句话发出去」，于是它们连存一份会过期的 `client` 的机会都没有。
+ * 1. **不自己算规则**：侧栏顺序、消息条数、`running`、生效模型都由服务端给（`conversation.list`
+ *    的每一项就是它算好的），客户端再推一遍就是第二份会漂的实现；
+ * 2. **消息本体是 core 的 `AgentNS.Message`**，原样来回搬，不重新包装字段（`message.list` 给的
+ *    就是那个类型）；
+ * 3. **契约没有的东西不造**：render 要而这一波没接的（子 Agent 栏目、通知的手动清除、提问 UI），
+ *    宁可留空并在 `events.ts` 里说清，也不编一个像样的假值。
  */
 
-import { basename, dirname } from "node:path";
-import {
-  type AgentListResult,
-  type ConfigGetResult,
-  type SessionCreateResult,
-  type SessionListResult,
-  type SessionRemoveResult,
-  type SessionSendResult,
-  type SessionSnapshotResult,
-  type WorkspaceListResult,
-  type WorkspaceRemoveResult,
-  type WorkspaceRenameResult,
-  type WorkspaceResolveResult,
-} from "@ai-zen/agents-client";
-// 只借类型：Agent 定义与全局配置的形状真相源在 SDK，协议层刻意用 `unknown` 不解释它
-// （`import type` 在产物里被整体擦除，不构成运行期依赖）
-//
-// 与 `events.ts` 的差别：那边的**消息**载荷已经从 `unknown` 变成了具名类型（`Message`），
-// 所以它不再需要 core 的类型；而 `agent.list` / `config.get` 的载荷仍是 `unknown`（协议不
-// 解释 Agent 定义与配置的形状）—— 这两个地方只能在这里断言回收。
-import type { AgentDefinition, AppConfig } from "@ai-zen/agents-sdk";
+import type { AgentNS } from "@ai-zen/agents-client";
 import type {
   AgentOption,
   ConfigSettings,
@@ -60,96 +30,68 @@ import type {
   ModelOption,
   Workspace,
 } from "@ai-zen/desktop-shared";
-import type { ProtocolCall } from "./call.js";
+import type { ContractCall, ContractConnection } from "./contract.js";
 import type { ChatEventBridge } from "./events.js";
 
 /**
- * 会话没起过名时的兜底名字。
+ * 服务共用的那几样东西。
  *
- * 服务端把「没有 title」如实回成 `undefined`（那确实还没名字），而侧栏总得显示点什么 ——
- * 但那个「什么」必须是一个**常量**：同一段没名字的会话，在侧栏、在标题栏、刷新前后都必须
- * 是同一个名字。
- *
- * 按 `updatedAt` 拼成 `对话_HH:mm` 是不行的：`updatedAt` 是「最后一次活动」的时间，每发
- * 一轮、每改一次名都会刷新，于是同一段会话的名字会跟着改（改个名，显示的名字反而从「我的
- * 问题」变回「对话_09:41」）。一个会跟着事实变化的名字是**第二个状态**，而它要表达的那个
- * 事实（还没有名字）本来只需要一个词。所以给一个常量，且不为它编时间戳。
+ * `connection` 是**取连接的动作**而不是一条连接：客户端库在重连时换掉底层 socket（对象本身不变），
+ * 而把这些服务与「这一条」绑死没有任何好处 —— 每次现取，「哪条连接」就只有一个来源。
  */
-const UNNAMED_CONVERSATION = "未命名对话";
+export interface ServiceContext {
+  /** 发一次契约调用 */
+  call: ContractCall;
+  /** 当前这条连接（`chat` 要 `resume` / `track`，见那边的注释） */
+  connection: () => ContractConnection;
+  /** 事件出口（`chat.send` 受理之后要立刻回显，收尾要靠它） */
+  events: ChatEventBridge;
+  /** 用户不填目录时的默认工作目录（桌面端注入 `app.getPath("desktop")`） */
+  defaultCwd: () => string;
+}
 
 // ==================================================================
 // workspace
 // ==================================================================
 
-export interface ServerWorkspaceServiceOptions {
-  /** 发一次协议调用（连接死了它自己会重建，见 `./call.ts`） */
-  call: ProtocolCall;
-  /** 用户不填目录时的默认工作目录（桌面端注入 `app.getPath("desktop")`） */
-  defaultCwd: () => string;
-}
-
 export class ServerWorkspaceService {
-  constructor(private readonly options: ServerWorkspaceServiceOptions) {}
+  constructor(private readonly ctx: ServiceContext) {}
 
-  /** 盘上全部工作区（服务端已按显示名排好序，客户端不重排） */
+  /** 全部项目（服务端已按 `createdAt` 倒序 / 置顶优先排好，客户端不重排） */
   async list(): Promise<Workspace[]> {
-    const result =
-      await this.options.call<WorkspaceListResult>("workspace.list");
-    return result.workspaces.map((summary) => ({
-      id: summary.workspaceId,
-      // `title` 缺省 = 还没起过名：用目录名兜底（名称本来就是选填）
-      name: summary.title ?? basename(summary.path),
-      cwd: summary.path,
-    }));
+    const { workspaces } = await this.ctx.call("workspace.list", {});
+    return workspaces.map(toWorkspace);
   }
 
   /**
-   * 建（或复用）一个工作区。
+   * 建（或复用）一个项目。
    *
-   * `workspace.resolve` 是**幂等**的：同一个目录永远得到同一个 `workspaceId`（id 首次分配
-   * 后冻结，目录改名也不会变）。所以"再建一次同名目录"在服务端就是"又指到了那个工作区"，
-   * 客户端不该自己判重。
-   *
-   * 服务端的 `resolve` **不接受名字**（名字是纯展示用的 `title`，另一条窄方法写它）：
-   * 用户填了名字就再补一次 `workspace.rename`，没填就让它继续空着（列表侧用目录名兜底）。
+   * `cwd` 为空时用桌面端的默认目录（`app.getPath("desktop")`）—— 那是**本机**的事实，服务端
+   * 不可能知道，所以由这里补上再交出去。
    */
   async create(name: string, cwd: string): Promise<Workspace> {
-    const path = cwd?.trim() || this.options.defaultCwd();
-    const resolved = await this.options.call<WorkspaceResolveResult>(
-      "workspace.resolve",
-      { path },
-    );
+    const input = cwd?.trim() || this.ctx.defaultCwd();
     const title = name?.trim();
-    if (title) {
-      await this.options.call<WorkspaceRenameResult>("workspace.rename", {
-        workspaceId: resolved.workspaceId,
-        title,
-      });
-    }
-    return {
-      id: resolved.workspaceId,
-      name: title || basename(resolved.path),
-      // 一律用服务端规范化后的路径：它才是会话真正跑的地方
-      cwd: resolved.path,
-    };
+    const { workspace } = await this.ctx.call("workspace.create", {
+      cwd: input,
+      ...(title ? { name: title } : {}),
+    });
+    return toWorkspace(workspace);
   }
 
-  /** 改显示名（不动 id、不动 path） */
+  /** 改显示名（不动 id、不动 cwd；PRD D9 的 cwd 不可变） */
   async rename(id: string, name: string): Promise<void> {
-    await this.options.call<WorkspaceRenameResult>("workspace.rename", {
-      workspaceId: id,
-      title: name,
-    });
+    await this.ctx.call("workspace.rename", { workspaceId: id, name });
   }
 
   /**
-   * 删工作区 —— 服务端把整个 `workspaces/<id>/` 删掉（含 `sessions/` 与续接指针），并
-   * 关掉该工作区下还活着的会话。客户端因此不需要任何释放钩子。
+   * 删项目 —— 服务端连带删它名下的对话（PRD D11），目录本身它永不碰。
+   *
+   * 不带 `dryRun`：render 的删除确认框问的是「连会话一起删」这件事本身，代价明细（几条会话几条
+   * 消息）这一波没有界面显示；要显示的那天把 `dryRun: true` 先跑一遍即可。
    */
   async remove(id: string): Promise<void> {
-    await this.options.call<WorkspaceRemoveResult>("workspace.remove", {
-      workspaceId: id,
-    });
+    await this.ctx.call("workspace.remove", { workspaceId: id });
   }
 }
 
@@ -157,153 +99,91 @@ export class ServerWorkspaceService {
 // conversation
 // ==================================================================
 
-export interface ServerConversationServiceOptions {
-  call: ProtocolCall;
-}
-
 export class ServerConversationService {
-  constructor(private readonly options: ServerConversationServiceOptions) {}
+  constructor(private readonly ctx: ServiceContext) {}
 
-  /**
-   * 侧栏的会话清单：服务端把「盘上存档 ∪ 内存活会话」合成一条（同一段会话只有一条），
-   * 并按 `updatedAt` 倒序给好。
-   *
-   * `running = live && phase !== null`：`live` 只说明"在服务端内存里"，挂着不跑也算；
-   * 侧栏那个小圆点要的是"正在跑"。
-   */
+  /** 侧栏的会话清单（顺序、条数、`running` 全由服务端给） */
   async list(workspaceId: string): Promise<ConversationSummary[]> {
-    const result = await this.options.call<SessionListResult>("session.list", {
-      workspaceId,
-    });
-    return result.sessions.map((entry) => ({
-      id: entry.sessionId,
-      workspaceId,
-      agentId: entry.agentId,
-      // render 的模型下拉框读这一位当「当前模型」显示（`ChatPanel.vue` 的 `currentModelId`），
-      // 所以它必须答「这段会话实际在用哪个模型」，而不是「这段会话有没有自己的覆盖」：
-      // 协议里 `modelId` 是后者（缺省 = 跟着 Agent 定义 / 全局兜底走），只读它的话绝大多数
-      // 会话的下拉框会空着。生效值由服务端给（`effectiveModelId`，三级解析的唯一实现是
-      // SDK 的 `resolveModel`）。
-      //
-      // 解析不出来时（那段会话指着已删的 Agent 定义、或三级都空）服务端**省略**该字段 ——
-      // 按协议，那就省略：空串的意思是「现在没有生效模型」，`ModelSelect` 会显示成没选。
-      // **不退回** `entry.modelId`：那是「用户给这段会话设过的覆盖」，不是它现在在用的模型
-      // （覆盖值指向的模型可能已经不在配置里）。猜一个只会让 UI 更有底气地撒谎；也不在
-      // 客户端按「覆盖 + 定义 + 默认」再推一遍 —— 那是优先级规则的第二份实现。
-      modelId: entry.effectiveModelId ?? "",
-      name: entry.title ?? UNNAMED_CONVERSATION,
-      messageCount: entry.messageCount,
-      updatedAt: entry.updatedAt,
-      running: entry.live && entry.phase !== null,
-    }));
+    const { conversations } = await this.ctx.call("conversation.list", { workspaceId });
+    return conversations.map(toSummary);
   }
 
   /**
    * 新建一段会话。
    *
-   * 模型**不由客户端指定**：服务端按「会话级覆盖 > Agent 定义 > 全局默认」三级解析，
-   * 解析结果只在快照里出现，所以建完必须再要一次 `session.snapshot` —— 顺便把初始消息
-   * （Agent 定义的预设 system/few-shot）也一起拿到（预设由服务端写进会话，客户端不落盘）。
+   * 助手与模型在创建时定死（PRD L7）：`agentId` 由 render 选，模型由服务端按「助手定义 > 兜底」
+   * 解析，客户端不指定、也不猜。
+   *
+   * 目录还没登记成项目时服务端不建对话，而是回 `requiresRegistration`（PRD D10）—— 那个分支要
+   * 用户先答一个问题，而桌面端这一波没有提问 UI（见 `events.ts` 文件头），所以这里当成失败**说
+   * 清原因**，不静默返回一个空对话。
    */
   async create(workspaceId: string, agentId: string): Promise<Conversation> {
-    const created = await this.options.call<SessionCreateResult>(
-      "session.create",
-      { workspaceId, agentId },
-    );
-    const snapshot = await this.options.call<SessionSnapshotResult>(
-      "session.snapshot",
-      { sessionId: created.sessionId },
-    );
-    const now = new Date().toISOString();
+    const created = await this.ctx.call("conversation.create", { workspaceId, agentId });
+    if (!created.conversation) {
+      throw new Error(
+        `这个目录还没登记成项目（${created.cwd ?? workspaceId}），要先回答「是否登记为项目」才能建对话 —— 桌面端还没有提问界面`,
+      );
+    }
+    const conversation = created.conversation;
+    // 预设消息（助手定义里的 system / few-shot）由服务端写进会话，客户端只读：刚建出来的这一段
+    // 可能已经有几条，所以照常规取一次
+    const listed = await this.ctx.call("message.list", { conversationId: conversation.id });
     return {
-      id: created.sessionId,
-      workspaceId,
-      agentId: created.agentId,
-      modelId: snapshot.modelId,
-      name: UNNAMED_CONVERSATION,
-      messages: snapshot.messages,
-      // 协议里没有创建/更新时间（`SessionRecord` 只有 `updatedAt`，且只在写档时出现），
-      // 刚建出来的这一段，"现在"就是它唯一诚实的两个时间
-      createdAt: now,
-      updatedAt: now,
+      id: conversation.id,
+      workspaceId: conversation.workspaceId,
+      agentId: conversation.agentId,
+      modelId: conversation.model.modelId,
+      name: conversation.name,
+      messages: listed.messages,
+      createdAt: conversation.createdAt,
+      updatedAt: conversation.updatedAt,
     };
   }
 
   /**
-   * 读一段会话（含消息）。
+   * 读一段会话（含全部消息）。
    *
-   * 协议**没有只读的 read**：`session.snapshot` 只认活会话（服务端 `require()` 不到就报
-   * `unknown-session`），盘上的存档要先 `attach` 装回内存。所以是两跳，而且 `attach`
-   * 对活着的会话是空操作（立刻回同一个 id）。
-   *
-   * 名字与时间**不在快照里**（`SessionSnapshotResult` 只给消息、模型、阶段），所以在快照
-   * 之外再要一次 `session.list`，从那一行取 `title` 与 `updatedAt`。
-   *
-   * 顺序上 list 在前：少一次「先拿一个错值再改正」的窗口。read 是低频调用（render
-   * 目前甚至没人调它），多这一次往返不做缓存 —— 缓存等于客户端存一份服务端的真相，
-   * 迟早与它不一致。
-   *
-   * 找不到时回 `null`：服务端用 `session-missing` 这个码表达同一件事 —— 在这里翻回
-   * `null`，调用方不必认识服务端的错误码。
+   * render 目前没有调用点（点开会话走 `chat.getState`），保留它是为了让 `apis/conversation.ts`
+   * 的方法面与 main 对得上：少一个方法，那个 api 函数就成了一条会 reject 的死路。
    */
   async read(workspaceId: string, id: string): Promise<Conversation | null> {
-    // 先读清单（理由见上）。复用 `list` 而不是自己再拼一遍："read 的名字/时间与侧栏那一条
-    // 一致"这件事，因此由同一处实现保证
-    const summary = (await this.list(workspaceId)).find(
-      (item) => item.id === id,
-    );
     try {
-      await this.options.call("session.attach", { workspaceId, sessionId: id });
+      const { conversation } = await this.ctx.call("conversation.get", { conversationId: id });
+      const listed = await this.ctx.call("message.list", { conversationId: id });
+      return {
+        id: conversation.id,
+        workspaceId: conversation.workspaceId || workspaceId,
+        agentId: conversation.agentId,
+        modelId: conversation.model.modelId,
+        name: conversation.name,
+        messages: listed.messages,
+        createdAt: conversation.createdAt,
+        updatedAt: conversation.updatedAt,
+      };
     } catch (error) {
-      if ((error as { code?: string }).code === "session-missing") return null;
+      // 服务端用 `not_found` 表达「这段对话不在」：在这里翻回 `null`，调用方不必认识业务码
+      if (isBiz(error, "not_found")) return null;
       throw error;
     }
-    const snapshot = await this.options.call<SessionSnapshotResult>(
-      "session.snapshot",
-      { sessionId: id },
-    );
-    // 清单里没有这一条，只可能是「list 与 attach 之间它刚被另一条连接建出来」这种竞态：
-    // 那一刻的快照也给不出时间，而「此刻」正是它唯一诚实的时间
-    const updatedAt = summary?.updatedAt ?? new Date().toISOString();
-    return {
-      id,
-      workspaceId,
-      agentId: snapshot.agentId,
-      modelId: snapshot.modelId,
-      name: summary?.name ?? UNNAMED_CONVERSATION,
-      messages: snapshot.messages,
-      // 协议没有创建时间（`SessionRecord` 只有清单侧的 `updatedAt`，且它在写入时才刷新）：
-      // 这一段**取的是最后一次更新时间，不要当创建时间用**。宁可如实说清，也不编一个
-      // 「现在」—— 那会让排序与「这段会话多久没动过」全部失真
-      createdAt: updatedAt,
-      updatedAt,
-    };
   }
 
-  /** 删会话：服务端先关掉活会话再物理删存档（幂等，"本来就没有"不算错） */
+  /** 硬删（PRD D17；服务端按引用清理图片） */
   async remove(workspaceId: string, id: string): Promise<void> {
-    await this.options.call<SessionRemoveResult>("session.remove", {
-      workspaceId,
-      sessionId: id,
-    });
+    void workspaceId; // 渲染层签名如此；契约只认会话 id（会话自己知道属于哪个项目）
+    await this.ctx.call("conversation.delete", { conversationId: id });
   }
 
-  /** 改显示名（不动 id；服务端会拒绝空名字，那是协议层的必填约束） */
+  /** 改名（不动 id、不动排序，PRD D1 / D13） */
   async rename(workspaceId: string, id: string, name: string): Promise<void> {
-    await this.options.call("session.rename", {
-      workspaceId,
-      sessionId: id,
-      title: name,
-    });
+    void workspaceId;
+    await this.ctx.call("conversation.rename", { conversationId: id, name });
   }
 
-  /** 换这一段会话的模型：只写会话级覆盖，服务端随即按新模型重建 Agent */
-  async setModel(
-    workspaceId: string,
-    id: string,
-    modelId: string,
-  ): Promise<void> {
-    await this.options.call("session.model.set", { sessionId: id, modelId });
+  /** 临时换模型（只活在内存、重开回默认，PRD L7 / F-B4） */
+  async setModel(workspaceId: string, id: string, modelId: string): Promise<void> {
+    void workspaceId;
+    await this.ctx.call("conversation.setModel", { conversationId: id, modelId });
   }
 }
 
@@ -311,42 +191,40 @@ export class ServerConversationService {
 // agent / model
 // ==================================================================
 
-export interface ServerAgentServiceOptions {
-  call: ProtocolCall;
-}
-
 export class ServerAgentService {
-  constructor(private readonly options: ServerAgentServiceOptions) {}
+  constructor(private readonly ctx: ServiceContext) {}
 
   /**
-   * 入口 Agent 列表。
+   * 入口助手列表。
    *
-   * 服务端已经把两类定义分好（`{agents, subAgents}`）：客户端不再自己按字段过滤 SubAgent
-   * —— 判定只该在分目录的地方做一次。
+   * 子 Agent（定义里带 `function`）不进这个列表：它们不是「开一段对话」的入口（服务端用
+   * `isSubAgent` 明说了这件事，客户端不再按字段自己判）。
    */
   async list(): Promise<AgentOption[]> {
-    const result = await this.options.call<AgentListResult>("agent.list");
-    // 线上是 `unknown[]`（协议不解释定义的形状）：到这一层才回收成 Agent 定义
-    return (result.agents as AgentDefinition[]).map((agent) => ({
-      id: agent.id,
-      name: agent.name,
-      description: agent.description,
-    }));
+    const { agents } = await this.ctx.call("agent.list", {});
+    return agents
+      .filter((agent) => !agent.isSubAgent)
+      .map((agent) => ({
+        id: agent.id,
+        name: agent.name,
+        ...(agent.description ? { description: agent.description } : {}),
+      }));
   }
 }
 
-export interface ServerModelServiceOptions {
-  call: ProtocolCall;
-}
-
 export class ServerModelService {
-  constructor(private readonly options: ServerModelServiceOptions) {}
+  constructor(private readonly ctx: ServiceContext) {}
 
-  /** 模型下拉。协议里没有 `model.list`：模型清单是全局配置的一个字段，只能整份读 */
+  /**
+   * 模型下拉的候选。
+   *
+   * 只给**现在能用**的：下拉框里选一个不可用的模型，发出去必然失败，而失败原因（端点缺密钥之类）
+   * 在对话才显示就太晚了。不可用的那些仍然在服务端清单里（`model.list` 默认全给），设置页要列
+   * 的时候再拉一次就是。
+   */
   async list(): Promise<ModelOption[]> {
-    const result = await this.options.call<ConfigGetResult>("config.get");
-    const config = result.config as AppConfig;
-    return config.models.map((model) => ({ id: model.id, name: model.name }));
+    const { models } = await this.ctx.call("model.list", {});
+    return models.filter((model) => model.available).map((model) => ({ id: model.id, name: model.name }));
   }
 }
 
@@ -354,96 +232,81 @@ export class ServerModelService {
 // config
 // ==================================================================
 
-export interface ServerConfigServiceOptions {
-  call: ProtocolCall;
-}
-
 export class ServerConfigService {
-  constructor(private readonly options: ServerConfigServiceOptions) {}
+  constructor(private readonly ctx: ServiceContext) {}
 
   /**
    * 设置页要的那一小撮字段。
    *
-   * `dataDir` 取 `config.json` 的**服务端**路径的目录：客户端算不出服务端的数据目录
-   * （两机部署时更不存在），所以这条路径由服务端随配置一起回来。
+   * `dataDir` 是服务端给的 `configDir`：两机部署时客户端算不出对面把配置放在哪，所以这条路径
+   * 只能由服务端随配置一起回来。
+   *
+   * `apiKey` 里放的是**掩码**（`sk-…9f3a`）：新契约的明文密钥不出网（PRD F-F2）。设置页那个输入框
+   * 因此显示的是掩码 —— 用户在框里改成一个新值就表示「换密钥」，原样不动就表示「不改」
+   * （见 `update()` 的 `apiKeySet` 判定）。
    */
   async get(): Promise<ConfigSettings> {
-    const result = await this.options.call<ConfigGetResult>("config.get");
-    const config = result.config as AppConfig;
+    const { config } = await this.ctx.call("config.get", {});
     const endpoints: EndpointSettings[] = config.endpoints.map((endpoint) => ({
       id: endpoint.id,
       name: endpoint.name,
       baseUrl: endpoint.baseUrl,
-      apiKey: endpoint.apiKey ?? "",
-      description: endpoint.description,
+      apiKey: endpoint.apiKeyMasked,
+      ...(endpoint.description ? { description: endpoint.description } : {}),
     }));
     return {
       endpoints,
-      defaultModel: config.defaultModel ?? "",
-      defaultAgent: config.defaultAgent ?? "",
-      dataDir: dirname(result.path),
+      defaultModel: config.defaults.defaultModel ?? "",
+      defaultAgent: config.defaults.defaultAgent ?? "",
+      dataDir: config.configDir,
     };
   }
 
   /**
-   * 保存设置。
+   * 保存设置：默认项走 `config.setDefaults`，端点走 `config.saveEndpoint`（一个端点一次）。
    *
-   * 两个默认值走**窄方法**（各写一个字段），不是「读整份 → 改一个字段 → 整份写回」：
-   * 终端与桌面端同时开着时，整份写回会把对方刚改的字段一起抹掉。
+   * 两处「没写」照实回报（`ConfigUpdateReport` 的存在理由）：默认值是空串（服务端的窄方法只收非空
+   * id）、端点 id 在服务端已经不存在。界面据此说一句真话，而不是把「没落盘」当成「已保存」。
    *
-   * 端点的 `apiKey / baseUrl / name` 没有窄方法（协议只有 `config.mcp.save` 那一族，
-   * 没有 `config.endpoint.set`），只能整份 `config.save` —— 这是本层唯一还剩的丢更新窗口
-   * （两条连接同时改不同端点时，后写的那份覆盖先写的那份）。
-   *
-   * 空串**不写**：空串的含义是"这个字段没值"，而服务端的窄方法只接受非空 id
-   * （空串是 `bad-params`）。也没有"清空默认值"的协议方法，所以没有等价的写入。
-   *
-   * ## 两处「故意不写」都如实回报，不做静默丢弃
-   *
-   * 这两处语义是对的（窄方法只收非空 id、猜一个端点回来更糟），但**不吭声**是错的：调用方
-   * 拿 `void` 就只能事后重读一遍去猜自己写进去没有。所以返回 `ConfigUpdateReport` —— 写了
-   * 哪些、哪些没写、为什么没写，由这个函数自己说，而不是让调用方反推。
+   * **密钥只在真的改了时才写**：框里显示的是掩码，把它原样回写会把掩码当成密钥存起来。所以
+   * 「提交值 === 掩码」⇒ 省略 `apiKey`（契约里省略 = 保留原值）。
    */
   async update(input: Partial<ConfigSettings>): Promise<ConfigUpdateReport> {
     const skippedDefaults: ConfigUpdateReport["skippedDefaults"] = [];
-    if (input.defaultModel) {
-      await this.options.call("config.defaultModel.set", {
-        modelId: input.defaultModel,
-      });
-    } else if (input.defaultModel === "") {
-      // 调用方确实给了空串（盘上那个模型已被删除 → 下拉框空白）：「没写」要能被说出来
-      skippedDefaults.push("defaultModel");
-    }
-    if (input.defaultAgent) {
-      await this.options.call("config.defaultAgent.set", {
-        agentId: input.defaultAgent,
-      });
-    } else if (input.defaultAgent === "") {
-      skippedDefaults.push("defaultAgent");
+
+    const defaults: { defaultModel?: string; defaultAgent?: string } = {};
+    if (input.defaultModel) defaults.defaultModel = input.defaultModel;
+    else if (input.defaultModel === "") skippedDefaults.push("defaultModel");
+    if (input.defaultAgent) defaults.defaultAgent = input.defaultAgent;
+    else if (input.defaultAgent === "") skippedDefaults.push("defaultAgent");
+    if (Object.keys(defaults).length > 0) {
+      await this.ctx.call("config.setDefaults", { defaults });
     }
 
     const writtenEndpointIds: string[] = [];
     const missingEndpointIds: string[] = [];
     if (input.endpoints) {
-      const result = await this.options.call<ConfigGetResult>("config.get");
-      const config = result.config as AppConfig;
+      // 现读一次是为了拿到掩码与「服务端还有没有这个端点」—— 面板开着的时候它可能已经被别的
+      // 客户端删掉了
+      const { config } = await this.ctx.call("config.get", {});
       for (const edit of input.endpoints) {
-        const target = config.endpoints.find(
-          (endpoint) => endpoint.id === edit.id,
-        );
-        if (!target) {
-          // 服务端那份配置里已经没有这个端点（面板开着的时候被 CLI / 另一台桌面端删了）。
-          // 跳过是对的（凭空把它加回来等于撤销别人的删除），但要记下来往上抛，
-          // 别让用户在那个框里敲的 apiKey 消失得无声无息。
+        const current = config.endpoints.find((endpoint) => endpoint.id === edit.id);
+        if (!current) {
           missingEndpointIds.push(edit.id);
           continue;
         }
-        if (edit.apiKey !== undefined) target.apiKey = edit.apiKey;
-        if (edit.baseUrl !== undefined) target.baseUrl = edit.baseUrl;
-        if (edit.name !== undefined) target.name = edit.name;
+        const apiKey = edit.apiKey && edit.apiKey !== current.apiKeyMasked ? edit.apiKey : undefined;
+        await this.ctx.call("config.saveEndpoint", {
+          endpoint: {
+            id: edit.id,
+            name: edit.name,
+            baseUrl: edit.baseUrl,
+            ...(apiKey ? { apiKey } : {}),
+            ...(edit.description !== undefined ? { description: edit.description } : {}),
+          },
+        });
         writtenEndpointIds.push(edit.id);
       }
-      await this.options.call("config.save", { config });
     }
 
     return { writtenEndpointIds, missingEndpointIds, skippedDefaults };
@@ -454,101 +317,112 @@ export class ServerConfigService {
 // chat
 // ==================================================================
 
-export interface ServerChatServiceOptions {
-  call: ProtocolCall;
-  events: ChatEventBridge;
-}
-
 export class ServerChatService {
-  constructor(private readonly options: ServerChatServiceOptions) {}
+  constructor(private readonly ctx: ServiceContext) {}
 
   /**
-   * 开始一轮。
+   * 发一段消息。**受理即返回**（PRD F-I12）：`conversation.send` 回来的是两个消息 id，
+   * 过程与结果全走事件。
    *
-   * `session.send` **立刻**回 `turnId`，过程与结果全走事件（一轮可能跑几分钟，等它回来
-   * 就没东西可渲染了）。`turnId` 交给事件层做归轮，本方法照旧返回 `void`（render 的
-   * `sendChatMessage` 就是这个签名）。
-   *
-   * 两条失败出口：
-   *   - `turn-busy`（上一轮还没收尾）→ **静默忽略**：render 侧看不到任何东西，
-   *     不然"多点了一下发送"会弹一条看不懂的英文错误。
-   *   - 其余错误（会话不在、连接断了）→ 推 `error` 事件（不让 IPC 抛错，
-   *     render 的 `send()` 因此永远正常返回）。
-   *
-   * 前提：会话已经 attach 过（`conversation.create` 与 `chat.getState` 都做了）。服务端的
-   * `session.send` 只认内存里的活会话 —— 盘上的存档要先 `attach` 装回内存。
-   *
-   * `workspaceId` 只是为了与 render 的签名一致留着：`session.send` 只认会话 id（会话已
-   * 知道自己属于哪个工作区），这里不再拿它去查任何东西。
+   * 三条出口：
+   *   · 受理了 → 立刻把 `user` + `start` 推给 render（id 是服务端给的，不必编）；
+   *   · `busy`（这段对话正跑着一轮，PRD D14）→ 什么都不推：那是「多点了一下发送」，不是错误；
+   *   · 其余（`question_pending`、会话不在、连接断了）→ 推 `error`。不让 IPC 抛错：render 的
+   *     `send()` 因此永远正常返回，错误条由事件驱动。
    */
-  async send(
-    workspaceId: string,
-    conversationId: string,
-    content: string,
-  ): Promise<void> {
-    // 事件可能比这次调用的回执**先**到（服务端在 beginTurn 后就推第一条阶段事件），
-    // 所以正文要在发请求之前登记好，否则第一批增量到了却不知道该给哪条 user 消息
-    this.options.events.noteSend(conversationId, content);
+  async send(workspaceId: string, conversationId: string, content: string): Promise<void> {
+    void workspaceId; // 渲染层签名如此；契约只认会话 id
     try {
-      await this.options.call<SessionSendResult>("session.send", {
-        sessionId: conversationId,
-        content,
+      const accepted = await this.ctx.call("conversation.send", {
+        conversationId,
+        input: { content },
       });
+      this.ctx.events.beginTurn(conversationId, accepted.userMessageId, content);
     } catch (error) {
-      this.options.events.dropSend(conversationId);
-      if ((error as { code?: string }).code === "turn-busy") return;
-      this.options.events.pushError(conversationId, errorMessageOf(error));
+      if (isBiz(error, "busy")) return;
+      this.ctx.events.pushError(conversationId, messageOf(error));
     }
   }
 
-  /** 中止本轮：服务端掐掉正在流的那一段，随后照常走 `session-turn-end` 收尾（保留已生成内容） */
+  /** 中止本轮（PRD D14：用户的显式动作，不排队）；收尾照常走 `run.state` 的 `settled` */
   async abort(conversationId: string): Promise<void> {
-    await this.options.call("session.cancel", { sessionId: conversationId });
+    await this.ctx.call("conversation.abort", { conversationId });
   }
 
   /**
    * 会话实时状态（render 每次点开会话都调它）。
    *
-   * 先 `attach` 再 `snapshot`：`snapshot` 只对**活**会话可用，而侧栏里点开的常常是盘上的
-   * 历史。`attach` 对活会话是空操作，对存档是"装回内存"，两条路收敛成一条，
-   * 不用 try/catch 猜是哪一种。
-   */
-  async getState(
-    workspaceId: string,
-    conversationId: string,
-  ): Promise<ConversationState> {
-    await this.options.call("session.attach", {
-      workspaceId,
-      sessionId: conversationId,
-    });
-    const snapshot = await this.options.call<SessionSnapshotResult>(
-      "session.snapshot",
-      { sessionId: conversationId },
-    );
-    // 这份快照同时也交给事件层：它是「render 点开这段会话」这个动作的**新基线**，而事件层
-    // 那边有一段长命的状态机（以及一份在飞的轮次记账）。服务端的 `turnId` 会随进程重启 /
-    // 会话被回收后重新装回而**从 0 重来**，只有这份快照能告诉事件层「你手上那一轮是残影」
-    // （见 `ChatEventBridge.noteSnapshot`）。
-    this.options.events.noteSnapshot(conversationId, snapshot);
-    return {
-      messages: snapshot.messages,
-      // 「在跑」的唯一判据是阶段：阶段为 null 就是空闲
-      streaming: snapshot.phase !== null,
-    };
-  }
-
-  /**
-   * 释放一段会话（服务端摘事件、让出 Agent 与 Scope 引用，**不删存档**）。
+   * 两跳、串行：先 `conversation.state`（这一段在不在跑、跑到哪一态、用量、问题），再
+   * `message.list`（整段消息，含流式中那条的部分内容 —— PRD L5）。
    *
-   * 删除路径不需要它了：`session.remove` / `workspace.remove` 在服务端已经会关掉活会话。
-   * 服务端的 `close` 不掐正在跑的那一轮（那一轮会自己跑完、存档照写）—— 而 render 没有
-   * 这条路径（它只删会话，走 remove）。
+   * 把这条消息列表交给事件层当**基线**，并把本地锚点记成最后一条的 id：下一次断线重连，客户端库
+   * 拿这个锚点做 `message.list({after})`，续传天然就是「那条的最新内容 + 之后的」。
    */
-  async release(conversationId: string): Promise<void> {
-    await this.options.call("session.close", { sessionId: conversationId });
+  async getState(workspaceId: string, conversationId: string): Promise<ConversationState> {
+    void workspaceId;
+    const { state } = await this.ctx.call("conversation.state", { conversationId });
+    const listed = await this.ctx.call("message.list", { conversationId });
+
+    this.ctx.events.noteMessages(conversationId, listed.messages);
+    this.ctx.events.noteState(state);
+
+    const connection = this.ctx.connection();
+    connection.track(conversationId, lastId(listed.messages));
+
+    return {
+      messages: listed.messages,
+      // 「在跑」的唯一判据是服务端给的 `run.status`，客户端不自己推
+      streaming: state.run.status === "running",
+    };
   }
 }
 
-function errorMessageOf(error: unknown): string {
+// ==================================================================
+// 内部
+// ==================================================================
+
+function toWorkspace(view: {
+  id: string;
+  name: string;
+  folder: { cwd: string };
+}): Workspace {
+  return { id: view.id, name: view.name, cwd: view.folder.cwd };
+}
+
+function toSummary(view: {
+  id: string;
+  workspaceId: string;
+  agentId: string;
+  modelId: string;
+  name: string;
+  messageCount: number;
+  updatedAt: string;
+  running: boolean;
+}): ConversationSummary {
+  return {
+    id: view.id,
+    workspaceId: view.workspaceId,
+    agentId: view.agentId,
+    // 侧栏这一行没有「临时换模型」的信息（`conversation.list` 只说创建时定的那个）：下拉框
+    // 在选中某段对话之后由 `chat.getState` 的现场值补正
+    modelId: view.modelId,
+    name: view.name,
+    messageCount: view.messageCount,
+    updatedAt: view.updatedAt,
+    running: view.running,
+  };
+}
+
+/** 消息列表最后一条的 id（重连补拉的 `after`）；空列表时是 `undefined` */
+function lastId(messages: readonly AgentNS.Message[]): string | undefined {
+  return messages.at(-1)?.id;
+}
+
+/** 这个失败是不是服务端那个业务码（判伪看 `code`，不看句子） */
+function isBiz(error: unknown, code: string): boolean {
+  return typeof error === "object" && error !== null && (error as { code?: unknown }).code === code;
+}
+
+function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }

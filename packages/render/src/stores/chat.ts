@@ -16,11 +16,12 @@ import { defineStore } from "pinia";
 // 通知用 toast 弹（与设置页同一种提示）：element-plus 已在 render 的 dependencies 里
 import { ElMessage } from "element-plus";
 import { AgentNS } from "@ai-zen/agents-core";
-import type { ChatStreamEvent, SubAgentView } from "@ai-zen/desktop-shared";
+import type { ChatStreamEvent, StreamPhase, SubAgentView } from "@ai-zen/desktop-shared";
 import * as api from "../apis/index.js";
 import { useWorkspaceStore } from "./workspace.js";
 import { useConversationStore } from "./conversation.js";
 import { MAIN_AGENT_VIEW_ID, resolveActiveAgentId } from "./agentView.js";
+import { visibleMessages } from "./messageVisibility.js";
 
 interface ConversationChatState {
   messages: AgentNS.Message[];
@@ -28,6 +29,15 @@ interface ConversationChatState {
   error: string;
   /** 最近一次发送失败的内容（重试用） */
   lastFailedContent: string;
+  /**
+   * 服务端给的生成六态（连上 / 等首字 / 在想 / 在输出 / 拼工具调用 / 等工具）。
+   *
+   * `null` = 这一轮不在跑。取值一字未改来自服务端，render 不自己推（「现在算哪一态」是服务端的
+   * 事实，PRD L8）。
+   */
+  phase: StreamPhase | null;
+  /** 「在等哪几个工具」的工具名（并行时只含还在跑的） */
+  runningTools: string[];
   /**
    * 当前这一轮的子 Agent 栏目（数组顺序 = 服务端给的 `index` 顺序 = 标签顺序）。
    *
@@ -44,10 +54,27 @@ function emptyState(): ConversationChatState {
     streaming: false,
     error: "",
     lastFailedContent: "",
+    phase: null,
+    runningTools: [],
     agents: [],
     activeAgentId: MAIN_AGENT_VIEW_ID,
   };
 }
+
+/**
+ * 六态 → 正在生成那行字。
+ *
+ * 这一张表是**界面用词**（怎么说），六态本身是服务端的事实（是什么）—— 两者不混：服务端改了态，
+ * 这里补一行；这里改了词，服务端一行不用动。
+ */
+const PHASE_TEXT: Record<StreamPhase, string> = {
+  connected: "正在等待响应…",
+  awaiting_first_token: "正在等待首个字…",
+  thinking: "正在思考…",
+  generating: "正在输出…",
+  assembling_tool_calls: "正在准备工具调用…",
+  awaiting_tools: "正在等待工具结果…",
+};
 
 /**
  * 弹一条通知（`type: "notice"` 的唯一出口）。
@@ -72,7 +99,10 @@ export const useChatStore = defineStore("chat", {
   }),
 
   getters: {
-    /** 当前激活会话的消息（兼容旧用法；子 Agent 视图请用 `viewMessages`） */
+    /**
+     * 当前激活会话的消息 —— **服务端给的那一份原始数据**（`hidden` 的也在里面）。
+     * 要拿去显示请读 `viewMessages`（它已经把 `hidden` 滤掉了）
+     */
     messages: (state): AgentNS.Message[] =>
       state.byConversation[state.activeConversationId]?.messages ?? [],
     streaming: (state): boolean =>
@@ -85,6 +115,19 @@ export const useChatStore = defineStore("chat", {
     /** 当前会话本轮的子 Agent 栏目（空数组 = 没有栏目，视图层据此决定栏目是否渲染） */
     agents: (state): SubAgentView[] =>
       state.byConversation[state.activeConversationId]?.agents ?? [],
+    /**
+     * 正在生成那行字（六态 + 在等的工具名）。
+     *
+     * 没在跑时是空串（视图那边 v-show 不看它，看 `streaming`）；拿到了态就按 `PHASE_TEXT` 说，
+     * 连态都没拿到时用一句中的「正在思考…」—— 服务端确实还没报态，界面不该停在一片空白上。
+     */
+    streamingHint: (state): string => {
+      const st = state.byConversation[state.activeConversationId];
+      if (!st) return "";
+      const base = st.phase ? PHASE_TEXT[st.phase] : "正在思考…";
+      // 并行工具只念还在跑的那几个（PRD L8：已经跑完的不该还挂在「在等」里）
+      return st.runningTools.length > 0 ? `${base}（${st.runningTools.join("、")}）` : base;
+    },
     /** 当前选中项：`""` = 主对话 */
     activeAgentId: (state): string =>
       state.byConversation[state.activeConversationId]?.activeAgentId ?? MAIN_AGENT_VIEW_ID,
@@ -93,13 +136,22 @@ export const useChatStore = defineStore("chat", {
      *
      * 抽成 getter 而不是让视图自己 if：视图里 `useMessageWindow` / `useAutoScroll` 的每一个
      * watch 都要读它，散在模板和脚本里两处判断迟早会有一处漏改。
+     *
+     * 这里同时是 `hidden` 的**唯一**过滤点：服务端建会话时写进去的那条（当前目录那类）
+     * `hidden: true`，它不进任何一份要显示的列表（主对话、子 Agent 一视同仁）。过滤放在这里
+     * 而不是放在气泡组件里，是因为「显示哪些」在下面那串 watch（渲染窗口起点、滚动跟随、
+     * 打字机跟随）里也要用到同一个结果 —— 各自滤一遍，窗口的 index 就会指向两份长度不同的数组。
+     * 存着的 `messages` 保持原样（服务端给什么就存什么），重连补拉与重试读的仍是那一份。
      */
     viewMessages: (state): AgentNS.Message[] => {
       const st = state.byConversation[state.activeConversationId];
       if (!st) return [];
-      if (st.activeAgentId === MAIN_AGENT_VIEW_ID) return st.messages;
-      // 选中项失效由 applyEvent 的 `agents` 分支当场修正，这里只是取值安全
-      return st.agents.find((agent) => agent.id === st.activeAgentId)?.messages ?? st.messages;
+      const picked =
+        st.activeAgentId === MAIN_AGENT_VIEW_ID
+          ? st.messages
+          : // 选中项失效由 applyEvent 的 `agents` 分支当场修正，这里只是取值安全
+            (st.agents.find((agent) => agent.id === st.activeAgentId)?.messages ?? st.messages);
+      return visibleMessages(picked);
     },
   },
 
@@ -121,6 +173,10 @@ export const useChatStore = defineStore("chat", {
         streaming: state.streaming,
         error: "",
         lastFailedContent,
+        // 六态不随重载保留：`chat.getState` 只回「在不在跑」，那一刻处在哪一态由服务端后续的
+        // `run.state` 推来（推来之前就用一句中的「正在思考…」）
+        phase: null,
+        runningTools: [],
         // 栏目不随重载保留：`chat.getState` 只给主对话的实时消息，没有子 Agent 的快照
         // （栏目只活当前一轮，服务端那边由 `agents: []` 收尾）。沿用旧栏目等于把上一轮/上一次
         // 会话的标签挂回来 —— 点进去是永远不再更新的残影，还可能顶着一批早已失效的消息。
@@ -265,6 +321,13 @@ export const useChatStore = defineStore("chat", {
           convStore.setRunning(evt.conversationId, true);
           break;
 
+        // 生成六态（服务端 `run.state` 翻过来的那一条）：只影响「正在生成」那行字，
+        // 不动消息与流式态 —— 六态变化不是「一轮开始 / 结束」
+        case "stream":
+          st.phase = evt.phase;
+          st.runningTools = evt.runningTools;
+          break;
+
         // 本轮用户消息上屏（id 由 main 编，只为给 v-for 一个稳定的 key；收尾那次 done 会换成服务端的真 id）
         case "user":
           st.messages.push({
@@ -291,6 +354,8 @@ export const useChatStore = defineStore("chat", {
           st.messages = evt.messages;
           st.streaming = false;
           st.error = "";
+          st.phase = null;
+          st.runningTools = [];
           convStore.setRunning(evt.conversationId, false);
           // 刷新会话列表（消息数/更新时间，保持选中）
           this.refreshList(evt.conversationId);
@@ -309,6 +374,8 @@ export const useChatStore = defineStore("chat", {
         case "error":
           st.error = evt.message;
           st.streaming = false;
+          st.phase = null;
+          st.runningTools = [];
           convStore.setRunning(evt.conversationId, false);
           this.refreshList(evt.conversationId);
           break;

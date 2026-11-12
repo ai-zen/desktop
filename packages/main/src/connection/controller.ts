@@ -72,12 +72,7 @@
  */
 
 import type { ClientInfo } from "@ai-zen/agents-client";
-import {
-  explainUnauthorized,
-  parseServerUrl,
-  resolveToken,
-  SocketServerClient,
-} from "@ai-zen/agents-client";
+import { Client, readLocalToken } from "@ai-zen/agents-client";
 import type {
   ChatStreamEvent,
   ConnectionControls,
@@ -85,6 +80,7 @@ import type {
   ConnectionSettings,
   ConnectionState,
 } from "@ai-zen/desktop-shared";
+import { CONNECTION_LANGUAGE } from "../language.js";
 import type { LayerHello, ServerLayerOptions } from "../server/index.js";
 // 措辞与映射全部来自包（`connection-settings.ts`）：`labelOf` / `describe` / `connectionConfigOf`
 // 在本仓只是别名，没有第二份实现 —— CLI 与桌面端说的是同一句话
@@ -354,66 +350,51 @@ export class ConnectionController {
   /**
    * 「测试连接」：用候选值试连一次，**不落盘、不影响当前连接**（D19）。
    *
-   * 四件事各有出处，这里不重新发明：
+   * 三件事各有出处，这里不重新发明：
    *
-   *   · 地址的合法性只问 `parseServerUrl`（地址形状的唯一实现处），非法就回一句人话；
-   *   · 凭证按 D9 的优先级取：候选值 > `<aiZenDir>/run/token`（留空 = 用本机那份）；
-   *   · `connect()` 返回时握手已完成、`client.server` 就是服务端自报的身份（协议版本），
-   *     拿到就立刻 `close()` —— 试连不该在服务端那边留下一条常驻连接；
-   *   · 失败一律不抛：`unauthorized` 交给 `explainUnauthorized` 翻成人话（它与界面那三处
-   *     说的是同一句话），其余错误用 `error.message` 原样回。
+   *   · 地址的合法性只问客户端库（`Client.connect` 里那句 `parseAddress` 是地址形状的唯一实现
+   *     处），非法就回一句人话；
+   *   · 凭证：候选值优先，没给就退回 `<aiZenDir>/run/token`（连本机实例是最常见的情形，而远端那串
+   *     凭证与本机文件毫无关系）；
+   *   · `Client.connect()` 返回时握手已经做完，`client.hello` 就是服务端自报的身份，拿到就立刻
+   *     `close()` —— 试连不该在服务端那边留下一条常驻连接。
    *
-   * 计时用 `Date.now()` 差：面板上那个「连上了（120ms）」没有毫秒表也不需要更准的东西。
+   * 失败一律不抛：`ClientError.message` 已经是能上屏的那句话（服务端按连接语言渲染好的，或本地
+   * 那几条文案），这里再包一层只会多一句没人要看的话。
+   *
+   * 计时用 `Date.now()` 差：面板上那个「连上了（120ms）」没有秒表也不需要更准的东西。
    */
   async test(candidate: ConnectionTestCandidate): Promise<ConnectionProbe> {
     const raw = typeof candidate?.serverUrl === "string" ? candidate.serverUrl : "";
-
-    let address;
-    try {
-      // 空串也走这里：它同样是「不是合法地址」，由那一处给出带原串的同一句话
-      address = parseServerUrl(raw);
-    } catch (error) {
-      return { ok: false, message: messageOf(error) };
-    }
-
-    // 凭证：显式给的优先，没给就退回本机 run/token（D9 的本地兜底，不是一条"降级"）
-    const { token, source } = await resolveToken({
-      aiZenDir: this.options.aiZenDir,
-      serverToken: candidate?.serverToken,
-    });
-
     const startedAt = Date.now();
-    let client: SocketServerClient | null = null;
+    let client: Client | null = null;
     try {
-      client = await SocketServerClient.connect({
-        address,
-        token: token ?? undefined,
-        client: this.options.clientInfo,
+      // 候选值没给就用本机那份（空串的意思就是「没带凭证，让服务端拒绝我」——那句话由它渲染）
+      const token =
+        candidate?.serverToken?.trim() || (await readLocalToken(this.options.aiZenDir)) || "";
+      client = await Client.connect({
+        target: raw,
+        token,
+        clientInfo: this.options.clientInfo,
+        // 界面说中文（见 `language.ts`）：本地的几句文案也按它取
+        language: CONNECTION_LANGUAGE,
       });
-      const hello = client.server;
+      const hello = client.hello;
       if (!hello) {
         return { ok: false, message: "连上了服务端，但它的握手回执里没有身份（拿不到协议版本）" };
       }
+      const protocol = Number.parseInt(hello.protocolVersion, 10);
       return {
         ok: true,
-        protocol: hello.protocol,
-        version: hello.version,
+        protocol: Number.isFinite(protocol) ? protocol : 0,
+        version: hello.serverVersion,
         elapsedMs: Date.now() - startedAt,
       };
     } catch (error) {
-      return {
-        ok: false,
-        message: explainUnauthorized(error, {
-          // 面板里填的地址一定是「显式」的：它不走发现文件，所以措辞要用显式那一支
-          explicit: true,
-          source,
-          serverUrl: raw,
-          aiZenDir: this.options.aiZenDir,
-        }).message,
-      };
+      return { ok: false, message: messageOf(error) };
     } finally {
       // 成功 / 失败都关：试连只回答一个问题，回答完就不该再占着一条连接
-      client?.close();
+      if (client) void client.close();
     }
   }
 

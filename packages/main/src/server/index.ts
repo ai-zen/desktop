@@ -1,54 +1,47 @@
 /**
- * 服务端门面的组装根 —— 六个 Service + 事件翻译器 + 那一条常驻连接。
+ * 服务端门面的组装根 —— 六个 Service + 事件翻译器 + 那一条连接。
  *
  * ## 为什么组装写在这里而不是 `app.ts`
  *
- * `app.ts` 是 Electron 的组装根（窗口、IPC、原生对话框）。这一层要能被 vitest + 真
- * daemon 直接验，就不能碰 electron，也不该被 electron 的细节污染 —— 于是它需要一个
- * **自己的入口**：调用方只递进来四样非 electron 的事实（配置根、握手身份、默认工作目录、
- * 事件出口），拿回一个 `ServicesManager` 和一对 `start/dispose`。
+ * `app.ts` 是 Electron 的组装根（窗口、IPC、原生对话框）。这一层要能被 vitest 直接验，就不能碰
+ * electron，也不该被 electron 的细节污染 —— 于是它需要一个**自己的入口**：调用方只递进来四样非
+ * electron 的事实（数据根、握手身份、默认工作目录、事件出口），拿回一个 `ServicesManager` 和一对
+ * `start` / `dispose`。
  *
- * 依赖注入是显式手写的：要连哪台服务端、默认目录取哪、事件往哪推，全在参数里看得见，
- * 没有隐式全局。
+ * ## 「连哪台」：本地起得来、远程只连不拉
  *
- * ## 连接只在**这里**建一次，但「一条」不等于「永远那一条」
+ * 两种情况由**有没有显式地址**区分，判断本身在客户端库里（`ensureServer`，PRD D26）：
  *
- * 一个进程一条连接（`ServerConnection`，来自 `@ai-zen/agents-client` 的
- * `transport/connection.ts`）。本文件只组装它一次、`dispose()` 时关掉它；**它死了之后怎么
- * 长回来是它自己的事**：每次取用都判 `closed`、断了重建、并在新连接上重新订阅事件。
+ * ```
+ * 没有显式地址 → 本机：读 <数据根>/run/server.json 拿地址、run/token 拿凭证；
+ *                     没有活着的实例就 spawn 随包分发的那份，轮询到「握手成功」为止
+ * 有显式地址   → 只连，一次都不拉起（本机拉起来的一定不在那个地址上）
+ * ```
  *
- * 在本层自己写这套逻辑（把连接缓存在 `pending ??=`、建成后不复查 `closed`）的代价是
- * `daemon 重启 → 桌面端永久失能`：所有 IPC 一律 `client is closed`，而界面上看起来只是
- * 「没反应」（没有重连、没有提示、也没有错误）。所以这件事不该有第二份实现 —— 它归包里那
- * 一个，本仓只负责组装与收摊。
+ * 本层不缓存端口、也不记 pid：重启后的服务端会把发现文件换成新端口，`ensureServer` 于是自然连到
+ * 新的那个。
  *
- * ## 组装根为什么不需要再判一次「要不要重建」
+ * ## 一条连接，`Client` 对象活到底
  *
- * 「连的是哪台服务端」**默认**由**发现文件**回答（`<aiZenDir>/run/server.json`）：重启后的
- * 服务端会把它换成新端口，`ensureServer` 于是自然连到新的那个。配置里给了 `serverUrl` 时
- * 地址来自那里、不走发现文件（见下一节）。本层不缓存端口、也不记 pid。
- *
- * ## 地址与凭证：只**透传**，不解释（D9 / D14）
- *
- * 调用方若给了显式地址 / 凭证（来源是用户的连接设置 `ConnectionSettings`，由
- * `connection/controller.ts` 在**每次建层**时映射进来；`mode: "local"` 时两个都是 `undefined`），
- * 本层原样递给 `ServerConnection` 的 `serverUrl` / `serverToken`，一个字段都不改：解析、
- * 优先级与「本机 token 兜底」全在客户端的 `resolve-target.ts`（那是唯一一份）。
- *
- * 本层唯一多做的一件事是 D10：给了显式地址就**不拉起本机 server** —— 这件事交给
- * `./launch.ts` 的 `createStartBundledServer`（它会留下一条只说地址、不说凭证的日志）。
- * 「连本地还是远程」由 `ConnectionController` 换层实现（换一层 = 再调一次本函数）：
- * 用户是怎么选的、什么时候重建，都是那个对象的事，本层不关心。
+ * `Client`（`@ai-zen/agents-client`）自己管重连与补拉：socket 断了它换一条，`track` 过的对话在
+ * 连上之后按 `conversation.state` + `message.list({after})` 补回来。本层只做三件事：建它、把事件
+ * 挂上去（`ChatEventBridge.attach`）、退出时关掉它。**没有第二份重连实现** —— 那种东西在本仓写过
+ * 一次，代价是「daemon 重启 → 桌面端永久失能，界面上看起来只是没反应」。
  */
 
-import type { ClientInfo } from "@ai-zen/agents-client";
-import { ServerConnection } from "@ai-zen/agents-client";
+import type {
+  ClientInfo,
+  MethodCallArgs,
+  MethodName,
+  ServerHelloResult,
+} from "@ai-zen/agents-client";
+import { ensureServer } from "@ai-zen/agents-client";
 import type { ChatStreamEvent } from "@ai-zen/desktop-shared";
-import type { ServerConnectionConfig } from "../config.js";
-import { ServicesManager } from "./ServicesManager.js";
-import { protocolCall } from "./call.js";
-import { createStartBundledServer } from "./launch.js";
+import { CONNECTION_LANGUAGE } from "../language.js";
+import type { ContractCall, ContractConnection } from "./contract.js";
 import { ChatEventBridge } from "./events.js";
+import { SERVER_ENTRY, spawnBundledServer, type SpawnServerContext } from "./launch.js";
+import { ServicesManager } from "./ServicesManager.js";
 import {
   ServerAgentService,
   ServerChatService,
@@ -56,10 +49,11 @@ import {
   ServerConversationService,
   ServerModelService,
   ServerWorkspaceService,
+  type ServiceContext,
 } from "./services.js";
 
 export interface ServerLayerOptions {
-  /** 配置根目录（`AI_ZEN_DIR`）：服务发现文件在工作它下面（`run/server.json`） */
+  /** 数据根（`AI_ZEN_DIR`）：发现文件与本地凭证都在它下面 */
   aiZenDir: string;
   /** 握手首帧自报的身份（应用名 + 版本） */
   clientInfo: ClientInfo;
@@ -68,27 +62,40 @@ export interface ServerLayerOptions {
   /** `chat:push` 的出口（桌面端 = `webContents.send`） */
   push: (event: ChatStreamEvent) => void;
   /**
-   * 显式服务端地址：给了就**只连、永不拉起**本机 server（D10）。来源是用户的连接设置
+   * 显式服务端地址：给了就**只连、永不拉起**本机服务端。来源是用户的连接设置
    * （`ConnectionSettings` → `connectionConfigOf()`）；`local` 模式下是 `undefined`。
    *
-   * 不在这里解析它（不 parse、不补 `ws://`）：地址的形状只有一个定义处（客户端包的
-   * `wire/server-url.ts`），本层多写一行就是一个能静默跑偏的第二份实现。
+   * 不在这里解析它（不 parse、不补 `ws://`）：地址的形状只有一个定义处（客户端库的
+   * `address.ts`），本层多写一行就是一个能静默跑偏的第二份实现。
    */
   serverUrl?: string;
-  /** 显式凭证：透传；不给就退回 `<aiZenDir>/run/token`（D9）。凭证**绝不进日志** */
+  /** 显式凭证：透传；不给就退回 `<数据根>/run/token`。凭证**绝不进日志** */
   serverToken?: string;
+  /** 拉起服务端（缺省 {@link spawnBundledServer}；用例注入一个计数器） */
+  spawnServer?: (context: SpawnServerContext) => Promise<void>;
+  /** 服务端入口（缺省随包分发的 `dist/server.mjs`） */
+  serverEntry?: string;
+  /**
+   * 「确保有一个能连的服务端」（缺省库里那个 `ensureServer`；用例注入一个假的）。
+   *
+   * 这一层与连接库之间只有这一个不可替换的动作是 I/O（读发现文件、拉起进程、握手），把它开成
+   * 注入点，组装逻辑（本文件那二十行）才能不起真服务端就验得到。
+   */
+  ensure?: typeof ensureServer;
+  /** 日志出口（缺省 `console.info`）。**只许说模式与地址，凭证一个字都不许进** */
+  log?: (message: string) => void;
 }
 
 /**
  * 服务端**自报的身份**里 render 用得到的那两位（`hello` 回执）。
  *
- * 只留 `protocol` / `version`：`HelloResult` 还带 `name` / `pid` / `startedAt`，而它们对界面
- * 没有意义（谁都不需要知道对面进程的 pid）—— 一个字段只要没人读，就会有人以为它该被读。
+ * 只留 `protocol` / `version`：回执还带 `capabilities` / `limits` / `startedAt`，而它们对界面
+ * 没有意义（一个字段只要没人读，就会有人以为它该被读）。
  */
 export interface LayerHello {
-  /** 服务端说的协议版本（正整数） */
+  /** 协议版本（`hello` 里是字符串 `"1"`，这里转成数字给界面） */
   protocol: number;
-  /** 服务端的版本串（`0.1.0` 这种） */
+  /** 服务端的版本串 */
   version: string;
 }
 
@@ -100,12 +107,8 @@ export interface ServerLayer {
   /**
    * 握手回执里那份身份（`start()` 成功之后才有；拿不到就是 `null`）。
    *
-   * 谁要它：`ConnectionController` 把 `protocol` / `version` 填进 `ready` 状态（D23），
-   * render 直接显示，不自己猜版本。
-   *
-   * 为什么是「记下来再给」而不是「现发一次 `hello`」：服务端**握手只认一次**，握过之后
-   * 再发 `hello` 会被回 `invalid-request`（`Daemon` 的 `handshaken` 分支）—— 那条路根本
-   * 走不通。所以身份只能在握手那一刻从连接上读下来，而 `start()` 就是那个时刻。
+   * 谁要它：`ConnectionController` 把 `protocol` / `version` 填进 `ready` 状态，render 直接显示，
+   * 不自己猜版本。
    */
   hello: () => LayerHello | null;
   /** 退出时收摊（断开连接；事件订阅随连接一起失效） */
@@ -113,85 +116,94 @@ export interface ServerLayer {
 }
 
 export function createServerLayer(options: ServerLayerOptions): ServerLayer {
-  // 「连哪台、断了怎么办」全在这一个对象里（发现 → 探活 → 复用 / 拉起 → 断了重建）。
-  // 组装根拿到的只是它的 `client` / `watch` / `onOpen` 三面，**发请求的入口是另一个**：
-  // 收在一个 `call` 上（见 `./call.ts`），六处调用点就不可能各自存一份会过期的 client
-  // 配置原样收成一份（既喂连接、也喂拉起器）：两个值走的是同一条路，不会出现
-  // 「连接用配置里的地址、拉起器却以为没有配置」这种半截状态
-  const config: ServerConnectionConfig = {
-    serverUrl: options.serverUrl,
-    serverToken: options.serverToken,
+  const log = options.log ?? ((message: string) => console.info(message));
+
+  /** 这条连接（`start()` 建、`dispose()` 关）。取不到时是「还没连上」这个事实本身 */
+  let connection: ContractConnection | null = null;
+  let hello: LayerHello | null = null;
+
+  const requireConnection = (): ContractConnection => {
+    if (!connection) throw new Error("还没连上服务端（连接尚未建立或已断开）");
+    return connection;
+  };
+  const call: ContractCall = <M extends MethodName>(method: M, ...args: MethodCallArgs<M>) =>
+    requireConnection().call(method, ...args);
+
+  const events = new ChatEventBridge({
+    call,
+    push: options.push,
+    log,
+  });
+
+  const ctx: ServiceContext = {
+    call,
+    connection: requireConnection,
+    events,
+    defaultCwd: options.defaultCwd,
   };
 
-  const connection = new ServerConnection({
-    aiZenDir: options.aiZenDir,
-    clientInfo: options.clientInfo,
-    // 显式地址 / 凭证：透传给包里那个唯一的解析点（D9），本层不判断、不降级
-    serverUrl: config.serverUrl,
-    serverToken: config.serverToken,
-    // 拉起的是**随包分发**的那份（客户机可能连 Node.js 都没有）。
-    // 「优先用系统里已经在跑的」不在这里：`ensureServer` 先读发现文件并 ping，通了就直接连。
-    // 给了显式地址时它只打一条日志、不拉起（D10）。
-    startServerProcess: createStartBundledServer({ config }),
-  });
-  const call = protocolCall(connection);
-  const events = new ChatEventBridge({ connection, call, push: options.push });
-
   const manager = new ServicesManager({
-    workspace: new ServerWorkspaceService({
-      call,
-      defaultCwd: options.defaultCwd,
-    }),
-    conversation: new ServerConversationService({ call }),
-    agent: new ServerAgentService({ call }),
-    model: new ServerModelService({ call }),
-    chat: new ServerChatService({ call, events }),
-    config: new ServerConfigService({ call }),
+    workspace: new ServerWorkspaceService(ctx),
+    conversation: new ServerConversationService(ctx),
+    agent: new ServerAgentService(ctx),
+    model: new ServerModelService(ctx),
+    chat: new ServerChatService(ctx),
+    config: new ServerConfigService(ctx),
   });
-
-  /**
-   * 握手回执里那份身份（见 {@link ServerLayer.hello}）。`start()` 那一刻从连接上读一次，
-   * 之后一直是它：这条连接这辈子就握了这一次手。
-   */
-  let hello: LayerHello | null = null;
 
   return {
     manager,
     start: async () => {
-      await events.start();
-      // `events.start()` 里已经取过连接了：这一次 `client()` 拿到的是同一条（还活着就复用），
-      // 不会多建一条连接，也不会多发一帧 `events.watch`
-      hello = await readHello(connection);
+      const spawned = options.spawnServer ?? spawnBundledServer;
+      const ensure = options.ensure ?? ensureServer;
+      const result = await ensure({
+        dataRoot: options.aiZenDir,
+        clientInfo: options.clientInfo,
+        // 桌面端的界面文案是中文：连接要显式声明（否则服务端渲染的句子会是它的默认语言，
+        // 缺省英文，同一块屏上两种语言）
+        language: CONNECTION_LANGUAGE,
+        // 显式地址 ⇒ 「远程」那条路（只连不拉起）；否则本机（发现文件 + 本机凭证）
+        settings: options.serverUrl
+          ? {
+              mode: "remote",
+              url: options.serverUrl,
+              ...(options.serverToken ? { token: options.serverToken } : {}),
+            }
+          : { mode: "local" },
+        spawnServer: (context) => {
+          log(`本机没有活着的服务端，拉起随包分发的那份（数据根 ${context.dataRoot}）`);
+          return spawned(context);
+        },
+        serverEntry: options.serverEntry ?? SERVER_ENTRY,
+      });
+
+      connection = result.client;
+      const identity = helloOf(result.client.hello);
+      hello = identity;
+      events.attach(result.client);
+      log(
+        `已连上 ${result.target.host}:${result.target.port}` +
+          `${result.started ? "（本次由桌面端拉起）" : ""}，服务端版本 ${identity?.version || "未知"}`,
+      );
     },
     hello: () => hello,
     dispose: () => {
       events.dispose();
-      connection.close();
+      const client = connection;
+      connection = null;
+      hello = null;
+      // 关连接是异步的，但退出路径上没人能等它：`Client.close()` 先同步置 `closing`、再关 socket
+      void client?.close();
     },
   };
 }
 
-/**
- * 从一条**已经连上**的连接上读服务端自报的身份。
- *
- * `ServerClient` 的门面上没有 `server` —— 那是 `SocketServerClient` 的 getter（握手回执一到
- * 就填好）。本仓只允许改 `desktop/`，所以这里做一次**窄断言**：拿的就是那个 getter，读不到
- * （换成别的实现、或还没握手）就当没有。
- *
- * 失败一律回 `null`，**不抛**：拿不到版本串不该把「连上了」变成「连不上」—— 界面上少显示
- * 一行版本，比一个明明能用的连接被报成失败要好得多。
- */
-async function readHello(connection: ServerConnection): Promise<LayerHello | null> {
-  try {
-    const client = await connection.client();
-    const info = (client as unknown as { server?: { protocol?: unknown; version?: unknown } })
-      .server;
-    if (!info || typeof info.protocol !== "number") return null;
-    return {
-      protocol: info.protocol,
-      version: typeof info.version === "string" ? info.version : "",
-    };
-  } catch {
-    return null;
-  }
+/** 握手回执 → 界面上那两位；拿不到就是 `null`（连上了但不知道自己连的是哪一版，比编一个数字诚实） */
+function helloOf(hello: ServerHelloResult | null): LayerHello | null {
+  if (!hello) return null;
+  const protocol = Number.parseInt(hello.protocolVersion, 10);
+  return {
+    protocol: Number.isFinite(protocol) ? protocol : 0,
+    version: hello.serverVersion,
+  };
 }

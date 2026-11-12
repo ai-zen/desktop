@@ -56,10 +56,11 @@
         />
 
         <!-- 正在生成标识（v-show：DOM 常驻，仅切换 display，保持子节点顺序稳定）。
-             只在主对话视图显示：子 Agent 的忙碌由它标签上的圆点表示（与 TUI 同一取舍） -->
+             只在主对话视图显示：子 Agent 的忙碌由它标签上的圆点表示（与 TUI 同一取舍）。
+             那行字是服务端给的生成六态（`stream` 事件），render 不自己猜「在想还是在等工具」 -->
         <div v-show="chatStore.streaming && !chatStore.activeAgentId" class="streaming-hint">
           <span class="dot"></span>
-          正在思考...
+          {{ chatStore.streamingHint || "正在思考..." }}
         </div>
       </div>
 

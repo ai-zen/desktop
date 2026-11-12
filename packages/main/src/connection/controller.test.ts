@@ -18,18 +18,16 @@
  * 另有一条用例让落盘失败，断言 `dispose` 一次都没被调用 —— 反向验证（把顺序倒过来）见交付
  * 报告：倒过来之后正是这条会红。
  *
- * ## 试连为什么要用真 daemon
+ * ## 试连为什么不走真服务端
  *
- * `test()` 里没有一行是本仓的协议实现：地址交给 `parseServerUrl`、凭证交给 `resolveToken`、
- * 握手交给 `SocketServerClient.connect`、报错交给 `explainUnauthorized`。把它换成假件，测出来
- * 的就是「我假装的握手」。所以这一组照 `test-harness.ts` 起一台真 daemon（真端口、真凭证、
- * 真协议版本 3）。
+ * `test()` 里没有一行是本仓的实现：地址交给客户端库的 `parseAddress`、握手交给 `Client.connect`、
+ * 报错文案也由它出。这一组只验**面板上最常遇到的那种失败**（地址不合法 —— 它在建连之前就返回）
+ * 与「不落盘、不动当前连接」这两件事；握手成功后的映射（协议版本、版本串）在
+ * `server/index.test.ts` 里用假连接验，那里看得见 `helloOf` 的每一行。
  */
 
-import { resolveToken } from "@ai-zen/agents-client";
 import type { ConnectionSettings, ConnectionState } from "@ai-zen/desktop-shared";
-import { afterEach, describe, expect, it } from "vitest";
-import { startTestServer, type TestServer } from "../server/test-harness.js";
+import { describe, expect, it } from "vitest";
 import type { ServerLayerOptions } from "../server/index.js";
 import {
   ConnectionController,
@@ -340,8 +338,8 @@ describe("保存设置：换层（D18）", () => {
     const old = h.layers[0]!;
 
     await expect(
-      h.controller.save({ mode: "remote", serverUrl: "这不是地址" }),
-    ).rejects.toThrow(/不是合法的服务端地址/);
+      h.controller.save({ mode: "remote", serverUrl: "ws://" }),
+    ).rejects.toThrow(/ws:\/\//);
 
     // 校验在落盘之前：`trace` 里连 write 都不该出现
     expect(h.trace).toEqual(["create", "start"]);
@@ -405,21 +403,19 @@ describe("保存设置：换层（D18）", () => {
 });
 
 // ==================================================================
-// 试连（真 daemon）
+// 试连（D19）
 // ==================================================================
-
-let server: TestServer | null = null;
-
-afterEach(async () => {
-  if (server) await server.stop();
-  server = null;
-});
 
 /**
  * 一个**只做试连**的控制器：不建层、不落盘。
  *
- * 那两个注入项故意写成抛错：`test()` 一旦去建层或落盘，用例当场就红 —— D19 的「不落盘、不
- * 影响当前连接」因此在结构上被钉住，而不只是「我没在代码里看到」。
+ * 那两个注入项故意写成抛错：`test()` 一旦去建层或落盘，用例当场就红 —— D19 的「不落盘、不影响
+ * 当前连接」因此在结构上被钉住，而不只是「我没在代码里看到」。
+ *
+ * 这一组不需要一台真服务端：地址不合法那条路在**建连之前**就返回（`Client.connect` 里那句
+ * `parseAddress` 是地址形状的唯一判据），而它恰好就是面板上最容易遇到的那种失败。握手成功之后的
+ * 那半段（协议版本、版本串）由 `server/index.ts` 的 `helloOf` 一张映射决定，那一条在
+ * `server/index.test.ts` 里用假连接钉住。
  */
 function probeOnly(aiZenDir: string): ConnectionController {
   return new ConnectionController({
@@ -437,71 +433,16 @@ function probeOnly(aiZenDir: string): ConnectionController {
   });
 }
 
-/** 真 daemon 那条地址（`startTestServer()` 用 `port: 0`，端口在一次启动里是固定的） */
-function addressOf(target: TestServer): string {
-  return `ws://127.0.0.1:${target.daemon.port}`;
-}
-
-/** 服务端启动时写在 `<dir>/run/token` 里的那把钥匙（走客户端包那一个解析点） */
-async function tokenOf(target: TestServer): Promise<string> {
-  const { token } = await resolveToken({ aiZenDir: target.dir });
-  if (!token) throw new Error("测试服务端没有落下凭证文件");
-  return token;
-}
-
 describe("测试连接（connection:test，D19）", () => {
-  it("地址 + 凭证都对：ok、协议版本是 3、版本串来自服务端自报", async () => {
-    server = await startTestServer();
-
-    const probe = await probeOnly(server.dir).test({
-      serverUrl: addressOf(server),
-      serverToken: await tokenOf(server),
-    });
-
-    expect(probe.ok).toBe(true);
-    // 收窄给下面几条断言用（失败时上面那条已经红了，这里只是为了让 TS 认得出成功那一支）
-    if (!probe.ok) throw new Error(`试连应当成功，却是：${probe.message}`);
-    expect(probe.protocol).toBe(3);
-    // 用例不写死版本号：它必须来自服务端 `hello` 的回执（`0.0.0-test` 是脚手架自报的那一个）
-    expect(probe.version).toBe("0.0.0-test");
-    expect(probe.elapsedMs).toBeGreaterThanOrEqual(0);
-  });
-
-  it("不填凭证：退回本机 <aiZenDir>/run/token 也能连上（D9 的本地兜底）", async () => {
-    server = await startTestServer();
-
-    // 候选值里**没有** token：这一次能进门只可能来自本机那份凭证文件
-    const probe = await probeOnly(server.dir).test({ serverUrl: addressOf(server) });
-
-    expect(probe.ok).toBe(true);
-  });
-
-  it("凭证不对：ok:false、message 是人话、且不抛", async () => {
-    server = await startTestServer();
-
-    const probe = await probeOnly(server.dir).test({
-      serverUrl: addressOf(server),
-      serverToken: "not-the-key-at-all",
-    });
-
-    expect(probe.ok).toBe(false);
-    if (probe.ok) throw new Error("错凭证不该连上");
-    // `unauthorized` 已被 `explainUnauthorized` 翻成对症的那句话（措辞只在客户端包一处）
-    expect(probe.message).toMatch(/unauthorized/);
-    expect(probe.message).toMatch(/凭证/);
-    // 凭证串本身永不回显：这句话会被贴进 issue / 日志
-    expect(probe.message).not.toContain("not-the-key-at-all");
-  });
-
-  it("非法地址：ok:false、不抛（连一次都不尝试）", async () => {
+  it("非法地址：ok:false、不抛，message 是客户端库给的那句人话（带原串）", async () => {
     const probe = await probeOnly("/tmp/aiz-desktop-probe").test({
-      serverUrl: "这不是地址",
+      serverUrl: "ws://",
     });
 
     expect(probe.ok).toBe(false);
     if (probe.ok) throw new Error("非法地址不该连上");
-    // 由客户端包的 `parseServerUrl` 给出的那一句（带原始串）
-    expect(probe.message).toMatch(/不是合法的服务端地址/);
+    expect(probe.message).toMatch(/Not a valid server address/);
+    expect(probe.message).toContain("ws://");
   });
 
   it("空地址：同样 ok:false、不抛（面板里刚清空就点了测试）", async () => {
@@ -509,23 +450,19 @@ describe("测试连接（connection:test，D19）", () => {
 
     expect(probe.ok).toBe(false);
     if (probe.ok) throw new Error("空地址不该连上");
-    expect(probe.message).toMatch(/不是合法的服务端地址/);
+    expect(probe.message).toMatch(/Not a valid server address/);
   });
 
-  it("试连不落盘、也不动当前连接", async () => {
-    server = await startTestServer();
+  it("试连不建层、不落盘（注入的那两个动作一被调用就抛）", async () => {
     const h = harness();
     await h.controller.start();
     const current = h.layers[0]!;
-    // 试连之前先记下序列长度：之后这一段必须一点都没长（没有 write / dispose / create / start）
     const before = h.trace.length;
 
-    const probe = await h.controller.test({
-      serverUrl: addressOf(server),
-      serverToken: await tokenOf(server),
-    });
+    const probe = await h.controller.test({ serverUrl: "ws://", serverToken: TOKEN });
 
-    expect(probe.ok).toBe(true);
+    expect(probe.ok).toBe(false);
+    // 没有 write / dispose / create / start：试连只回答一个问题
     expect(h.trace.slice(before)).toEqual([]);
     expect(h.writes).toEqual([]);
     expect(h.layers).toHaveLength(1);

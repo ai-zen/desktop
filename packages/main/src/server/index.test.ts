@@ -1,174 +1,199 @@
 /**
- * 组装根用例：显式地址与凭证**真的到了连接上**（D9 / D14）。
+ * `createServerLayer` 用例：**组装**这件事本身。
  *
- * ## 为什么这一组必须用真 daemon
+ * 它不验握手、也不验拉起进程（那两件事在客户端库里，有自己的用例）。这里要钉的是本文件那二十行
+ * 的判断：
  *
- * 「透传」最容易写成一句空断言：把两个值递给构造函数然后断言「没抛错」。那样测出来的是
- * TypeScript 的类型对不对，而不是**那两个值有没有走到线上** —— 而线上那两头（地址选哪台、
- * 凭证能不能进门）恰恰是这轮唯一会坏的地方。
- *
- * 所以这里起**两台**真 daemon，各自报不同的工作区名：拿到哪一台的答案，就说明地址真的
- * 指向了那一台；而两台都**不写** `<dir>/run/token`（凭证是注入的），于是能进门这件事只可能
- * 来自配置里那把钥匙。两条都是可观测事实，不是「没抛错」。
- *
- * ## 三条用例各钉一件事
- *
- *   1. 地址 + 凭证都对 → 连上的是**配置里那台**（返回值的 workspaceId 是它的）；
- *   2. 凭证换成错的 → `unauthorized`（说明凭证真的进了 `hello`，而不是被忽略后读了本机文件）；
- *   3. 地址指向没人监听的地方（发现文件却指着活的那台）→ 报错里是**那个地址**，说明地址没被
- *      悄悄换成发现文件里的那个。
- *
- * 外加一条组（`hello()`）：`ConnectionState.ready` 里 `protocol` / `version` 的来源（D23）——
- * 那两个值只有真对端知道，所以它也必须站在一台真 daemon 前面验。
- *
- * D10（给了地址就不拉起本机 server）的计数判据在 `launch.test.ts`：那是唯一能看见
- * 「有没有拉起」的位置。
+ *   · 有显式地址 ⇒ 递给 `ensureServer` 的是 `mode: "remote"`（**只连不拉起**那条路）；
+ *   · 没有 ⇒ `mode: "local"`（发现文件 + 本机凭证 + 需要时拉起随包分发的那份）；
+ *   · 握手回执里的协议版本是字符串，界面要的是数字（`helloOf` 那张映射）；
+ *   · `dispose()` 之后 `manager` 不能再发请求（连接已经关了，不该还发得出去）；
+ *   · `invokeService` 的六个键真的是 render 的调用面（转发到契约方法名上）。
  */
 
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { Daemon, type AnyHandler } from "@ai-zen/agents-server";
-import { afterEach, describe, expect, it } from "vitest";
-import { createServerLayer, type ServerLayer } from "./index.js";
+import type { Client, EnsureServerOptions, EnsureServerResult, ServerHelloResult } from "@ai-zen/agents-client";
+import { describe, expect, it } from "vitest";
+import type { ChatStreamEvent } from "@ai-zen/desktop-shared";
+import { createServerLayer } from "./index.js";
 
-/** 握手自称的身份（与桌面端一致） */
-const CLIENT_INFO = { name: "@ai-zen/desktop", version: "0.0.0-test" };
+const HELLO: ServerHelloResult = {
+  language: "zh" as ServerHelloResult["language"],
+  serverVersion: "0.1.0-alpha.0",
+  protocolVersion: "1",
+  startedAt: "2026-01-01T00:00:00.000Z",
+  capabilities: ["F-C1"],
+  limits: { maxAssetBytes: 20 * 1024 * 1024, maxAssetsPerMessage: 4 },
+};
 
-/** 一台测试 daemon（一台 = 一个临时目录 + 一个自己的凭证 + 一个真端口） */
-interface Fixture {
-  dir: string;
-  token: string;
-  port: number;
-  daemon: Daemon;
+interface Harness {
+  layer: ReturnType<typeof createServerLayer>;
+  /** `ensureServer` 收到的入参 */
+  ensureCalls: EnsureServerOptions[];
+  /** 这一层发出去的契约调用 */
+  calls: Array<{ method: string; params: unknown }>;
+  /** 拉起服务端被调了几次 */
+  spawns: () => number;
+  /** 连接被关了吗 */
+  closed: () => boolean;
+  events: ChatStreamEvent[];
 }
 
-const servers: Fixture[] = [];
-const layers: ServerLayer[] = [];
+function harness(
+  options: { serverUrl?: string; serverToken?: string; hello?: ServerHelloResult | null } = {},
+): Harness {
+  const ensureCalls: EnsureServerOptions[] = [];
+  const calls: Array<{ method: string; params: unknown }> = [];
+  const state = { spawns: 0, closed: false, events: [] as ChatStreamEvent[] };
 
-afterEach(async () => {
-  for (const layer of layers.splice(0)) layer.dispose();
-  for (const fixture of servers.splice(0)) {
-    await fixture.daemon.stop("test teardown");
-    rmSync(fixture.dir, { recursive: true, force: true });
-  }
-});
+  const client = {
+    hello: options.hello === undefined ? HELLO : options.hello,
+    call: async (method: string, params: unknown) => {
+      calls.push({ method, params });
+      if (method === "workspace.list") return { workspaces: [] };
+      return {};
+    },
+    subscribe: () => () => {},
+    onClose: () => () => {},
+    onResume: () => () => {},
+    resume: async (conversationId: string) => ({ conversationId }),
+    track: () => {},
+    untrack: () => {},
+    reconnect: async () => {},
+    close: async () => {
+      state.closed = true;
+    },
+  } as unknown as Client;
 
-/**
- * 起一台 daemon：`workspaceId` 既是它答的话，也是它的名字（用例靠返回值分辨是谁答的）。
- *
- * 凭证**注入**（不走 `<dir>/run/token`）：这样「连接能进门」就只可能来自配置里那把钥匙 ——
- * 否则本机文件那条路会让用例变成绿的，而它绿的原因与被测的东西无关。
- */
-async function startDaemon(workspaceId: string): Promise<Fixture> {
-  const dir = mkdtempSync(join(tmpdir(), "aiz-desktop-index-"));
-  const token = `token-of-${workspaceId}`;
-  const handlers: Record<string, AnyHandler> = {
-    // `layer.start()` 会发这一帧（订阅是连接级的）：给一条成功的回执就够，内容无人读
-    "events.watch": () => ({ watching: true }),
-    // 业务方法：返回值里写着「我是哪一台」
-    "workspace.list": () => ({
-      workspaces: [
-        {
-          workspaceId,
-          path: `/tmp/${workspaceId}`,
-          title: `工作区 ${workspaceId}`,
-        },
-      ],
-    }),
-  };
-  const daemon = new Daemon({
-    aiZenDir: dir,
-    port: 0,
-    version: "0.0.0-test",
-    token,
-    handlers,
-  });
-  await daemon.start();
-  const fixture: Fixture = { dir, token, port: daemon.port, daemon };
-  servers.push(fixture);
-  return fixture;
-}
-
-/** 造一层服务端门面（用例只关心两个透传值，其余按桌面端的缺省给） */
-function layerFor(
-  aiZenDir: string,
-  config: { serverUrl?: string; serverToken?: string },
-): ServerLayer {
   const layer = createServerLayer({
-    aiZenDir,
-    clientInfo: CLIENT_INFO,
-    defaultCwd: () => aiZenDir,
-    push: () => {},
-    serverUrl: config.serverUrl,
-    serverToken: config.serverToken,
+    aiZenDir: "/tmp/aiz-desktop-layer",
+    clientInfo: { name: "@ai-zen/desktop", version: "0.0.0-test" },
+    defaultCwd: () => "/home/user/Desktop",
+    push: (event) => state.events.push(event),
+    ...(options.serverUrl ? { serverUrl: options.serverUrl } : {}),
+    ...(options.serverToken ? { serverToken: options.serverToken } : {}),
+    spawnServer: async () => {
+      state.spawns += 1;
+    },
+    log: () => {},
+    // 换成假的：这一个动作才是真 I/O（读发现文件 / 拉起 / 握手），组装逻辑不该被它拖住
+    ensure: async (ensureOptions: EnsureServerOptions): Promise<EnsureServerResult> => {
+      ensureCalls.push(ensureOptions);
+      return {
+        client,
+        target: { host: "127.0.0.1", port: 8790 },
+        started: false,
+        explicit: Boolean(ensureOptions.settings && ensureOptions.settings.mode === "remote"),
+        dataRoot: ensureOptions.dataRoot ?? "",
+      };
+    },
   });
-  layers.push(layer);
-  return layer;
+
+  return {
+    layer,
+    ensureCalls,
+    calls,
+    spawns: () => state.spawns,
+    closed: () => state.closed,
+    events: state.events,
+  };
 }
 
-describe("组装根：地址与凭证透传", () => {
-  it("都给了：连的是配置里那台，用的是配置里那把钥匙", async () => {
-    // 发现文件指着 `local`，配置里的地址指着 `remote`：两者不是同一台，才分得出用了哪个
-    const local = await startDaemon("local");
-    const remote = await startDaemon("remote");
+describe("组装：本地还是远程", () => {
+  it("没有显式地址 ⇒ `mode: \"local\"`（发现文件 + 本机凭证；需要时拉起）", async () => {
+    const h = harness();
 
-    // 凭证是注入的 → 两台都没有 `<dir>/run/token`，于是「能进门」只可能来自 `serverToken`
-    expect(existsSync(join(remote.dir, "run", "token"))).toBe(false);
+    await h.layer.start();
 
-    const layer = layerFor(local.dir, {
-      serverUrl: `ws://127.0.0.1:${remote.port}`,
-      serverToken: remote.token,
-    });
-
-    await layer.start();
-
-    // 返回值里写着台名：拿到 `remote` 的工作区 = 地址真的被用上了（不是发现文件里那台）
-    expect(await layer.manager.invokeService("workspace", "list")).toEqual([
-      { id: "remote", name: "工作区 remote", cwd: "/tmp/remote" },
-    ]);
+    expect(h.ensureCalls).toHaveLength(1);
+    expect(h.ensureCalls[0]?.settings).toEqual({ mode: "local" });
+    // 数据根原样交下去（发现文件 <数据根>/run/server.json 就在它下面）
+    expect(h.ensureCalls[0]?.dataRoot).toBe("/tmp/aiz-desktop-layer");
+    // 服务端入口给的是随包分发的那份（不是从 node_modules 里现解析）
+    expect(h.ensureCalls[0]?.serverEntry).toMatch(/server\.mjs$/);
   });
 
-  it("凭证不对：握手被拒（`unauthorized`），说明它真的进了 hello", async () => {
-    const remote = await startDaemon("remote");
-    const layer = layerFor(remote.dir, {
-      serverUrl: `ws://127.0.0.1:${remote.port}`,
-      // 地址对、钥匙错：被拒的原因只能是被递上去的那串凭证不对
-      serverToken: "not-the-key",
-    });
+  it("有显式地址 ⇒ `mode: \"remote\"`（只连不拉起，那条路库里压根不会调 spawnServer）", async () => {
+    const h = harness({ serverUrl: "wss://ai-zen.example.com/ai-zen", serverToken: "tok" });
 
-    await expect(layer.start()).rejects.toThrow(/unauthorized/);
+    await h.layer.start();
+
+    expect(h.ensureCalls[0]?.settings).toEqual({
+      mode: "remote",
+      url: "wss://ai-zen.example.com/ai-zen",
+      token: "tok",
+    });
+    // 组装层一次都没拉：显式地址这条路由 `ensureServer` 保证
+    expect(h.spawns()).toBe(0);
   });
 
-  it("地址没被忽略：连不上时报的是配置里那个地址", async () => {
-    // 发现文件指着活着的 `local`：地址若被无视，这一次连压根不会失败
-    const local = await startDaemon("local");
-    const layer = layerFor(local.dir, {
-      serverUrl: "ws://127.0.0.1:1",
-      serverToken: local.token,
-    });
+  it("显式地址但没给凭证：不塞一个空串进去（空串在库里是「显式给了个空值」）", async () => {
+    const h = harness({ serverUrl: "wss://ai-zen.example.com/ai-zen" });
 
-    await expect(layer.start()).rejects.toThrow("127.0.0.1:1");
+    await h.layer.start();
+
+    expect(h.ensureCalls[0]?.settings).toEqual({
+      mode: "remote",
+      url: "wss://ai-zen.example.com/ai-zen",
+    });
   });
 });
 
-/**
- * `hello()` —— `ConnectionState.ready` 里 `protocol` / `version` 那两位的来源（D23）。
- *
- * 为什么要真 daemon：这两个值只有**对端**知道，而且它们必须来自**握手回执**本身（不是本地
- * 常量、也不是再发一次 `hello` —— 服务端握过手之后不再接受第二次 `hello`）。用例在这里钉的
- * 就是那条路：`start()` 之后 `hello()` 说的必须是服务端自报的那一份。
- */
-describe("组装根：服务端自报的身份（hello）", () => {
-  it("start() 之前是 null（还没握手），之后是服务端自报的协议版本与版本串", async () => {
-    const fixture = await startDaemon("hello");
-    const layer = layerFor(fixture.dir, { serverToken: fixture.token });
+describe("握手回执 → ready 里那两位", () => {
+  it("协议版本是字符串 \"1\"，界面要数字 1；版本串原样", async () => {
+    const h = harness();
+    await h.layer.start();
 
-    // 还没连上：没有身份可给（`ready` 里那两位会因此填 0 / ""，见 controller.test.ts）
-    expect(layer.hello()).toBeNull();
+    expect(h.layer.hello()).toEqual({ protocol: 1, version: "0.1.0-alpha.0" });
+  });
 
-    await layer.start();
+  it("拿不到握手身份时是 `null`（连上了但不知道哪一版，比编一个数字诚实）", async () => {
+    const h = harness({ hello: null });
+    await h.layer.start();
 
-    expect(layer.hello()).toEqual({ protocol: 3, version: "0.0.0-test" });
+    expect(h.layer.hello()).toBeNull();
+  });
+});
+
+describe("IPC 转发", () => {
+  it("`invokeService('workspace','list')` 打到契约的 `workspace.list` 上", async () => {
+    const h = harness();
+    await h.layer.start();
+
+    const result = await h.layer.manager.invokeService("workspace", "list");
+
+    expect(result).toEqual([]);
+    expect(h.calls[0]).toEqual({ method: "workspace.list", params: {} });
+  });
+
+  it("还没连上时发请求：抛一句能看懂的错（不是发到一条不存在的连接上）", async () => {
+    const h = harness();
+
+    await expect(h.layer.manager.invokeService("workspace", "list")).rejects.toThrow(/还没连上服务端/);
+    expect(h.calls).toEqual([]);
+  });
+
+  it("未知服务 / 未知方法：报出具体的键名（静默返回 undefined 只会更难查）", async () => {
+    const h = harness();
+    await h.layer.start();
+
+    await expect(h.layer.manager.invokeService("nope", "list")).rejects.toThrow(/未知服务: nope/);
+    await expect(h.layer.manager.invokeService("workspace", "nope")).rejects.toThrow(
+      /服务 workspace 无方法: nope/,
+    );
+  });
+});
+
+describe("收摊", () => {
+  it("dispose 之后连接被关掉，再发请求只能得到「还没连上」", async () => {
+    const h = harness();
+    await h.layer.start();
+
+    h.layer.dispose();
+    // `close()` 是异步的；`dispose` 只负责把它交出去
+    await Promise.resolve();
+
+    expect(h.closed()).toBe(true);
+    expect(h.layer.hello()).toBeNull();
+    await expect(h.layer.manager.invokeService("workspace", "list")).rejects.toThrow(/还没连上服务端/);
   });
 });

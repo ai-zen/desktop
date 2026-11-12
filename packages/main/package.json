@@ -6,12 +6,13 @@
   "type": "module",
   "main": "dist/main.mjs",
   "scripts": {
-    "build": "rolldown -c rolldown.config.mjs",
+    "build": "rolldown -c rolldown.config.mjs && node scripts/check-inlined.mjs",
     "dev": "rolldown -c rolldown.config.mjs --watch",
     "start": "electron --remote-debugging-port=9222 dist/main.mjs",
     "pack": "electron-builder --dir --publish never",
     "dist": "electron-builder --publish never",
-    "test": "vitest run"
+    "test": "vitest run",
+    "check:inline": "node scripts/check-inlined.mjs"
   },
   "dependencies": {},
   "devDependencies": {

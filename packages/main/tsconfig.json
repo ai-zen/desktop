@@ -6,8 +6,18 @@
     "strict": true,
     "esModuleInterop": true,
     "outDir": "dist",
-    "rootDir": "src",
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "baseUrl": ".",
+    // `@ai-zen/agents-client` 是隔壁仓里那份**私有、不发版**的客户端库（R69）：类型与运行期都
+    // 直接指到它的 TS 源文件。这样两边读的是同一份代码 —— 不必先把它 build 一遍，也不会出现
+    // 「类型来自 dist、运行期来自 src」那种各说各话。打包时 rolldown 用同一套别名把它内联进
+    // `dist/main.mjs`（见 rolldown.config.mjs），产物里不留任何对它的运行时依赖。
+    //
+    // 没有 `rootDir`：这个程序里现在有本包之外的源文件（上面那一行），而 `rootDir` 要求所有
+    // 输入都在它下面。这里也从不靠 `tsc` 出产物（构建是 rolldown），所以它没有用途。
+    "paths": {
+      "@ai-zen/agents-client": ["../../../agents/packages/client/src/index.ts"]
+    }
   },
   "include": ["src"]
 }
