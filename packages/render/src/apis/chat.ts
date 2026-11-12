@@ -3,7 +3,13 @@
  * 发送消息 + 订阅流式推送（chat:push 单通道）。
  */
 
-import type { AttachmentInput, ChatStreamEvent, ConversationState } from "@ai-zen/desktop-shared";
+import type {
+  AssetBytes,
+  AssetVariant,
+  AttachmentInput,
+  ChatStreamEvent,
+  ConversationState,
+} from "@ai-zen/desktop-shared";
 import { invokeService, subscribeServiceEvent } from "./base.js";
 
 /**
@@ -25,6 +31,17 @@ export function sendChatMessage(
   attachments?: AttachmentInput[],
 ): Promise<void> {
   return invokeService("chat", "send", workspaceId, conversationId, content, attachments);
+}
+
+/**
+ * 取一份历史图片的字节（`asset.get`，main 转发给服务端）。
+ *
+ * 返回的是字节本体，调用方自己造 `blob:` URL（`stores/assetImages.ts` 管这件事：同一份素材一屏
+ * 只取一次、用完回收）。这里不带任何缓存与重试：取不到就抛（`InvokeServerError`），与其余调用
+ * 同一口径。
+ */
+export function getChatAsset(assetId: string, variant: AssetVariant): Promise<AssetBytes> {
+  return invokeService("chat", "getAsset", assetId, variant);
 }
 
 /** 中止生成（main 让服务端取消本轮，保留已生成部分，事件流自然收尾） */

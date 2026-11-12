@@ -504,6 +504,41 @@ describe("chat", () => {
     expect(h.calls[0]).toEqual({ method: "conversation.abort", params: { conversationId: CONVERSATION } });
   });
 
+  it("getAsset：发 `asset.get`，把 base64 解成字节能 render 造 Blob", async () => {
+    // 四个字节，base64 是 AQIDBA==：用例要看的是「解码这件事真的发生了」，不是字符串搬运
+    const h = harness(() => ({
+      asset: { assetId: "a1", mime: "image/png", bytes: 4, name: "图.png", width: 1, height: 1 },
+      variant: "thumb",
+      data: "AQIDBA==",
+    }));
+
+    const content = await new ServerChatService(h.ctx).getAsset("a1", "thumb");
+
+    expect(h.calls[0]).toEqual({ method: "asset.get", params: { assetId: "a1", variant: "thumb" } });
+    expect(content.mime).toBe("image/png");
+    expect(Array.from(content.bytes)).toEqual([1, 2, 3, 4]);
+  });
+
+  it("getAsset：不传档位时缺省 `thumb`（气泡先显示的就这一档）", async () => {
+    const h = harness(() => ({
+      asset: { assetId: "a1", mime: "image/png", bytes: 4, name: null, width: null, height: null },
+      variant: "thumb",
+      data: "AQIDBA==",
+    }));
+
+    await new ServerChatService(h.ctx).getAsset("a1");
+
+    expect(h.calls[0]).toEqual({ method: "asset.get", params: { assetId: "a1", variant: "thumb" } });
+  });
+
+  it("getAsset：服务端说 not_found 就把那句话原样抛上去（不降级成空字节）", async () => {
+    const h = harness(() => {
+      throw new ClientErrorValue("not_found", "这份素材已经不在了");
+    });
+
+    await expect(new ServerChatService(h.ctx).getAsset("gone")).rejects.toThrow("已经不在了");
+  });
+
   it("getState：先状态后消息，并把锚点记成最后一条的 id（重连补拉的 after）", async () => {
     const messages = [
       { id: "m1", role: AgentNS.Role.User, content: "问题" },

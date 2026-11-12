@@ -60,6 +60,16 @@
           <div v-else class="content" v-html="textContentHtml"></div>
         </template>
 
+        <!-- 历史图片：消息里只有段上的素材引用，所以按 id 取字节、用 blob: URL 显示
+             （取字节与缓存都在 stores/assetImages.ts，这一层只管摆） -->
+        <div v-if="images.length > 0" class="message-images">
+          <AssetImage
+            v-for="(assetId, index) in images"
+            :key="`${index}:${assetId}`"
+            :asset-id="assetId"
+          />
+        </div>
+
         <!-- 附件结局（服务端给的逐张账）：只列“没送达/降级”的那几句，正常送达的不出现。
              文案是服务端按连接语言渲染好的原文，这里一字不改（详见 stores/attachmentNotes.ts）。 -->
         <div v-if="notes.length > 0" class="attachment-notes">
@@ -90,7 +100,9 @@ import { ref, computed, watch } from "vue";
 import { AgentNS } from "@ai-zen/agents-core";
 import type { AttachmentOutcome } from "@ai-zen/desktop-shared";
 import MarkdownContent from "@/components/MarkdownContent.vue";
+import AssetImage from "@/components/AssetImage.vue";
 import { attachmentNotes } from "../../stores/attachmentNotes.js";
+import { imageAssetIds } from "../../stores/assetImages.js";
 import {
   ArrowRight,
   ArrowDown,
@@ -179,6 +191,9 @@ const toolCalls = computed(() => props.message.tool_calls ?? []);
 
 /** 这条气泡要显示的附件结局（空数组 = 一个字也不出现） */
 const notes = computed(() => attachmentNotes(props.attachments));
+
+/** 这条消息里的历史图片（按段落顺序；每张自己取字节、自己回收 blob URL） */
+const images = computed(() => imageAssetIds(props.message.content));
 
 // ==================== 消息状态图标（非完成态才显示） ====================
 const statusMeta = computed(() => {
@@ -353,6 +368,14 @@ const errorText = computed(() => textContent.value || "发生错误");
 .content {
   word-break: break-word;
   white-space: pre-wrap;
+}
+
+// ==================== 历史图片（按素材 id 取回来的字节） ====================
+.message-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
 }
 
 // ==================== 折叠区（思考 / 工具调用） ====================

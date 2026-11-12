@@ -96,6 +96,33 @@ export interface AttachmentOutcome {
   name: string | null;
 }
 
+// ==================== 素材（历史图片回显）====================
+
+/**
+ * 取素材的哪一档 —— 与服务端 `asset.get` 的 `variant` 同一组值。
+ *
+ * `thumb` 目前**等同原图**（服务端这一波不引入原生图像库，PRD F-H8）：界面按 `thumb` 取、原样
+ * 显示，不在客户端自己缩一份假的缩略图出来。
+ */
+export type AssetVariant = "original" | "thumb";
+
+/**
+ * 一份取回来的素材：它是什么类型 + 字节本体。
+ *
+ * 为什么只给这两样：render 拿到字节只做一件事 —— `new Blob([bytes], { type: mime })` 造一个
+ * `blob:` URL 交给 `<img>`。宽高、文件名、sha256 这些界面这一波都不用，多带一个字段就会有人
+ * 以为它该被读（见 `AssetRef` 那份完整引用，它留在服务端与客户端库里）。
+ *
+ * `bytes` 走 IPC 的结构化克隆（与 `AttachmentInput.data` 同一种形状，只是反过来走：main → render），
+ * 不经 base64。
+ */
+export interface AssetBytes {
+  /** MIME 类型，如 `image/png`（`Blob` 的 type，决定浏览器怎么解这串字节） */
+  mime: string;
+  /** 字节本体 */
+  bytes: Uint8Array;
+}
+
 // ==================== Agent / Model 选项 ====================
 
 export interface AgentOption {

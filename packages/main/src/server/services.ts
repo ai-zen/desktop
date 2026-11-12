@@ -18,9 +18,12 @@
  *    宁可留空并在 `events.ts` 里说清，也不编一个像样的假值。
  */
 
+import { getAsset as fetchAssetContent } from "@ai-zen/agents-client";
 import type { AgentNS } from "@ai-zen/agents-client";
 import type {
   AgentOption,
+  AssetBytes,
+  AssetVariant,
   AttachmentInput,
   ConfigSettings,
   ConfigUpdateReport,
@@ -382,6 +385,27 @@ export class ServerChatService {
       if (isBiz(error, "busy")) return;
       this.ctx.events.pushError(conversationId, messageOf(error));
     }
+  }
+
+  /**
+   * 取一份历史图片的字节（`asset.get`）：气泡里那段 `image_url` 引用的素材，按 id 换回内容。
+   *
+   * ## 为什么这条能力长在 `chat` 上而不是另开一个键
+   *
+   * 分发键就是 render 的调用面，而 render 的 `apis/*.ts` 与这六个键一一对应：新增第七个键要
+   * 同步改掉六处「六个键 = 服务端调用面」的口径，换来的只是把同一屏的读写拆到两个文件里。
+   * 「一条消息里的图能不能显示」与 `send` / `getState` 是同一件事的两半（发送时把图传上去、
+   * 重开时把图取回来），所以它落在 `chat` 上。
+   *
+   * ## 只搬字节，不碰缓存
+   *
+   * 什么时候取、取一次用几次、`blob:` URL 什么时候回收，全在 render（同一屏里同一份素材只该
+   * 走一次这条通道）。这里既不缓存、也不重试：取不到就把错误原样抛上去（PRD F-H8 明确不做
+   * 自动重试、不判失效、不做过期清理）。
+   */
+  async getAsset(assetId: string, variant: AssetVariant = "thumb"): Promise<AssetBytes> {
+    const content = await fetchAssetContent(this.ctx.connection(), { assetId, variant });
+    return { mime: content.asset.mime, bytes: content.bytes };
   }
 
   /** 中止本轮（PRD D14：用户的显式动作，不排队）；收尾照常走 `run.state` 的 `settled` */
