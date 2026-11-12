@@ -153,8 +153,8 @@ describe.runIf(ENABLED)("附件竖切：字节 → assets/ → 气泡上那句�
     expect(outcomes[4]?.name).toBe("第5张.png");
 
     const files = await listAssets(dataRoot);
-    log(`✓ 两轮之后 assets/ 里的文件数：${files.length}`);
-    expect(files).toHaveLength(5);
+    log(`✓ 两轮之后 assets/ 里的文件数：${files.length}（同一份字节只落一份，PRD F-H8 的全局去重）`);
+    expect(files).toHaveLength(1);
 
     // ---- 3. 那条用户消息在历史里的样子（重开会话时气泡读的就是它）-----------------
     const state = (await layer.manager.invokeService("chat", "getState", workspace.id, conversation.id)) as {
