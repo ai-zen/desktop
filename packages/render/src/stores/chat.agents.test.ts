@@ -108,7 +108,7 @@ describe("chat store · agents 事件", () => {
 
   it("子 Agent 的状态/消息变化不影响主对话的 messages / streaming", () => {
     store.applyEvent({ conversationId: CONV, type: "start" });
-    store.applyEvent({ conversationId: CONV, type: "user", id: "u1", content: "hi" });
+    store.applyEvent({ conversationId: CONV, type: "user", message: { id: "u1", role: AgentNS.Role.User, content: "hi" } });
     const mainMessages = store.messages;
 
     store.applyEvent(pushAgents([agent("sub-a", 1, "failed")]));
@@ -181,7 +181,7 @@ describe("chat store · send / retry 的返回值", () => {
 
 describe("chat store · viewMessages", () => {
   it("选中主对话 → 主对话消息；选中子 Agent → 它自己的消息", () => {
-    store.applyEvent({ conversationId: CONV, type: "user", id: "u1", content: "hi" });
+    store.applyEvent({ conversationId: CONV, type: "user", message: { id: "u1", role: AgentNS.Role.User, content: "hi" } });
     store.applyEvent(pushAgents([agent("sub-a", 1)]));
 
     expect(store.viewMessages.map((m) => m.id)).toEqual(["u1"]);

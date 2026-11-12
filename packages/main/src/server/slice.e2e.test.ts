@@ -84,9 +84,9 @@ describe.runIf(ENABLED)("竖切：连接 → 项目 → 会话 → 发消息 →
     const workspace = (await layer.manager.invokeService("workspace", "create", "竖切项目", projectCwd)) as {
       id: string;
       name: string;
-      cwd: string;
+      folder: { cwd: string; exists: boolean };
     };
-    log(`✓ workspace.create → ${workspace.id} ${workspace.name} ${workspace.cwd}`);
+    log(`✓ workspace.create → ${workspace.id} ${workspace.name} ${workspace.folder.cwd}`);
     const projects = (await layer.manager.invokeService("workspace", "list")) as Array<{ id: string }>;
     expect(projects.map((item) => item.id)).toContain(workspace.id);
 
@@ -103,9 +103,15 @@ describe.runIf(ENABLED)("竖切：连接 → 项目 → 会话 → 发消息 →
       "create",
       workspace.id,
       "mock-agent",
-    )) as { id: string; modelId: string };
-    log(`✓ conversation.create → ${conversation.id}（模型 ${conversation.modelId}）`);
-    expect(conversation.modelId).toBe("mock-model");
+    )) as { id: string; model: { modelId: string; name: string; vision: boolean; source: string } };
+    log(`✓ conversation.create → ${conversation.id}（模型 ${conversation.model.modelId}）`);
+    // 模型整块是服务端给的那份（id / 名字 / 能不能看图 / 谁定的），不只是 id
+    expect(conversation.model).toEqual({
+      modelId: "mock-model",
+      name: "假模型",
+      vision: false,
+      source: "agent",
+    });
     // 刚建出来的是**草稿**：服务端要等第一条用户消息才落库（R56 / F-C2「没有用户消息就不写」），
     // 所以此刻它不在侧栏列表里。这不是 bug，是那一条决定的形状。
     const stillEmpty = (await layer.manager.invokeService("conversation", "list", workspace.id)) as unknown[];
@@ -119,9 +125,16 @@ describe.runIf(ENABLED)("竖切：连接 → 项目 → 会话 → 发消息 →
 
     const types = first.events.map((event) => event.type);
     log(`✓ 事件序列：${types.join(" → ")}`);
-    // 立刻回显的用户消息（id 是服务端受理时给的那个）
-    expect(types[0]).toBe("user");
-    expect(types[1]).toBe("start");
+    // 先「进入流式态」，随后上屏那条用户消息 —— 它要回服务端取一次（带图那句在库里是内容段
+    // 数组），所以中间可能夹着一条 `run.state` 的六态推送
+    expect(types[0]).toBe("start");
+    const userEvent = first.events.find(
+      (event): event is Extract<ChatStreamEvent, { type: "user" }> => event.type === "user",
+    );
+    if (!userEvent) throw new Error("没有收到 user 事件");
+    // 上屏的是 core 的 `AgentNS.Message` 本体（角色 / 内容 / id 都在里面），不是一句字符串
+    expect(userEvent.message.role).toBe("user");
+    expect(textOf(userEvent.message)).toContain("介绍一下你自己");
     // 流式：至少有两条 message（正文一片一片长出来），而且内容在变长
     const streamed = first.events.filter(
       (event): event is Extract<ChatStreamEvent, { type: "message" }> => event.type === "message",

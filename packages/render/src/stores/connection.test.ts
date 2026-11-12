@@ -56,7 +56,9 @@ vi.mock("../apis/connection.js", () => ({
 // 「新服务端」端上有什么：换连接之后界面显示的必须是这一份，而不是上一台留下的
 const REMOTE_AGENTS: AgentOption[] = [{ id: "agent-b", name: "远端 Agent" }];
 const REMOTE_MODELS: ModelOption[] = [{ id: "model-b", name: "远端模型" }];
-const REMOTE_WORKSPACES: Workspace[] = [{ id: "ws-new", name: "远端工作区", cwd: "/tmp/remote" }];
+const REMOTE_WORKSPACES: Workspace[] = [
+  { id: "ws-new", name: "远端工作区", folder: { cwd: "/tmp/remote", exists: true } },
+];
 
 /** 上一台的会话（保存前界面上挂着的东西） */
 const OLD_CONVERSATION: ConversationSummary = {
@@ -236,7 +238,9 @@ describe("connection store · save", () => {
     store.settings = { mode: "local" };
     uiStore.agents = [{ id: "agent-a", name: "本地 Agent" }];
     uiStore.models = [{ id: "model-a", name: "本地模型" }];
-    workspaceStore.workspaces = [{ id: "ws-old", name: "旧工作区", cwd: "/tmp/old" }];
+    workspaceStore.workspaces = [
+      { id: "ws-old", name: "旧工作区", folder: { cwd: "/tmp/old", exists: true } },
+    ];
     workspaceStore.activeWorkspaceId = "ws-old";
     conversationStore.byWorkspace = { "ws-old": [OLD_CONVERSATION] };
     conversationStore.currentWorkspaceId = "ws-old";

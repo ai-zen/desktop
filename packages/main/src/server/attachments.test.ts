@@ -19,6 +19,7 @@
 
 import type { AttachmentOutcome as WireOutcome, MethodResult, UploadTransport } from "@ai-zen/agents-client";
 import { ClientError as ClientErrorValue } from "@ai-zen/agents-client";
+import { AgentNS } from "@ai-zen/agents-core";
 import type { AttachmentInput, ChatStreamEvent } from "@ai-zen/desktop-shared";
 import { describe, expect, it } from "vitest";
 import { mergeAttachmentOutcomes, uploadAttachments } from "./attachments.js";
@@ -162,8 +163,18 @@ describe("uploadAttachments：render 的字节 → 服务端的 assetId", () => 
     );
 
     expect(upload.assets.map((asset) => asset.index)).toEqual([0, 1, 2, 3]);
+    // 失败原因是一整份 `ProblemFact`：码（`asset_count_exceeded`）、参数、已渲染的那句都在
     expect(upload.failures).toEqual([
-      { index: 4, name: "第5张.png", message: "一条消息最多 4 张图片" },
+      {
+        index: 4,
+        name: "第5张.png",
+        problem: {
+          code: "asset_count_exceeded",
+          messageKey: "",
+          params: { limit: 4 },
+          message: "一条消息最多 4 张图片",
+        },
+      },
     ]);
     // 一次 `asset.end` 都没为第 5 张发生（它连 begin 都没走到）
     expect(transport.calls.filter((call) => call.method === "asset.begin")).toHaveLength(4);
@@ -188,7 +199,16 @@ describe("uploadAttachments：render 的字节 → 服务端的 assetId", () => 
 
     expect(upload.assets.map((asset) => asset.index)).toEqual([0, 2]);
     expect(upload.failures).toEqual([
-      { index: 1, name: "被拒的一张.png", message: "服务端内部出错了，细节写进日志里了。" },
+      {
+        index: 1,
+        name: "被拒的一张.png",
+        problem: {
+          code: "internal",
+          messageKey: "",
+          params: {},
+          message: "服务端内部出错了，细节写进日志里了。",
+        },
+      },
     ]);
   });
 
@@ -226,7 +246,18 @@ describe("mergeAttachmentOutcomes：上传阶段 + 服务端结局 → 逐张上
           { index: 0, assetId: "a1", name: "一.png" },
           { index: 2, assetId: "a2", name: "三.png" },
         ],
-        failures: [{ index: 1, name: "二.png", message: "图片太大（24 MB），超过单张 20 MB 的上限" }],
+        failures: [
+          {
+            index: 1,
+            name: "二.png",
+            problem: {
+              code: "asset_too_large",
+              messageKey: "",
+              params: { bytes: 24 * 1024 * 1024 },
+              message: "图片太大（24 MB），超过单张 20 MB 的上限",
+            },
+          },
+        ],
       },
       [
         wire("a1", "file_reference", null),
@@ -235,14 +266,26 @@ describe("mergeAttachmentOutcomes：上传阶段 + 服务端结局 → 逐张上
     );
 
     expect(merged).toEqual([
-      { assetId: "a1", deliveredAs: "file_reference", problem: null, name: "一.png" },
+      { assetId: "a1", deliveredAs: "file_reference", section: null, problem: null, name: "一.png" },
       {
         assetId: "",
         deliveredAs: "dropped",
-        problem: "图片太大（24 MB），超过单张 20 MB 的上限",
+        section: null,
+        problem: {
+          code: "asset_too_large",
+          messageKey: "",
+          params: { bytes: 24 * 1024 * 1024 },
+          message: "图片太大（24 MB），超过单张 20 MB 的上限",
+        },
         name: "二.png",
       },
-      { assetId: "a2", deliveredAs: "dropped", problem: "三.png 没能发出去，这条消息里没有它。", name: "三.png" },
+      {
+        assetId: "a2",
+        deliveredAs: "dropped",
+        section: null,
+        problem: problem("三.png 没能发出去，这条消息里没有它。"),
+        name: "三.png",
+      },
     ]);
   });
 
@@ -287,6 +330,11 @@ function harness(
       calls.push({ method, params });
       const rejection = options.reject?.(method, params);
       if (rejection) throw rejection;
+      // `message.list` 是 `beginTurn` 取库里的用户消息那一次：各用例的 `reply` 说的是
+      // `conversation.send` 的结果，两者不混
+      if (method === "message.list") {
+        return { conversationId: CONVERSATION, anchor: null, messages: [STORED_USER] };
+      }
       // `asset.*` 由上传那半边回答，其余交给每个用例自己的 `reply`
       return asset(method, params) ?? reply(method, params);
     }) as ContractConnection["call"],
@@ -320,6 +368,17 @@ function harness(
   };
 }
 
+/**
+ * 库里那条用户消息（`beginTurn` 要回服务端取它，上屏的是这一条而不是手上那句字符串）。
+ *
+ * 内容故意与发送时那句不同：用例靠这个差别钉住「回显的是库里的消息」。
+ */
+const STORED_USER: AgentNS.Message = {
+  id: "m-user",
+  role: AgentNS.Role.User,
+  content: "库里那条",
+};
+
 const accepted = (attachments: WireOutcome[] = []) => ({
   userMessageId: "m-user",
   assistantMessageId: "m-assistant",
@@ -344,21 +403,29 @@ describe("chat.send：附件从 IPC 走到 conversation.send", () => {
       "asset.begin",
       "asset.end",
       "conversation.send",
+      // 受理之后回服务端取一次库里那条用户消息（上屏的是它，不是手上那句字符串）
+      "message.list",
     ]);
-    expect(h.calls.at(-1)).toEqual({
+    expect(h.calls.find((call) => call.method === "conversation.send")).toEqual({
       method: "conversation.send",
       params: { conversationId: CONVERSATION, input: { content: "看看这张", assetIds: ["asset-upload-1"] } },
     });
-    // 事件：user + start（受理即回显）→ attachments（这一轮的结局）
+    // 事件：start + user（上屏的是库里那条，不是手上那句）→ attachments（这一轮的结局）
     expect(h.events).toEqual([
-      { conversationId: CONVERSATION, type: "user", id: "m-user", content: "看看这张" },
       { conversationId: CONVERSATION, type: "start" },
+      { conversationId: CONVERSATION, type: "user", message: STORED_USER },
       {
         conversationId: CONVERSATION,
         type: "attachments",
         userMessageId: "m-user",
         attachments: [
-          { assetId: "asset-upload-1", deliveredAs: "file_reference", problem: null, name: "图.png" },
+          {
+            assetId: "asset-upload-1",
+            deliveredAs: "file_reference",
+            section: null,
+            problem: null,
+            name: "图.png",
+          },
         ],
       },
     ]);
@@ -371,9 +438,10 @@ describe("chat.send：附件从 IPC 走到 conversation.send", () => {
 
     expect(h.calls).toEqual([
       { method: "conversation.send", params: { conversationId: CONVERSATION, input: { content: "你好" } } },
+      { method: "message.list", params: { conversationId: CONVERSATION } },
     ]);
     // 一条空的 attachments 事件都不发（没附件的那一轮没有这件事）
-    expect(h.events.map((event) => event.type)).toEqual(["user", "start"]);
+    expect(h.events.map((event) => event.type)).toEqual(["start", "user"]);
   });
 
   it("一张都没传上去：文字照发（全失败退回纯文本），失败逐张上屏", async () => {
@@ -388,7 +456,7 @@ describe("chat.send：附件从 IPC 走到 conversation.send", () => {
       attachment("草稿里的一张.png"),
     ]);
 
-    expect(h.calls.at(-1)).toEqual({
+    expect(h.calls.find((call) => call.method === "conversation.send")).toEqual({
       method: "conversation.send",
       params: { conversationId: CONVERSATION, input: { content: "这张图你看看" } },
     });
@@ -398,7 +466,13 @@ describe("chat.send：附件从 IPC 走到 conversation.send", () => {
       {
         assetId: "",
         deliveredAs: "dropped",
-        problem: "服务端内部出错了，细节写进日志里了。",
+        section: null,
+        problem: {
+          code: "internal",
+          messageKey: "",
+          params: {},
+          message: "服务端内部出错了，细节写进日志里了。",
+        },
         name: "草稿里的一张.png",
       },
     ]);

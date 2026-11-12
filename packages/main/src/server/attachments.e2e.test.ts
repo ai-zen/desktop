@@ -111,8 +111,10 @@ describe.runIf(ENABLED)("附件竖切：字节 → assets/ → 气泡上那句�
     log(`✓ 这一轮的附件结局：${JSON.stringify(draftOutcomes)}`);
     expect(draftOutcomes).toHaveLength(1);
     expect(draftOutcomes[0]?.deliveredAs).toBe("text_fallback");
-    expect(draftOutcomes[0]?.problem ?? "").toContain("看不了图片");
-    expect(draftOutcomes[0]?.problem ?? "").toContain("剪贴板图.png");
+    // `problem` 是服务端那份结构化原因（码 + 参数 + 已渲染的那句）：界面读 `message` 上屏
+    expect(draftOutcomes[0]?.problem?.message ?? "").toContain("看不了图片");
+    expect(draftOutcomes[0]?.problem?.message ?? "").toContain("剪贴板图.png");
+    expect(draftOutcomes[0]?.problem?.code).toBeTruthy();
     log(`✓ 气泡上要显示的那句话（服务端渲染好的原文）：${JSON.stringify(draftOutcomes[0]?.problem)}`);
 
     const firstFiles = await listAssets(dataRoot);
@@ -149,7 +151,7 @@ describe.runIf(ENABLED)("附件竖切：字节 → assets/ → 气泡上那句�
     ]);
     // 第 5 张连 `asset.begin` 都没走到：它的那句话来自客户端库（与界面同一套措辞）
     expect(outcomes[4]?.deliveredAs).toBe("dropped");
-    expect(outcomes[4]?.problem ?? "").toContain("最多 4 张图片");
+    expect(outcomes[4]?.problem?.message ?? "").toContain("最多 4 张图片");
     expect(outcomes[4]?.name).toBe("第5张.png");
 
     const files = await listAssets(dataRoot);

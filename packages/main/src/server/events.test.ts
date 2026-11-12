@@ -228,7 +228,7 @@ describe("message.delta → start + message", () => {
     expect(h.events.map((event) => event.type)).toEqual(["start", "message"]);
     const pushed = h.events[1];
     if (pushed?.type !== "message") throw new Error("第二条应当是 message");
-    expect(pushed.id).toBe("m-assistant");
+    expect(pushed.message.id).toBe("m-assistant");
     expect(pushed.message.content).toBe("你");
     // 消息本体就是 core 的 `AgentNS.Message`，原样搬（不重新包装字段）
     expect(pushed.message.role).toBe(AgentNS.Role.Assistant);
@@ -260,7 +260,7 @@ describe("message.delta → start + message", () => {
 // ==================================================================
 
 describe("run.state → stream（六态）", () => {
-  it("在跑时推六态；换成「在等工具」时带上还在跑的工具名", () => {
+  it("在跑时推六态；换成「在等工具」时带上还在跑的那几个调用（core 的 ToolCall 原样）", () => {
     const h = harness();
 
     h.connection.emit("run.state", {
@@ -275,8 +275,8 @@ describe("run.state → stream（六态）", () => {
           phase: "awaiting_tools",
           since: "…",
           runningTools: [
-            { toolCall: { index: 0, function: { name: "read" } }, startedAt: "…" },
-            { toolCall: { index: 1, function: { name: "grep" } }, startedAt: "…" },
+            { toolCall: { id: "call-1", index: 0, function: { name: "read", arguments: "{}" } }, startedAt: "…" },
+            { toolCall: { id: "call-2", index: 1, function: { name: "grep" } }, startedAt: "…" },
           ],
         },
       }),
@@ -285,8 +285,12 @@ describe("run.state → stream（六态）", () => {
 
     const phases = h.events.flatMap((event) => (event.type === "stream" ? [event] : []));
     expect(phases.map((event) => event.phase)).toEqual(["thinking", "awaiting_tools"]);
-    expect(phases[1]?.runningTools).toEqual(["read", "grep"]);
-    expect(phases[0]?.runningTools).toEqual([]);
+    // 名字、参数、id、index 都在里面：不先拍成名字列表
+    expect(phases[1]?.toolCalls).toEqual([
+      { id: "call-1", index: 0, function: { name: "read", arguments: "{}" } },
+      { id: "call-2", index: 1, function: { name: "grep" } },
+    ]);
+    expect(phases[0]?.toolCalls).toEqual([]);
   });
 
   it("六态没变（只是别的字段变了）就不重复推", () => {
@@ -357,7 +361,13 @@ describe("run.state → done（收尾）", () => {
     expect(types).toEqual(["stream", "done", "error"]);
     const error = h.events.at(-1);
     if (error?.type !== "error") throw new Error("最后一条应当是 error");
-    expect(error.message).toBe("工具 read 失败了");
+    // `run.problem` 整块递下去：码、参数、句子都在
+    expect(error.problem).toEqual({
+      code: "tool.failed",
+      messageKey: "tool.failed",
+      params: {},
+      message: "工具 read 失败了",
+    });
   });
 
   it("同一轮收两次（重连补拉又给一份 settled）：只推一次 done", async () => {
@@ -396,7 +406,7 @@ describe("run.state → done（收尾）", () => {
 
     const error = h.events.at(-1);
     if (error?.type !== "error") throw new Error("应当推一条 error");
-    expect(error.message).toContain("服务端刚被关掉了");
+    expect(error.problem.message).toContain("服务端刚被关掉了");
   });
 });
 
@@ -455,12 +465,19 @@ describe("notice / question → notice", () => {
 
     h.connection.emit("notice", { notice, at: "a" });
 
+    // 语气用服务端那套词（`warning`），内容整份搬（码 / 键 / 参数 / 已渲染的那句），时长也带上
     expect(h.events).toEqual([
-      { type: "notice", level: "warn", text: "配置已保存", conversationId: CONVERSATION },
+      {
+        type: "notice",
+        level: "warning",
+        duration: 3,
+        text: notice.text,
+        conversationId: CONVERSATION,
+      },
     ]);
   });
 
-  it("全局通知（不属于任何会话）不带 conversationId", () => {
+  it("全局通知（不属于任何会话）：conversationId 是 `null`（与 omitted 不是一回事）", () => {
     const h = harness();
     h.connection.emit("notice", {
       notice: {
@@ -476,7 +493,9 @@ describe("notice / question → notice", () => {
 
     const event = h.events[0];
     if (event?.type !== "notice") throw new Error("应当是一条 notice");
-    expect(event.conversationId).toBeUndefined();
+    expect(event.conversationId).toBeNull();
+    // 服务端没设「自动消失」：不替它编一个秒数
+    expect(event.duration).toBeNull();
   });
 
   it("问题对象念成一条 info 提示（桌面端没有提问 UI，但不许「什么都没发生」）", () => {
@@ -496,8 +515,15 @@ describe("notice / question → notice", () => {
 
     h.connection.emit("question", { question, at: "a" });
 
+    // 题目原文就是服务端那份 `LocalizedText`（`prompt` 原样递给界面）
     expect(h.events).toEqual([
-      { type: "notice", level: "info", text: "上下文快满了，要交接吗？", conversationId: CONVERSATION },
+      {
+        type: "notice",
+        level: "info",
+        duration: null,
+        text: question.prompt,
+        conversationId: CONVERSATION,
+      },
     ]);
   });
 });
@@ -548,16 +574,38 @@ describe("conversation.changed → renamed", () => {
 // 发送受理 / 补拉 / 断线
 // ==================================================================
 
-describe("beginTurn → user + start", () => {
-  it("受理之后立刻回显：id 是服务端分的那个（不必等第一片增量）", () => {
-    const h = harness();
+describe("beginTurn → start + user", () => {
+  it("受之后回显的是**库里那条消息**（带图那句是内容段数组，不是一句字）", async () => {
+    const stored: AgentNS.Message = {
+      id: "m-user",
+      role: AgentNS.Role.User,
+      content: [
+        { index: 0, type: "text", text: "看看这张" },
+        { index: 1, type: "image_url", image_url: { url: "" }, __asset_id: "a1" },
+      ],
+    } as AgentNS.Message;
+    const h = harness((method) => {
+      if (method === "message.list") {
+        return { conversationId: CONVERSATION, anchor: null, messages: [stored] };
+      }
+      return {};
+    });
 
-    h.bridge.beginTurn(CONVERSATION, "m-user", "你好");
+    await h.bridge.beginTurn(CONVERSATION, "m-user");
 
     expect(h.events).toEqual([
-      { conversationId: CONVERSATION, type: "user", id: "m-user", content: "你好" },
       { conversationId: CONVERSATION, type: "start" },
+      { conversationId: CONVERSATION, type: "user", message: stored },
     ]);
+  });
+
+  it("受理回执里的 id 在 message.list 里找不到：当场报错（不编一条消息上屏）", async () => {
+    const h = harness((method) => {
+      if (method === "message.list") return { conversationId: CONVERSATION, anchor: null, messages: [] };
+      return {};
+    });
+
+    await expect(h.bridge.beginTurn(CONVERSATION, "m-user")).rejects.toThrow("m-user");
   });
 });
 
@@ -608,8 +656,8 @@ describe("onResume → done（补拉）", () => {
 
     const event = h.events[0];
     if (event?.type !== "notice") throw new Error("应当是一条 notice");
-    expect(event.level).toBe("warn");
-    expect(event.text).toContain("与服务端的连接断了");
+    expect(event.level).toBe("warning");
+    expect(event.text.message).toContain("与服务端的连接断了");
   });
 });
 
@@ -651,7 +699,7 @@ describe("断线 → 重连", () => {
     const notice = events.find((event) => event.type === "notice");
     if (notice?.type !== "notice") throw new Error("应当推一条通知");
     expect(notice.level).toBe("error");
-    expect(notice.text).toContain("凭证不对");
+    expect(notice.text.message).toContain("凭证不对");
   });
 
   it("dispose 之后不再订阅：事件推过来什么都不发生", () => {

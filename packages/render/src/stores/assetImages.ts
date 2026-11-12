@@ -6,8 +6,15 @@
  *   1. **认出哪一段是图**：`type === "image_url"` 且带素材引用（{@link assetIdOf}）；
  *   2. **取字节**：`chat.getAsset` → `Blob` → `URL.createObjectURL`（字节与服务端那一趟都在
  *      main：render 没有到服务端的连接，也没有 Node 的 `Buffer`）；
- *   3. **一份素材一屏只取一次**：按 `variant + assetId` 在内存里存那个 `blob:` URL，谁要谁
- *      领一份使用权；最后一个使用者走的时候 `URL.revokeObjectURL`。
+ *   3. **一份素材一屏只取一次**：按 `variant + assetId` 在内存里存那个 `blob:` URL 与它的像素
+ *      尺寸，谁要谁领一份使用权；最后一个使用者走的时候 `URL.revokeObjectURL`。
+ *
+ * ## 宽高一起交给视图（R76）
+ *
+ * `asset.get` 回包里带着服务端从文件头解出来的 `width` / `height`，所以视图在拿到字节的同一刻就
+ * 知道这张图该占多大：`AssetImage.vue` 按这两个数把外层框先撑成原比例，解码完成前后同一个尺寸，
+ * 气泡不会因为「图来了」而跳一下。解不出来（`null`）就不撑框 —— 不做兜底分支，界面按图片自己的
+ * 尺寸出现。
  *
  * ## 为什么读 `__asset_id` 的这几行在这里，而不从客户端库 import
  *
@@ -58,11 +65,23 @@ export function imageAssetIds(content: AgentNS.MessageContent | undefined): stri
   return ids;
 }
 
+/**
+ * 一份取回来的素材在界面上的样子：`blob:` URL + 它的像素尺寸（供气泡先摆占位框）。
+ *
+ * `width` / `height` 是原图的像素尺寸（服务端从文件头解出来的）；解不出来时是 `null`，那时不设
+ * 占位比例 —— 图片按自己的尺寸出现。
+ */
+export interface LoadedAsset {
+  url: string;
+  width: number | null;
+  height: number | null;
+}
+
 /** 一份素材在本屏的持有情况：URL（字节回来之前是 `null`）、使用者个数、正在跑的那次取字节 */
 interface Lease {
   url: string | null;
   users: number;
-  pending: Promise<string> | null;
+  pending: Promise<LoadedAsset> | null;
 }
 
 /** 本屏的缓存：`variant:assetId` → 那份素材 */
@@ -73,12 +92,12 @@ function keyOf(assetId: string, variant: AssetVariant): string {
 }
 
 /**
- * 领一份 `blob:` URL 的使用权（同一个 `variant + assetId` 只取一次字节）。
+ * 领一份素材的使用权（同一个 `variant + assetId` 只取一次字节）。
  *
  * 拿到就要还：组件卸载时调 {@link releaseAssetUrl}。字节取不到时这个 promise 会 reject
  * （错误一路抛到调用方，不在这里折成一句话）。
  */
-export async function acquireAssetUrl(assetId: string, variant: AssetVariant): Promise<string> {
+export async function acquireAsset(assetId: string, variant: AssetVariant): Promise<LoadedAsset> {
   const key = keyOf(assetId, variant);
   let existing = leases.get(key);
   if (existing === undefined) {
@@ -120,15 +139,15 @@ export function releaseAssetUrl(assetId: string, variant: AssetVariant): void {
 }
 
 /** 取一次字节并造出 URL，写回这一份持有里 */
-async function load(lease: Lease, assetId: string, variant: AssetVariant): Promise<string> {
-  const { mime, bytes } = await getChatAsset(assetId, variant);
+async function load(lease: Lease, assetId: string, variant: AssetVariant): Promise<LoadedAsset> {
+  const { mime, width, height, bytes } = await getChatAsset(assetId, variant);
   // 跨 IPC 过来的字节是结构化克隆出来的，一定是 ArrayBuffer 支撑的（`BlobPart` 认这个）
   const url = URL.createObjectURL(new Blob([bytes as Uint8Array<ArrayBuffer>], { type: mime }));
   if (lease.users === 0) {
     // 字节回来之前使用者就都走了（例如刚打开就切走了会话）：这一份没人要，当场回收
     URL.revokeObjectURL(url);
-    return url;
+    return { url, width, height };
   }
   lease.url = url;
-  return url;
+  return { url, width, height };
 }

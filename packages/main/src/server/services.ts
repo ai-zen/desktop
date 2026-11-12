@@ -8,13 +8,15 @@
  * 的方法名与参数顺序，全部来自 render 的 `apis/*.ts`（`invokeService(service, method, ...args)`）。
  * render 一行不动是这一波的硬约束，所以这里的方法名照旧，只是**另一头**换成了新契约。
  *
- * ## 三条纪律
+ * ## 四条纪律
  *
  * 1. **不自己算规则**：侧栏顺序、消息条数、`running`、生效模型都由服务端给（`conversation.list`
  *    的每一项就是它算好的），客户端再推一遍就是第二份会漂的实现；
  * 2. **消息本体是 core 的 `AgentNS.Message`**，原样来回搬，不重新包装字段（`message.list` 给的
- *    就是那个类型）；
- * 3. **契约没有的东西不造**：render 要而这一波没接的（子 Agent 栏目、通知的手动清除、提问 UI），
+ *    就是那个类型）；内容段、工具调用、用量同理；
+ * 3. **结构化的服务端事实不拍平**：`folder`（路径 + 还在不在）、`model`（id + 名字 + 能不能看图
+ *    + 谁定的）这类成组的事实整块搬，不取其中一字段压成一个值（R75 的同一条原则）；
+ * 4. **契约没有的东西不造**：render 要而这一波没接的（子 Agent 栏目、通知的手动清除、提问 UI），
  *    宁可留空并在 `events.ts` 里说清，也不编一个像样的假值。
  */
 
@@ -31,12 +33,14 @@ import type {
   ConversationState,
   ConversationSummary,
   EndpointSettings,
+  FolderFact,
   ModelOption,
   Workspace,
 } from "@ai-zen/desktop-shared";
 import { mergeAttachmentOutcomes, uploadAttachments } from "./attachments.js";
 import type { ContractCall, ContractConnection } from "./contract.js";
 import type { ChatEventBridge } from "./events.js";
+import { problemOf } from "./problem.js";
 
 /**
  * 服务共用的那几样东西。
@@ -138,7 +142,7 @@ export class ServerConversationService {
       id: conversation.id,
       workspaceId: conversation.workspaceId,
       agentId: conversation.agentId,
-      modelId: conversation.model.modelId,
+      model: conversation.model,
       name: conversation.name,
       messages: listed.messages,
       createdAt: conversation.createdAt,
@@ -160,7 +164,7 @@ export class ServerConversationService {
         id: conversation.id,
         workspaceId: conversation.workspaceId || workspaceId,
         agentId: conversation.agentId,
-        modelId: conversation.model.modelId,
+        model: conversation.model,
         name: conversation.name,
         messages: listed.messages,
         createdAt: conversation.createdAt,
@@ -374,7 +378,8 @@ export class ServerChatService {
         conversationId,
         input: { content, ...(assetIds.length > 0 ? { assetIds } : {}) },
       });
-      this.ctx.events.beginTurn(conversationId, accepted.userMessageId, content);
+      // 上屏的是服务端落库的那条消息（`message.list` 里取回来），不是手上这句 `content`
+      await this.ctx.events.beginTurn(conversationId, accepted.userMessageId);
       // 上传阶段已有的失败与服务端给的结局合到一份逐张账上（顺序 = 用户摆放的顺序）
       this.ctx.events.pushAttachments(
         conversationId,
@@ -383,7 +388,7 @@ export class ServerChatService {
       );
     } catch (error) {
       if (isBiz(error, "busy")) return;
-      this.ctx.events.pushError(conversationId, messageOf(error));
+      this.ctx.events.pushError(conversationId, problemOf(error));
     }
   }
 
@@ -405,7 +410,13 @@ export class ServerChatService {
    */
   async getAsset(assetId: string, variant: AssetVariant = "thumb"): Promise<AssetBytes> {
     const content = await fetchAssetContent(this.ctx.connection(), { assetId, variant });
-    return { mime: content.asset.mime, bytes: content.bytes };
+    // 宽高（R76）：服务端落定素材时从文件头解出来的像素尺寸，界据先摆占位框；解不出来时是 `null`
+    return {
+      mime: content.asset.mime,
+      width: content.asset.width,
+      height: content.asset.height,
+      bytes: content.bytes,
+    };
   }
 
   /** 中止本轮（PRD D14：用户的显式动作，不排队）；收尾照常走 `run.state` 的 `settled` */
@@ -448,9 +459,10 @@ export class ServerChatService {
 function toWorkspace(view: {
   id: string;
   name: string;
-  folder: { cwd: string };
+  folder: FolderFact;
 }): Workspace {
-  return { id: view.id, name: view.name, cwd: view.folder.cwd };
+  // `folder` 整块搬（路径 + 还在不在）：只取 `cwd` 就把「目录没了」这个事实棗掉了
+  return { id: view.id, name: view.name, folder: view.folder };
 }
 
 function toSummary(view: {
@@ -485,8 +497,4 @@ function lastId(messages: readonly AgentNS.Message[]): string | undefined {
 /** 这个失败是不是服务端那个业务码（判伪看 `code`，不看句子） */
 function isBiz(error: unknown, code: string): boolean {
   return typeof error === "object" && error !== null && (error as { code?: unknown }).code === code;
-}
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

@@ -12,9 +12,12 @@
  *
  * ## 为什么正文一字不改
  *
- * `problem` 是服务端按这条连接的语言渲染好的一句话（客户端库自己那几种失败也用同一套措辞），
+ * `problem.message` 是服务端按这条连接的语言渲染好的一句话（客户端库自己那几种失败也用同一套措辞），
  * 界面只负责把它摆出来：在渲染层再拼一句「图片发送失败：」之类的，同一件事就有两种说法，而且
  * 换个语言之后只有一半会跟着变（PRD D8 的理由）。
+ *
+ * 这一层拿的是整个 `ProblemFact`（码、参数、句子、detail 都在），所以以后要按码分颜色、把 detail
+ * 摆成按钮，改的只有这里 —— 不必回头让 main 多搬一个字段。
  *
  * 这里唯一由客户端产出的一句是 dropped 又没原因的兜底 —— 那种情况下服务端什么也没说，界面要么
  * 说一句「它没发出去」，要么让一张图凭空消失。
@@ -36,7 +39,7 @@ export function attachmentNotes(items: readonly AttachmentOutcome[] | undefined)
   for (const item of items) {
     if (item.problem !== null) {
       // 服务端/客户端库渲染好的那句话，原文搬运
-      notes.push(item.problem);
+      notes.push(item.problem.message);
       continue;
     }
     if (item.deliveredAs === "dropped") {

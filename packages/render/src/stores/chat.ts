@@ -42,8 +42,8 @@ interface ConversationChatState {
    * 事实，PRD L8）。
    */
   phase: StreamPhase | null;
-  /** 「在等哪几个工具」的工具名（并行时只含还在跑的） */
-  runningTools: string[];
+  /** 「在等哪几个工具」：并行时只含还在跑的那几个，core 的 `ToolCall` 原样（要名字读 `function.name`） */
+  toolCalls: AgentNS.ToolCall[];
   /**
    * 当前这一轮的子 Agent 栏目（数组顺序 = 服务端给的 `index` 顺序 = 标签顺序）。
    *
@@ -69,7 +69,7 @@ function emptyState(): ConversationChatState {
     error: "",
     lastFailedContent: "",
     phase: null,
-    runningTools: [],
+    toolCalls: [],
     agents: [],
     activeAgentId: MAIN_AGENT_VIEW_ID,
     attachments: {},
@@ -95,14 +95,27 @@ const PHASE_TEXT: Record<StreamPhase, string> = {
  * 弹一条通知（`type: "notice"` 的唯一出口）。
  *
  * 三档语气对应 element-plus 的三个入口：`info` 是「顺带说一句」（迁移被跳过、交接文档
- * 落在哪），`warn` 是「这次打了折扣，但事情做完了」（交接方式降级），`error` 是「事情没做成」
+ * 落在哪），`warning` 是「这次打了折扣，但事情做完了」（交接方式降级），`error` 是「事情没做成」
  * （存档没写成功、子 Agent 挂了）。**不是** `type: "error"` 那条红色错误条 —— 那个位置
  * 留给「这一轮失败了」。
  */
-function showNotice(level: "info" | "warn" | "error", text: string): void {
-  if (level === "warn") ElMessage.warning(text);
+function showNotice(level: "info" | "warning" | "error", text: string): void {
+  if (level === "warning") ElMessage.warning(text);
   else if (level === "error") ElMessage.error(text);
   else ElMessage.info(text);
+}
+
+/**
+ * 按 id 就地 upsert：有则替换、无则追加末尾。
+ *
+ * `user` 与 `message` 两条事件共用这一条规则：它们给的都是「这条消息此刻完整的样子」
+ * （core 的 `AgentNS.Message`），区别只在于一条是用户那句、一条是正在写的那条。两套合并
+ * 规则各说各话，就会在「上一轮的消息回流晚了」这种时候多画一条。
+ */
+function upsert(messages: AgentNS.Message[], message: AgentNS.Message): void {
+  const index = messages.findIndex((item) => item.id === message.id);
+  if (index >= 0) messages[index] = message;
+  else messages.push(message);
 }
 
 export const useChatStore = defineStore("chat", {
@@ -135,13 +148,19 @@ export const useChatStore = defineStore("chat", {
      *
      * 没在跑时是空串（视图那边 v-show 不看它，看 `streaming`）；拿到了态就按 `PHASE_TEXT` 说，
      * 连态都没拿到时用一句中的「正在思考…」—— 服务端确实还没报态，界面不该停在一片空白上。
+     *
+     * 工具名是**界面层**从 core 的 `ToolCall` 里取 `function.name` 拼的句子：服务端给的是那几个
+     * 调用本身（名字、参数、id 都在），怎么念是这一层的事。
      */
     streamingHint: (state): string => {
       const st = state.byConversation[state.activeConversationId];
       if (!st) return "";
       const base = st.phase ? PHASE_TEXT[st.phase] : "正在思考…";
       // 并行工具只念还在跑的那几个（PRD L8：已经跑完的不该还挂在「在等」里）
-      return st.runningTools.length > 0 ? `${base}（${st.runningTools.join("、")}）` : base;
+      const names = st.toolCalls
+        .map((toolCall) => toolCall.function?.name)
+        .filter((name): name is string => Boolean(name));
+      return names.length > 0 ? `${base}（${names.join("、")}）` : base;
     },
     /** 当前选中项：`""` = 主对话 */
     activeAgentId: (state): string =>
@@ -198,7 +217,7 @@ export const useChatStore = defineStore("chat", {
         // 六态不随重载保留：`chat.getState` 只回「在不在跑」，那一刻处在哪一态由服务端后续的
         // `run.state` 推来（推来之前就用一句中的「正在思考…」）
         phase: null,
-        runningTools: [],
+        toolCalls: [],
         // 栏目不随重载保留：`chat.getState` 只给主对话的实时消息，没有子 Agent 的快照
         // （栏目只活当前一轮，服务端那边由 `agents: []` 收尾）。沿用旧栏目等于把上一轮/上一次
         // 会话的标签挂回来 —— 点进去是永远不再更新的残影，还可能顶着一批早已失效的消息。
@@ -327,8 +346,8 @@ export const useChatStore = defineStore("chat", {
 
       // 通知：弹一条瞬时提示，**不进**会话状态。
       //
-      // 为什么先于下面的 `ensure` 返回（而不是写在 switch 里）：① `server-notice` 不绑会话，
-      // `evt.conversationId` 是 undefined，走 `ensure` 会凭空开一个 key 为 "undefined" 的
+      // 为什么先于下面的 `ensure` 返回（而不是写在 switch 里）：① 全局通知不绑会话
+      // （`conversationId` 是 `null`），走 `ensure` 会凭空开一个 key 为 "null" 的
       // 状态槽位（那个槽位谁也不会选中，只是内存里多一份垃圾）；② 通知不是状态，本来就不该
       // 落到 `ConversationChatState` 上 —— 尤其不能碰 `error`：那是「本轮失败」的红色错误条，
       // `done` 会把它清空。通知若塞进 `error`，下一轮 `done` 就会替它销账（真正该看的那句
@@ -337,8 +356,11 @@ export const useChatStore = defineStore("chat", {
       // 为什么用 toast 而不是通知栏：桌面端还没有通知栏（做它要改布局、要新增一块交互）；
       // toast 不占位置、不改布局，设置页已经在用它。将来真做了通知栏，这里换成「写状态」即可
       // —— 调用点只有一个，换的时候不用碰别处。
+      //
+      // 显示的是服务端已渲染好的那一句（`text.message`，按这条连接的语言）；三档语气与服务端的
+      // `level` 逐字对应，不在这里另译一套词。
       if (evt.type === "notice") {
-        showNotice(evt.level, evt.text);
+        showNotice(evt.level, evt.text.message);
         return;
       }
 
@@ -356,7 +378,7 @@ export const useChatStore = defineStore("chat", {
         // 不动消息与流式态 —— 六态变化不是「一轮开始 / 结束」
         case "stream":
           st.phase = evt.phase;
-          st.runningTools = evt.runningTools;
+          st.toolCalls = evt.toolCalls;
           break;
 
         // 这一轮各附件的结局：按用户消息 id 存着，气泡自己去取（文案是服务端/客户端库
@@ -365,34 +387,24 @@ export const useChatStore = defineStore("chat", {
           st.attachments[evt.userMessageId] = evt.attachments;
           break;
 
-        // 本轮用户消息上屏（id 由 main 编，只为给 v-for 一个稳定的 key；收尾那次 done 会换成服务端的真 id）
+        // 本轮用户消息上屏（载荷是服务端落库的那条消息本体：带图那句在库里是内容段数组）
         case "user":
-          st.messages.push({
-            id: evt.id,
-            role: AgentNS.Role.User,
-            content: evt.content,
-          });
+          upsert(st.messages, evt.message);
           break;
 
-        case "message": {
+        case "message":
           // 完整消息按 id 就地 upsert：有则替换、无则追加末尾。
           // 事件到达顺序即消息顺序（流式同步 → 工具结果补推 → 下一轮），
           // v-for key 从流式开始即稳定（收尾那次 done 用服务端的全量数组换掉）。
-          const idx = st.messages.findIndex((m) => m.id === evt.id);
-          if (idx >= 0) {
-            st.messages[idx] = evt.message;
-          } else {
-            st.messages.push(evt.message);
-          }
+          upsert(st.messages, evt.message);
           break;
-        }
 
         case "done":
           st.messages = evt.messages;
           st.streaming = false;
           st.error = "";
           st.phase = null;
-          st.runningTools = [];
+          st.toolCalls = [];
           convStore.setRunning(evt.conversationId, false);
           // 刷新会话列表（消息数/更新时间，保持选中）
           this.refreshList(evt.conversationId);
@@ -409,10 +421,10 @@ export const useChatStore = defineStore("chat", {
           break;
 
         case "error":
-          st.error = evt.message;
+          st.error = evt.problem.message;
           st.streaming = false;
           st.phase = null;
-          st.runningTools = [];
+          st.toolCalls = [];
           convStore.setRunning(evt.conversationId, false);
           this.refreshList(evt.conversationId);
           break;

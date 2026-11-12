@@ -20,7 +20,8 @@
  */
 
 import { uploadAssets, type AttachmentOutcome as WireOutcome, type AssetSource, type AssetFailure, type UploadTransport } from "@ai-zen/agents-client";
-import type { AttachmentInput, AttachmentOutcome } from "@ai-zen/desktop-shared";
+import type { AttachmentInput, AttachmentOutcome, ProblemFact } from "@ai-zen/desktop-shared";
+import { problemOf } from "./problem.js";
 
 /** 一张上传成功的素材（`index` 是它在 render 递来的那批里的位置） */
 export interface UploadedAsset {
@@ -32,12 +33,12 @@ export interface UploadedAsset {
   name: string | null;
 }
 
-/** 一张没能上传的附件（文案来自客户端库/服务端，原样上屏） */
+/** 一张没能上传的附件（原因来自客户端库/服务端，原样上屏） */
 export interface FailedAsset {
   index: number;
   name: string | null;
-  /** 一句已经渲染好的人话（超限、空文件、对话不存在……） */
-  message: string;
+  /** 结构化原因（码 + 参数 + 已渲染好的那句） */
+  problem: ProblemFact;
 }
 
 /** 一批附件的上传结果：成了的 + 没成的（**一条都不静默丢**） */
@@ -87,28 +88,29 @@ export async function uploadAttachments(
     failures: failures.map((failure) => ({
       index: failure.index,
       name: failure.name,
-      message: failureMessage(failure),
+      problem: failureProblem(failure),
     })),
   };
 }
 
 /**
- * 一份上传失败 → 一句人话。
+ * 一个上传失败 → 它的事实。
  *
- * `ClientError.message` 就是那句话（服务端回的错是它按连接语言渲染好的；本地那几种在库的
- * `LOCAL_TEXT` 里）。这里不改写、不截断：同一件事只有一种说法。
+ * `AssetFailure.error` 是客户端库/服务端那个 `ClientError`（带码、参数、已渲染的句子与 detail），
+ * 原样搬就行了 —— 不在这里只取 `message`，那是把另外三样丢掉。
  */
-function failureMessage(failure: AssetFailure): string {
-  return failure.error.message;
+function failureProblem(failure: AssetFailure): ProblemFact {
+  return problemOf(failure.error);
 }
 
 /**
  * 上传阶段的结果 + 服务端回的结局 → 界面要的**逐张**结局（顺序 = 用户摆放的顺序）。
  *
  * 两边各说一半：
- *   · 传上去的那几张，怎么走的由服务端说（文件引用 / 内联 / 退化成文字 / 发的时候被丢），
- *     它的句子原文搬过来，`deliveredAs` 也原样（界面靠它判断「没事就别说话」）；
- *   · 没传上去的那几张，服务端根本没见过它们，由上传阶段的失败补上（`dropped` + 原因）。
+ *   · 传上去的那几张，怎么走的由服务端说（文件引用 / 内联 / 退化成文字 / 发的时候被丢）：
+ *     服务端那份结局（`deliveredAs` + `section` + `problem`）整块搬，只补一个名字；
+ *   · 没传上去的那几张，服务端根本没见过它们，由上传阶段的失败补上（`dropped` + 原因）——
+ *     那时没有内容段（`section: null`）。
  *
  * 服务端没为某个 assetId 给结局时**不编**：那是它没说的事，编一句「已发送」就是假成功。
  */
@@ -127,9 +129,7 @@ export function mergeAttachmentOutcomes(
     merged.push({
       index: asset.index,
       outcome: {
-        assetId: asset.assetId,
-        deliveredAs: outcome.deliveredAs,
-        problem: outcome.problem === null ? null : outcome.problem.message,
+        ...outcome,
         name: asset.name,
       },
     });
@@ -141,7 +141,8 @@ export function mergeAttachmentOutcomes(
       outcome: {
         assetId: "",
         deliveredAs: "dropped",
-        problem: failure.message,
+        section: null,
+        problem: failure.problem,
         name: failure.name,
       },
     });

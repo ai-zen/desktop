@@ -22,7 +22,7 @@ describe("生成六态（stream 事件）", () => {
     store.ensure(CONV);
     store.activeConversationId = CONV;
 
-    store.applyEvent({ conversationId: CONV, type: "stream", phase: "generating", runningTools: [] });
+    store.applyEvent({ conversationId: CONV, type: "stream", phase: "generating", toolCalls: [] });
 
     expect(store.streamingHint).toBe("正在输出…");
   });
@@ -36,7 +36,10 @@ describe("生成六态（stream 事件）", () => {
       conversationId: CONV,
       type: "stream",
       phase: "awaiting_tools",
-      runningTools: ["read", "grep"],
+      toolCalls: [
+        { index: 0, function: { name: "read" } },
+        { index: 1, function: { name: "grep" } },
+      ],
     });
 
     expect(store.streamingHint).toBe("正在等待工具结果…（read、grep）");
@@ -56,7 +59,7 @@ describe("生成六态（stream 事件）", () => {
     store.activeConversationId = CONV;
     store.applyEvent({ conversationId: CONV, type: "start" });
 
-    store.applyEvent({ conversationId: CONV, type: "stream", phase: "thinking", runningTools: [] });
+    store.applyEvent({ conversationId: CONV, type: "stream", phase: "thinking", toolCalls: [] });
 
     expect(store.streaming).toBe(true);
     expect(slot.messages).toEqual([]);
@@ -67,7 +70,7 @@ describe("生成六态（stream 事件）", () => {
     store.ensure(CONV);
     store.activeConversationId = CONV;
     store.applyEvent({ conversationId: CONV, type: "start" });
-    store.applyEvent({ conversationId: CONV, type: "stream", phase: "awaiting_tools", runningTools: ["read"] });
+    store.applyEvent({ conversationId: CONV, type: "stream", phase: "awaiting_tools", toolCalls: [{ index: 0, function: { name: "read" } }] });
 
     store.applyEvent({ conversationId: CONV, type: "done", messages: [] });
 

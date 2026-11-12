@@ -11,21 +11,29 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { AgentNS } from "@ai-zen/agents-core";
-import type { AttachmentOutcome } from "@ai-zen/desktop-shared";
+import type { AttachmentOutcome, ProblemFact } from "@ai-zen/desktop-shared";
 import { useChatStore } from "./chat.js";
 import { attachmentNotes } from "./attachmentNotes.js";
 
 const CONV = "conv-1";
 const USER_MESSAGE = "m-user";
 
-/** 一句话就是服务端渲染好的那句（`problem` 是这句话本身，不是码 + 参数） */
-function outcome(overrides: Partial<AttachmentOutcome> = {}): AttachmentOutcome {
+/** 服务端给的原因就是这一整份（码 + 参数 + 已渲染的那句），不是一句摘出来的话 */
+function problem(message: string): ProblemFact {
+  return { code: "message.imageFallback", messageKey: "message.imageFallback", params: {}, message };
+}
+
+function outcome(
+  overrides: Partial<AttachmentOutcome> & { problemText?: string } = {},
+): AttachmentOutcome {
+  const { problemText, ...rest } = overrides;
   return {
     assetId: "a1",
     deliveredAs: "file_reference",
-    problem: null,
+    section: null,
+    problem: problemText === undefined ? null : problem(problemText),
     name: "图.png",
-    ...overrides,
+    ...rest,
   };
 }
 
@@ -44,7 +52,7 @@ describe("附件结局上屏（attachments 事件）", () => {
       conversationId: CONV,
       type: "attachments",
       userMessageId: USER_MESSAGE,
-      attachments: [outcome({ deliveredAs: "text_fallback", problem: serverText })],
+      attachments: [outcome({ deliveredAs: "text_fallback", problemText: serverText })],
     });
 
     const stored = store.attachmentOutcomes[USER_MESSAGE];
@@ -73,9 +81,9 @@ describe("附件结局上屏（attachments 事件）", () => {
 
   it("逐张说明：几张图各有各的结局时按服务端给的顺序一句一行", () => {
     const notes = attachmentNotes([
-      outcome({ assetId: "a1", deliveredAs: "dropped", problem: "图.png 没能发出去，这条消息里没有它。" }),
+      outcome({ assetId: "a1", deliveredAs: "dropped", problemText: "图.png 没能发出去，这条消息里没有它。" }),
       outcome({ assetId: "a2", deliveredAs: "file_reference" }),
-      outcome({ assetId: "a3", deliveredAs: "text_fallback", problem: "假模型 看不了图片，另一张.png 改成用文字描述发过去。" }),
+      outcome({ assetId: "a3", deliveredAs: "text_fallback", problemText: "假模型 看不了图片，另一张.png 改成用文字描述发过去。" }),
     ]);
 
     expect(notes).toEqual([
@@ -93,7 +101,7 @@ describe("附件结局上屏（attachments 事件）", () => {
       conversationId: CONV,
       type: "attachments",
       userMessageId: USER_MESSAGE,
-      attachments: [outcome({ deliveredAs: "dropped", problem: "有一张没能发出去" })],
+      attachments: [outcome({ deliveredAs: "dropped", problemText: "有一张没能发出去" })],
     });
     store.applyEvent({
       conversationId: CONV,

@@ -138,7 +138,7 @@ function wireConversationState(run: Partial<RunState> = {}): WireConversationSta
 // ==================================================================
 
 describe("workspace", () => {
-  it("list：`folder.cwd` 就是 render 那个 `cwd`（目录事实原样搬）", async () => {
+  it("list：`folder` 整块搬（路径 + 还在不在，不只取 cwd）", async () => {
     const h = harness(() => ({
       workspaces: [
         { id: "ws-1", name: "我的项目", folder: { cwd: "/code/a", exists: true } },
@@ -149,8 +149,8 @@ describe("workspace", () => {
     const workspaces = await new ServerWorkspaceService(h.ctx).list();
 
     expect(workspaces).toEqual([
-      { id: "ws-1", name: "我的项目", cwd: "/code/a" },
-      { id: "ws-2", name: "已删除目录", cwd: "/code/b" },
+      { id: "ws-1", name: "我的项目", folder: { cwd: "/code/a", exists: true } },
+      { id: "ws-2", name: "已删除目录", folder: { cwd: "/code/b", exists: false } },
     ]);
   });
 
@@ -162,7 +162,7 @@ describe("workspace", () => {
     const workspace = await new ServerWorkspaceService(h.ctx).create("", "");
 
     expect(h.calls[0]).toEqual({ method: "workspace.create", params: { cwd: "/home/user/Desktop" } });
-    expect(workspace).toEqual({ id: "ws-9", name: "桌面", cwd: "/home/user/Desktop" });
+    expect(workspace).toEqual({ id: "ws-9", name: "桌面", folder: { cwd: "/home/user/Desktop", exists: true } });
   });
 
   it("create：填了名字就一起交出去", async () => {
@@ -240,13 +240,12 @@ describe("conversation", () => {
             id: "conv-1",
             workspaceId: "ws-1",
             agentId: "agent-1",
-            modelId: "model-1",
             name: "2026-01-01 10:00",
             messageCount: 1,
             createdAt: "2026-01-01T00:00:00.000Z",
             updatedAt: "2026-01-01T00:00:00.000Z",
             running: false,
-            model: { modelId: "model-1" },
+            model: { modelId: "model-1", name: "模型一", vision: true, source: "agent" },
           },
         };
       }
@@ -261,8 +260,8 @@ describe("conversation", () => {
     expect(h.calls.map((call) => call.method)).toEqual(["conversation.create", "message.list"]);
     expect(h.calls[0]?.params).toEqual({ workspaceId: "ws-1", agentId: "agent-1" });
     expect(conversation.id).toBe("conv-1");
-    // 生效模型来自 `model.modelId`（创建时定死的那一个，PRD L7）
-    expect(conversation.modelId).toBe("model-1");
+    // 生效模型整块来自 `model`（创建时定死的那一个，PRD L7）：名字、能不能看图、谁定的都在
+    expect(conversation.model).toEqual({ modelId: "model-1", name: "模型一", vision: true, source: "agent" });
     expect(conversation.messages).toEqual([preset]);
   });
 
@@ -456,13 +455,26 @@ describe("config", () => {
 // ==================================================================
 
 describe("chat", () => {
-  it("send：受理之后立刻回显 user + start（id 用服务端分的那个）", async () => {
-    const h = harness(() => ({
-      userMessageId: "m-user",
-      assistantMessageId: "m-assistant",
-      attachments: [],
-      acceptedAt: "2026-01-01T00:00:00.000Z",
-    }));
+  it("send：受理之后回显 start + 库里那条 user（带图那句在库里是内容段数组）", async () => {
+    const stored: AgentNS.Message = {
+      id: "m-user",
+      role: AgentNS.Role.User,
+      content: [
+        { index: 0, type: "text", text: "你好" },
+        { index: 1, type: "image_url", image_url: { url: "" }, __asset_id: "a1" },
+      ],
+    } as AgentNS.Message;
+    const h = harness((method) => {
+      if (method === "message.list") {
+        return { conversationId: CONVERSATION, anchor: null, messages: [stored] };
+      }
+      return {
+        userMessageId: "m-user",
+        assistantMessageId: "m-assistant",
+        attachments: [],
+        acceptedAt: "2026-01-01T00:00:00.000Z",
+      };
+    });
 
     await new ServerChatService(h.ctx).send("ws-1", CONVERSATION, "你好");
 
@@ -470,9 +482,10 @@ describe("chat", () => {
       method: "conversation.send",
       params: { conversationId: CONVERSATION, input: { content: "你好" } },
     });
+    // 上屏的是库里那条消息（`message.list` 取回来的整条，内容段数组原样），不是手上这句 `content`
     expect(h.events).toEqual([
-      { conversationId: CONVERSATION, type: "user", id: "m-user", content: "你好" },
       { conversationId: CONVERSATION, type: "start" },
+      { conversationId: CONVERSATION, type: "user", message: stored },
     ]);
   });
 
@@ -495,7 +508,9 @@ describe("chat", () => {
 
     const error = h.events[0];
     if (error?.type !== "error") throw new Error("应当推一条 error");
-    expect(error.message).toContain("还没回答");
+    expect(error.problem.message).toContain("还没回答");
+    // 业务码一起递下去：界面按码分支，不去解析句子
+    expect(error.problem.code).toBe("question_pending");
   });
 
   it("abort：发 `conversation.abort`（收尾照常走 run.state）", async () => {
@@ -516,6 +531,8 @@ describe("chat", () => {
 
     expect(h.calls[0]).toEqual({ method: "asset.get", params: { assetId: "a1", variant: "thumb" } });
     expect(content.mime).toBe("image/png");
+    // 宽高跟着字节一起回来（R76：界面按它先摆占位框）
+    expect([content.width, content.height]).toEqual([1, 1]);
     expect(Array.from(content.bytes)).toEqual([1, 2, 3, 4]);
   });
 
@@ -561,7 +578,7 @@ describe("chat", () => {
     expect(h.tracked.get(CONVERSATION)).toBe("m2");
     // 六态也交给了事件层：切回来不该显示成「什么都没在跑」
     expect(h.events).toEqual([
-      { conversationId: CONVERSATION, type: "stream", phase: "generating", runningTools: [] },
+      { conversationId: CONVERSATION, type: "stream", phase: "generating", toolCalls: [] },
     ]);
   });
 });

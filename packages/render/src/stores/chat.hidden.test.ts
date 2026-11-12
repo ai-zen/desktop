@@ -91,7 +91,7 @@ describe("chat store · viewMessages 滤掉 hidden", () => {
 
   it("流式期间那条 user 回显照常上屏（hidden 只针对服务端注入的消息）", () => {
     store.applyEvent({ conversationId: CONV, type: "start" });
-    store.applyEvent({ conversationId: CONV, type: "user", id: "u1", content: "你好" });
+    store.applyEvent({ conversationId: CONV, type: "user", message: { id: "u1", role: AgentNS.Role.User, content: "你好" } });
 
     expect(store.viewMessages.map((m) => m.id)).toEqual(["u1"]);
   });

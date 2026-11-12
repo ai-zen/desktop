@@ -1,18 +1,22 @@
 /**
  * 服务端推送 → render 的 `ChatStreamEvent`（`packages/shared/src/types.ts`）。
  *
- * ## 这一层只做翻译
+ * ## 这一层只做「分发」，不改形状
  *
  * 新契约的推送只有 6 条（`packages/server/src/wire/events.ts`），而且刻意只描述「发生了什么变化」：
  *
- * | 服务端事件 | 这里翻成 | 说明 |
+ * | 服务端事件 | 这里发成 | 说明 |
  * |---|---|---|
- * | `message.delta` | `message` | 增量按 core 的 `applyChunk` 拼进那条助手消息（见 `stream.ts`） |
- * | `run.state` | `stream` + `done` / `error` | 六态原样搬；`settled` 时按 `message.list` 收尾 |
- * | `usage` | `message` | 本轮用量钉到那条助手消息上（render 按 id 整条替换） |
- * | `notice` | `notice` | 文案是服务端按连接语言渲染好的，原样搬（PRD D8） |
+ * | `message.delta` | `message` | 增量按 core 的 `applyChunk` 拼进那条助手消息，整条 `AgentNS.Message` 原样递下去（见 `stream.ts`） |
+ * | `run.state` | `stream` + `done` / `error` | 六态名与正在跑的工具（core 的 `ToolCall`）原样搬；`settled` 时按 `message.list` 收尾 |
+ * | `usage` | `message` | 本轮用量（core 的 `Usage`）钉到那条助手消息上（render 按 id 整条替换） |
+ * | `notice` | `notice` | 语气、时长、`LocalizedText`、归属会话全原样搬（PRD D8） |
  * | `question` | `notice`（info） | 桌面端还没有提问 UI（见下） |
  * | `conversation.changed` | `renamed` | 名字要从 `conversation.get` 现拉，推送里只有「改名了」 |
+ *
+ * 承载消息/内容的地方一律是 core 的原始形状（`AgentNS.Message` / `MessageContentSection` /
+ * `ToolCall` / `Usage`）或服务端那份结构（`LocalizedText` / `ProblemFact`）：任何「把结构揉成
+ * 一句字」的转换都不在这一层做（R75）。
  *
  * ## 为什么收尾一定要回服务端拉一份
  *
@@ -20,6 +24,8 @@
  * 滚起来的近似」：工具调用参数、消息 `status`（`completed` / `aborted` / `error`）、服务端对历史的
  * 清洗都只有库里有。所以 `settled` 之后补一次 `message.list`，把整段消息推成 `done` ——
  * render 的 `done` 本来就是「全量替换」，一条不缺。
+ *
+ * 同理，用户消息上屏前也回服务端取一次：带图那句在库里是内容段数组，手上只有用户敲的那几个字。
  *
  * ## 桌面端答不了问题：把它变成一句看得见的话
  *
@@ -45,8 +51,9 @@ import type {
   RunState,
 } from "@ai-zen/agents-client";
 import { DEFAULT_RECONNECT_POLICY, mergeResumed, reconnectUntilConnected } from "@ai-zen/agents-client";
-import type { ChatStreamEvent, AttachmentOutcome, StreamPhase } from "@ai-zen/desktop-shared";
+import type { ChatStreamEvent, AttachmentOutcome, ProblemFact, StreamPhase } from "@ai-zen/desktop-shared";
 import type { ContractCall, ContractConnection } from "./contract.js";
+import { localText, problemOf } from "./problem.js";
 import { StreamingMessage } from "./stream.js";
 
 /** 断线之后最多再敲几次门（连不上就不假装还在连：留一条通知给人看） */
@@ -124,12 +131,19 @@ export class ChatEventBridge {
   /**
    * 一次发送被受理（`conversation.send` 回来了）：立刻把用户消息与「开始了」推给 render。
    *
-   * 两个 id 都是服务端在受理时分配的（PRD L6 / F-I12），所以这里能**立刻**回显而不是等第一片增量
-   * —— 用户敲完回车就看见自己那句话，是「受理了就不会静默丢」那一半。
+   * `start` 当场推（这一轮已经在跑了），用户消息那条要回服务端取一次：**消息本体在库里**
+   * （手上那句 `content` 只是文字，带图那一句在库里是 `image_url` 内容段数组）。把手上那句
+   * 字符串当成消息上屏，就等于把「服务端拼出来的那几个内容段」换成了「用户敲的那几个字」。
+   *
+   * id 是服务端在受理时分配的（PRD L6 / F-I12），所以这里回显的 id 与 `done` 全量替换里
+   * 那一条是同一个 —— 不会画成两条。
    */
-  beginTurn(conversationId: string, userMessageId: string, content: string): void {
-    this.push({ conversationId, type: "user", id: userMessageId, content });
+  async beginTurn(conversationId: string, userMessageId: string): Promise<void> {
     this.markStarted(conversationId);
+    const listed = await this.options.call("message.list", { conversationId });
+    const message = listed.messages.find((item) => item.id === userMessageId);
+    if (!message) throw new Error(`受理回执里的用户消息 ${userMessageId} 不在 message.list 里`);
+    this.push({ conversationId, type: "user", message });
   }
 
   /** `chat.getState` 拿到的基线消息（补拉合并要有它） */
@@ -144,8 +158,8 @@ export class ChatEventBridge {
   }
 
   /** 直接推一条 `error`（`chat.send` 自己的失败出口：不让 IPC 抛错，错误条由事件驱动） */
-  pushError(conversationId: string, message: string): void {
-    this.push({ conversationId, type: "error", message });
+  pushError(conversationId: string, problem: ProblemFact): void {
+    this.push({ conversationId, type: "error", problem });
   }
 
   /**
@@ -165,8 +179,15 @@ export class ChatEventBridge {
   }
 
   /** 推进度用的一句话（连接层拿它报「断线重连中」这类事，不算某一轮的错误） */
-  pushNotice(level: "info" | "warn" | "error", text: string, conversationId?: string): void {
-    this.push({ type: "notice", level, text, ...(conversationId ? { conversationId } : {}) });
+  pushNotice(level: "info" | "warning" | "error", text: string, conversationId?: string): void {
+    this.push({
+      type: "notice",
+      level,
+      // 本进程自己的提示没有「到点自动消失」这个设定：留到界面自己收
+      duration: null,
+      text: localText(text),
+      conversationId: conversationId ?? null,
+    });
   }
 
   // ==================================================================
@@ -178,7 +199,7 @@ export class ChatEventBridge {
     const { conversationId, messageId, delta } = payload;
     const message = this.streamFor(conversationId).applyDelta(messageId, delta);
     this.markStarted(conversationId);
-    this.push({ conversationId, type: "message", id: message.id, message });
+    this.push({ conversationId, type: "message", message });
   }
 
   /**
@@ -203,17 +224,18 @@ export class ChatEventBridge {
     const stream = this.streams.get(payload.conversationId);
     const message = stream?.attachUsage(payload.usage.turn);
     if (!message) return;
-    this.push({ conversationId: payload.conversationId, type: "message", id: message.id, message });
+    this.push({ conversationId: payload.conversationId, type: "message", message });
   }
 
-  /** 一条通知 → `notice`（三档语气的一一对应在 `noticeLevel`） */
+  /** 一条通知 → `notice`（语气三档与服务端同一个词，内容四件原样搬） */
   private onNotice(payload: EventPayload<"notice">): void {
     const { notice } = payload;
     this.push({
       type: "notice",
-      level: noticeLevel(notice.level),
-      text: notice.text.message,
-      ...(notice.conversationId ? { conversationId: notice.conversationId } : {}),
+      level: notice.level,
+      duration: notice.duration,
+      text: notice.text,
+      conversationId: notice.conversationId,
     });
   }
 
@@ -223,8 +245,9 @@ export class ChatEventBridge {
     this.push({
       type: "notice",
       level: "info",
-      text: question.prompt.message,
-      ...(question.conversationId ? { conversationId: question.conversationId } : {}),
+      duration: null,
+      text: question.prompt,
+      conversationId: question.conversationId,
     });
   }
 
@@ -278,7 +301,7 @@ export class ChatEventBridge {
     if (!outcome.ok) {
       const { conversationId, error } = outcome;
       this.log(`补拉对话 ${conversationId} 失败：${error.message}`);
-      this.pushNotice("warn", `补拉这段对话的最新内容失败：${error.message}`, conversationId);
+      this.pushNotice("warning", `补拉这段对话的最新内容失败：${error.message}`, conversationId);
       return;
     }
     const resumed: ResumedConversation = outcome.resumed;
@@ -317,12 +340,12 @@ export class ChatEventBridge {
       // 失败原因放在 `done` **之后**：render 的 `done` 分支会清空错误条，先 error 后 done
       // 等于把原因白白扔掉
       if (run.outcome === "error" && run.problem) {
-        this.push({ conversationId, type: "error", message: run.problem.message });
+        this.push({ conversationId, type: "error", problem: run.problem });
       }
     } catch (error) {
       // 拿不到消息也不能让界面停在「生成中」：走它认识的错误通道把流式态收掉
       this.started.delete(conversationId);
-      this.push({ conversationId, type: "error", message: messageOf(error) });
+      this.push({ conversationId, type: "error", problem: problemOf(error) });
     }
   }
 
@@ -342,14 +365,16 @@ export class ChatEventBridge {
     const generation = run.generation;
     const phase: StreamPhase | null = generation?.phase ?? null;
     // 只有「在等工具」那一态带列表，并行时有几个还在跑就列几个（PRD L8）
-    const runningTools =
+    const toolCalls: AgentNS.ToolCall[] =
       generation?.phase === "awaiting_tools"
-        ? generation.runningTools.map((tool) => tool.toolCall.function?.name ?? "")
+        ? generation.runningTools.map((running) => running.toolCall)
         : [];
-    const signature = `${phase ?? ""}|${runningTools.join(",")}`;
+    const signature = `${phase ?? ""}|${toolCalls
+      .map((toolCall) => `${toolCall.id ?? ""}:${toolCall.function?.name ?? ""}`)
+      .join(",")}`;
     if (this.pushedPhase.get(conversationId) === signature) return;
     this.pushedPhase.set(conversationId, signature);
-    this.push({ conversationId, type: "stream", phase, runningTools });
+    this.push({ conversationId, type: "stream", phase, toolCalls });
   }
 
   /** 推一次 `start`（这一轮进入流式态）；已经推过就什么都不做 */
@@ -388,11 +413,7 @@ export class ChatEventBridge {
   }
 }
 
-/** 服务端的三档语气 → render 的三档（`warning` 与 `warn` 是同一个意思的两种拼法） */
-function noticeLevel(level: "info" | "warning" | "error"): "info" | "warn" | "error" {
-  return level === "warning" ? "warn" : level;
-}
-
+/** 日志里只需要一句话（`ProblemFact` 那份结构化的事不往日志里搬） */
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }

@@ -23,9 +23,9 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../apis/chat.js", () => ({ getChatAsset: mocks.getChatAsset }));
 
-/** 每份素材的字节（内容是假的：这一层不读字节，只把它塞进 Blob） */
+/** 每份素材的字节 + 像素尺寸（字节内容是假的：这一层不读字节，只把它塞进 Blob） */
 function bytesOf(): AssetBytes {
-  return { mime: "image/png", bytes: Uint8Array.from([137, 80, 78, 71]) };
+  return { mime: "image/png", width: 800, height: 600, bytes: Uint8Array.from([137, 80, 78, 71]) };
 }
 
 /** 落库形态的内容段：core 的段 + 本地扩展字段（服务端存的就是这个形状） */
@@ -92,60 +92,62 @@ describe("认出历史图片", () => {
 // ==================================================================
 
 describe("一份素材一屏只取一次", () => {
-  it("两条消息引用同一张图：只走一次 chat.getAsset，拿到同一个 blob URL", async () => {
-    const { acquireAssetUrl } = await module();
+  it("两条消息引用同一张图：只走一次 chat.getAsset，拿到同一个 blob URL 与同一份尺寸", async () => {
+    const { acquireAsset } = await module();
 
-    const first = await acquireAssetUrl("a1", "thumb");
-    const second = await acquireAssetUrl("a1", "thumb");
+    const first = await acquireAsset("a1", "thumb");
+    const second = await acquireAsset("a1", "thumb");
 
     expect(mocks.getChatAsset).toHaveBeenCalledTimes(1);
     expect(mocks.getChatAsset).toHaveBeenCalledWith("a1", "thumb");
     expect(first).toBe(second);
-    expect(first).toBe("blob:test/1");
+    expect(first.url).toBe("blob:test/1");
+    // 尺寸跟着一起回来：界面按它先摆占位框（R76）
+    expect([first.width, first.height]).toEqual([800, 600]);
   });
 
   it("并发挂载（同一屏一起上）：也只发一次", async () => {
-    const { acquireAssetUrl } = await module();
+    const { acquireAsset } = await module();
 
-    const urls = await Promise.all([
-      acquireAssetUrl("a1", "thumb"),
-      acquireAssetUrl("a1", "thumb"),
-      acquireAssetUrl("a1", "thumb"),
+    const assets = await Promise.all([
+      acquireAsset("a1", "thumb"),
+      acquireAsset("a1", "thumb"),
+      acquireAsset("a1", "thumb"),
     ]);
 
     expect(mocks.getChatAsset).toHaveBeenCalledTimes(1);
-    expect(new Set(urls).size).toBe(1);
+    expect(new Set(assets.map((asset) => asset.url)).size).toBe(1);
   });
 
   it("缩略图与原图是两次取（档位真的传下去了）", async () => {
-    const { acquireAssetUrl } = await module();
+    const { acquireAsset } = await module();
 
-    const thumb = await acquireAssetUrl("a1", "thumb");
-    const original = await acquireAssetUrl("a1", "original");
+    const thumb = await acquireAsset("a1", "thumb");
+    const original = await acquireAsset("a1", "original");
 
     expect(mocks.getChatAsset.mock.calls).toEqual([
       ["a1", "thumb"],
       ["a1", "original"],
     ]);
-    expect(thumb).not.toBe(original);
+    expect(thumb.url).not.toBe(original.url);
   });
 
   it("最后一个使用者卸载才回收；之后再用重新取（不落盘、不过期）", async () => {
-    const { acquireAssetUrl, releaseAssetUrl } = await module();
+    const { acquireAsset, releaseAssetUrl } = await module();
 
-    const url = await acquireAssetUrl("a1", "thumb");
-    await acquireAssetUrl("a1", "thumb");
+    const asset = await acquireAsset("a1", "thumb");
+    await acquireAsset("a1", "thumb");
 
     releaseAssetUrl("a1", "thumb");
     expect(revoked).toEqual([]);
 
     releaseAssetUrl("a1", "thumb");
-    expect(revoked).toEqual([url]);
+    expect(revoked).toEqual([asset.url]);
 
     // 再要一次：取第二遍，拿一个新的 URL
-    const again = await acquireAssetUrl("a1", "thumb");
+    const again = await acquireAsset("a1", "thumb");
     expect(mocks.getChatAsset).toHaveBeenCalledTimes(2);
-    expect(again).toBe("blob:test/2");
+    expect(again.url).toBe("blob:test/2");
   });
 
   it("没有使用权时重复释放不炸（卸载路径会被走两遍）", async () => {
@@ -156,16 +158,16 @@ describe("一份素材一屏只取一次", () => {
   });
 
   it("字节回来之前使用者就走光了：那一份当场回收", async () => {
-    const { acquireAssetUrl, releaseAssetUrl } = await module();
+    const { acquireAsset, releaseAssetUrl } = await module();
     mocks.getChatAsset.mockImplementation(
       () => new Promise<AssetBytes>((resolve) => setTimeout(() => resolve(bytesOf()), 5)),
     );
 
-    const pending = acquireAssetUrl("a1", "thumb");
+    const pending = acquireAsset("a1", "thumb");
     releaseAssetUrl("a1", "thumb");
-    const url = await pending;
+    const asset = await pending;
 
-    expect(revoked).toEqual([url]);
+    expect(revoked).toEqual([asset.url]);
   });
 });
 
@@ -175,7 +177,7 @@ describe("一份素材一屏只取一次", () => {
 
 describe("交给视图的值里没有内部字段", () => {
   it("图片 id 与 blob URL 里都没有 `__asset_id` / base64 / `assets/` 路径", async () => {
-    const { imageAssetIds, acquireAssetUrl } = await module();
+    const { imageAssetIds, acquireAsset } = await module();
     const content: StoredSection[] = [
       { type: "text", text: "看图" },
       {
@@ -186,7 +188,7 @@ describe("交给视图的值里没有内部字段", () => {
     ];
 
     const ids = imageAssetIds(content);
-    const url = await acquireAssetUrl(ids[0] ?? "", "thumb");
+    const url = (await acquireAsset(ids[0] ?? "", "thumb")).url;
 
     // 模板唯一会读的就是这两个值：一个是 key / prop，一个是 <img src>
     const handedToView = [ids.join(" "), url].join(" ");

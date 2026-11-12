@@ -4,23 +4,69 @@
 
 import type { AgentNS } from "@ai-zen/agents-core";
 
+// ==================== 服务端的文案与事实 ====================
+
+/**
+ * 服务端 `LocalizedText`（`packages/server/src/wire/states.ts`）的同形状。
+ *
+ * 四样一起搬，而不是只搬那一句：`code` 是客户端按它分支的稳定码、`messageKey` 是文案表里的键、
+ * `params` 是重排这句话要用的原始参数、`message` 是**当前连接语言**下能直接摆上屏的句子。
+ * 只留 `message` 就是把前三样扔掉 —— 换语言、按码挑图标、拿参数重算全都不可能。
+ *
+ * `code` / `messageKey` 为空串 = 这一句不是服务端产出的（main 或客户端库自己的一句话）：
+ * 那种句子没有业务码，也不在服务端的文案表里。
+ */
+export interface LocalizedText {
+  code: string;
+  messageKey: string;
+  params: Record<string, unknown>;
+  message: string;
+}
+
+/**
+ * 失败/降级这类「有事发生了」的事实：`LocalizedText` 之上多一个**结构化的原因**
+ * （哪个工具、哪条错误、还差什么），客户端据此做「点一下把失败的那个重跑」这种交互，
+ * 而不是去解析句子。
+ */
+export interface ProblemFact extends LocalizedText {
+  detail?: unknown;
+}
+
 // ==================== Workspace ====================
 
 export interface Workspace {
   id: string;
   name: string;
-  /** 工作目录 —— 会话在服务端跑在这个目录下（服务端规范化后的绝对路径） */
+  /** 目录事实（服务端 `FolderFact`）：路径 + 还在不在，原样搬 */
+  folder: FolderFact;
+}
+
+/** 目录的事实：路径 + 还在不在（服务端 `FolderFact`，PRD D12） */
+export interface FolderFact {
+  /** 服务端规范化后的绝对路径 */
   cwd: string;
+  /** 目录还在不在；不在时对话与历史照常可用，只是不能读文件 */
+  exists: boolean;
 }
 
 // ==================== Conversation ====================
+
+/** 这段会话当前模型的事实（服务端 `ModelState`） */
+export interface ConversationModelState {
+  modelId: string;
+  name: string;
+  /** 这个模型能不能看图（PRD D20 / F-B8 的判定依据） */
+  vision: boolean;
+  /** 这个模型是谁定的：助手定义上那个，还是这段会话自己定的 */
+  source: "agent" | "conversation";
+}
 
 export interface Conversation {
   id: string;
   workspaceId: string;
   agentId: string;
-  /** 模型下拉框要显示的**当前模型**：桌面端往里放的是服务端三级解析后的生效值（不是「会话级覆盖」那一位，覆盖值为空时它仍有值） */
-  modelId: string;
+  /** 这段会话的**当前模型**（服务端 `ModelState` 原样：三级解析后的生效值，含名字与能不能看图） */
+  model: ConversationModelState;
   name: string;
   /** 直接沿用 Core 消息模型（三层统一，无 adapter） */
   messages: AgentNS.Message[];
@@ -78,20 +124,26 @@ export interface AttachmentInput {
 export type AttachmentDelivery = "file_reference" | "inline" | "text_fallback" | "dropped";
 
 /**
- * 一张附件这一轮的结局 —— 界面上要显示的那几个事实。
+ * 一张附件这一轮的结局 —— 服务端 `AttachmentOutcome` 原样，另加一个名字。
  *
- * `problem` 是**已经渲染好的一句话**（服务端按这条连接的语言渲染过，客户端库自己的失败也用同一
- * 张表），界面原文显示、一字不改：另写一份措辞就会有两种说法，其中一份还不跟着语言变（D8）。
+ * `section` 是它**真正变成的那个内容段**（core 的 `MessageContentSection`：内联图片是 `image_url`、
+ * Files API 是 `file`、降级成文字是 `text`）—— 界面要显示「它最后成了什么」时读的是这一份，
+ * 不是从 `deliveredAs` 反推。
  *
- * 没有 `problem` 就是没事（`file_reference` / `inline` / `text_fallback` 正常走完），界面不打扰。
+ * `problem` 是服务端/客户端库给的**结构化原因**（码 + 参数 + 已渲染的那句 + detail），界面原文显示
+ * `problem.message`、一字不改（另写一份措辞就有两种说法，其中一份还不跟着语言变，D8）；
+ * 需要按码分支时读 `problem.code`。没有 `problem` 就是没事（`file_reference` / `inline` /
+ * `text_fallback` 正常走完），界面不打扰。
  */
 export interface AttachmentOutcome {
   /** 服务端给的素材 id；本地上传就没成时是空串（没有 id 可给） */
   assetId: string;
   /** 它最后是怎么走的 */
   deliveredAs: AttachmentDelivery;
-  /** 没送达 / 降级时的人话原因（原文）；没有就是 `null` */
-  problem: string | null;
+  /** 真正拼进消息的那个内容段，core 原样；没发出去时为空 */
+  section: AgentNS.MessageContentSection | null;
+  /** 没送达 / 降级时的原因（结构化）；没有就是 `null` */
+  problem: ProblemFact | null;
   /** 这张叫什么（服务端给了就用它给的，本地失败时是用户选的那个名字） */
   name: string | null;
 }
@@ -107,11 +159,14 @@ export interface AttachmentOutcome {
 export type AssetVariant = "original" | "thumb";
 
 /**
- * 一份取回来的素材：它是什么类型 + 字节本体。
+ * 一份取回来的素材：它是什么类型 + 字节本体 + **原图像素尺寸**。
  *
- * 为什么只给这两样：render 拿到字节只做一件事 —— `new Blob([bytes], { type: mime })` 造一个
- * `blob:` URL 交给 `<img>`。宽高、文件名、sha256 这些界面这一波都不用，多带一个字段就会有人
- * 以为它该被读（见 `AssetRef` 那份完整引用，它留在服务端与客户端库里）。
+ * render 拿到字节做两件事 —— `new Blob([bytes], { type: mime })` 造一个 `blob:` URL 交给 `<img>`，
+ * 以及按 `width` / `height` 先摆好占位框（R76：图片在解码完成前就按原比例占住位置，气泡不抖）。
+ * 文件名、sha256 这些界面不用，不搬（完整的那份引用 `AssetRef` 留在服务端与客户端库里）。
+ *
+ * `width` / `height` 是服务端落定素材时从文件头解出来的像素尺寸；解不出来（非 PNG / JPEG、读不出来）
+ * 就是 `null` —— 那时不设占位框，界面按图片自己的尺寸出现。
  *
  * `bytes` 走 IPC 的结构化克隆（与 `AttachmentInput.data` 同一种形状，只是反过来走：main → render），
  * 不经 base64。
@@ -119,6 +174,10 @@ export type AssetVariant = "original" | "thumb";
 export interface AssetBytes {
   /** MIME 类型，如 `image/png`（`Blob` 的 type，决定浏览器怎么解这串字节） */
   mime: string;
+  /** 原图像素宽度；服务端没解出来时为空 */
+  width: number | null;
+  /** 原图像素高度；服务端没解出来时为空 */
+  height: number | null;
   /** 字节本体 */
   bytes: Uint8Array;
 }
@@ -309,16 +368,22 @@ export type StreamPhase =
  *  状态源是常驻服务端：send 只提交（快速返回），user/start/message/done 全由事件回流 */
 export type ChatStreamEvent =
   | { conversationId: string; type: "start" }
-  /** 本轮的用户消息上屏（render 据此上屏，不本地乐观插入）
-   *  id 是服务端在受理时就分配好的 `userMessageId`（L6），所以 `done` 那次全量替换里同一条消息
-   *  用的是同一个 id —— 不会画成两条 */
-  | { conversationId: string; type: "user"; id: string; content: string }
+  /**
+   * 本轮的用户消息上屏（render 据此上屏，不本地乐观插入）。
+   *
+   * 载荷是**服务端落库的那条消息本体**（core 的 `AgentNS.Message`），不是把正文拍成一句字：
+   * 带图的那一句在库里是 `image_url` 内容段数组，压成字符串就只能显示文字、图要等整轮跑完
+   * 的 `done` 全量替换才出现。id 是服务端受理时就分配好的那个（L6），所以 `done` 那次全量
+   * 替换里同一条消息用的是同一个 id —— 不会画成两条。
+   */
+  | { conversationId: string; type: "user"; message: AgentNS.Message }
   /**
    * 这一轮的生成状态（六态 + 正在跑的工具）。
    *
    * 服务端的 `run.state` 是一份**全量快照**、而且带的东西远多于界面今天要显示的（六态、子 Agent、
-   * 用量、结局）。这里只挑「界面上真能显示的那部分」搬过来，其余留在 main（要用的那天再加字段，
-   * 而不是先塞一堆没人读的）。
+   * 用量、结局）。这里只搬「界面上真能显示的那部分」：六态的名字（取值与服务端
+   * `GenerationState.phase` 逐字一致）+ 正在跑的那几个工具（core 的 `AgentNS.ToolCall` 原样：
+   * 名字、参数、id、index 都在里面，界面要哪个读哪个，不先拍成名字列表）。
    *
    * 与 `start` / `done` 的关系：`start` / `done` 说的是「这一轮开始了 / 结束了」（render 用它切
    * 流式态），这一条说的是「此刻在哪一态」，两件事分开之后，六态变化不必重发 `start`。
@@ -328,13 +393,17 @@ export type ChatStreamEvent =
       type: "stream";
       /** 空闲时为 `null`（这一轮不在跑） */
       phase: StreamPhase | null;
-      /** 「在等哪几个工具」的工具名（并行时只含还在跑的，PRD L8） */
-      runningTools: string[];
+      /** 「在等哪几个工具」：并行时只含还在跑的那几个，core 的 `ToolCall` 原样（PRD L8） */
+      toolCalls: AgentNS.ToolCall[];
     }
-  /** 一条完整消息的实时同步（流式中的 assistant 消息：正文/reasoning/tool_calls/status；
-   *  以及每轮结束补推的工具结果消息）。id 是服务端消息 id，流式那条由 main 编并随后被 `done` 里的真 id 取代；
-   *  render 按 id 就地 upsert：有则替换、无则追加末尾 —— 事件到达顺序即消息顺序 */
-  | { conversationId: string; type: "message"; id: string; message: AgentNS.Message }
+  /**
+   * 一条完整消息的实时同步（流式中的 assistant 消息：正文/reasoning/tool_calls/status；
+   * 以及每轮结束补推的工具结果消息）。
+   *
+   * 载荷就是 core 的 `AgentNS.Message`，不另包一层 id —— 消息自己的 `id` 就是 upsert 的键。
+   * render 按 id 就地 upsert：有则替换、无则追加末尾 —— 事件到达顺序即消息顺序。
+   */
+  | { conversationId: string; type: "message"; message: AgentNS.Message }
   /**
    * 这一轮各附件的结局（`conversation.send` 回来的 `attachments`，逐张一条）。
    *
@@ -357,11 +426,18 @@ export type ChatStreamEvent =
   | { conversationId: string; type: "done"; messages: AgentNS.Message[] }
   /** 任务迁移完成后推送：全量替换消息。旧历史带 omit（已作废）标记，UI 展示但不进 agent 请求 */
   | { conversationId: string; type: "migrated"; messages: AgentNS.Message[] }
-  | { conversationId: string; type: "error"; message: string }
+  /**
+   * 这一轮（或这条连接）失败的事实。
+   *
+   * 载荷是 `ProblemFact`（码 + 参数 + 已渲染的那句 + detail），不是一句摘出来的话：服务端说的
+   * 失败（`run.problem`）、客户端库里带业务码的失败、以及 main 自己捕到的异常分别带着自己那里
+   * 能给出的事实，界面要显示就读 `problem.message`，要分支就读 `problem.code`。
+   */
+  | { conversationId: string; type: "error"; problem: ProblemFact }
   /** 自动生成对话标题后推送（不阻塞 done，侧栏据此更新名称） */
   | { conversationId: string; type: "renamed"; name: string }
   /**
-   * 服务端推来的一条**通知**（`session-notice` / `server-notice`）：给用户看的一句话，瞬时的。
+   * 服务端推来的一条**通知**（`notice` 事件）：给用户看的一句话，瞬时的。
    *
    * ## 为什么不是 `type: "error"`
    *
@@ -371,19 +447,27 @@ export type ChatStreamEvent =
    * 下一轮开始前一直看着一条红字（其实这轮没事），而 `done` 会替它提前销账（真该看的那句
    * 反而被抹掉）。两条通道各说各的：`error` 是状态，`notice` 是提示。
    *
-   * ## 为什么 `text` 到了这一层已经是人话
+   * ## 为什么内容是一份 `LocalizedText`
    *
-   * 文案归服务端（PRD D8）：`NoticeView.text` 是按**这条连接的语言**渲染好的句子，main 原样搬
-   * 过来，自己不查第二份词典（两份词典的下场是同一句提示有两种说法，其中一份还不会跟着语言变）。
+   * 文案归服务端（PRD D8）：`text.message` 是按**这条连接的语言**渲染好的句子，main 原样搬过来，
+   * 自己不查第二份词典；而 `code` / `params` 一起搬过来，界面才能按码分支、换语言重排，
+   * 而不是只能把一句写死的字摆上屏。
    *
-   * ## 为什么 `conversationId` 是可选的
+   * ## 为什么 `conversationId` 是 `null` 而不是可选
    *
    * 全局通知**不属于任何会话**（存档目录不可用、MCP 连不上是服务本身的事），服务端给的
-   * `NoticeView.conversationId` 那时就是 `null`。
-   * 空串不是它的替身：空串的意思是「有一个会话，它的 key 是空字符串」，与「没有会话」是
-   * 两件事 —— render 按 key 取状态槽位，空串会凭空开出一个谁都不认识的假槽位。
+   * `NoticeView.conversationId` 那时就是 `null`。用 `null` 而不是省略：服务端的形状就是它，
+   * 两种「没有」的写法会让人以为它们不是一件事。
    */
-  | { type: "notice"; level: "info" | "warn" | "error"; text: string; conversationId?: string }
+  | {
+      type: "notice";
+      /** 三档语气，取值与服务端 `NoticeLevel` 逐字一致 */
+      level: "info" | "warning" | "error";
+      /** 秒数；`null` 表示不自动消失，留到被手动清掉 */
+      duration: number | null;
+      text: LocalizedText;
+      conversationId: string | null;
+    }
   /**
    * 这段会话**当前这一轮**的子 Agent 栏目，一有变化就推**整份**。
    *

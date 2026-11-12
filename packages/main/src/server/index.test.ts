@@ -73,6 +73,14 @@ function harness(
           acceptedAt: "2026-01-01T00:00:00.000Z",
         };
       }
+      // 受理之后 `beginTurn` 要回服务端取库里那条用户消息
+      if (method === "message.list") {
+        return {
+          conversationId: "conv-1",
+          anchor: null,
+          messages: [{ id: "m-user", role: "user", content: "看看这张" }],
+        };
+      }
       return {};
     },
     sendBinary: async (frame: Uint8Array) => {
@@ -213,14 +221,16 @@ describe("IPC 转发", () => {
       "asset.begin",
       "asset.end",
       "conversation.send",
+      // 上屏的是服务端库里那条消息，所以要取一次
+      "message.list",
     ]);
-    expect(h.calls.at(-1)).toEqual({
+    expect(h.calls.find((call) => call.method === "conversation.send")).toEqual({
       method: "conversation.send",
       params: { conversationId: "conv-1", input: { content: "看看这张", assetIds: ["asset-1"] } },
     });
     // 字节真的走的是二进制帧（不是 base64 塞进 JSON）
     expect(h.frames).toHaveLength(1);
-    expect(h.events.map((event) => event.type)).toEqual(["user", "start"]);
+    expect(h.events.map((event) => event.type)).toEqual(["start", "user"]);
   });
 
   it("未知服务 / 未知方法：报出具体的键名（静默返回 undefined 只会更难查）", async () => {
