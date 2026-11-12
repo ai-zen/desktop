@@ -13,3 +13,11 @@ components.d.ts
 
 # CDP 调试截图
 preview-*.png
+
+# 密钥类文件（.githooks/pre-commit 还有一道扫描兜底）
+.env
+.env.*
+!.env.example
+.npmrc
+.netrc
+*.pem

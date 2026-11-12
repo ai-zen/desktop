@@ -2,6 +2,9 @@
   "name": "@ai-zen/desktop-workspace",
   "private": true,
   "scripts": {
+    "prepare": "git config core.hooksPath .githooks || true",
+    "scan:secrets": "node scripts/scan-secrets.mjs --all",
+    "scan:secrets:history": "node scripts/scan-secrets.mjs --history",
     "build:main": "pnpm --filter @ai-zen/desktop-main build",
     "build:render": "pnpm --filter @ai-zen/desktop-render build",
     "build": "pnpm build:render && pnpm build:main",
