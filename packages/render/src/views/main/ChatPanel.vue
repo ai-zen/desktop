@@ -52,6 +52,7 @@
           v-for="msg in items"
           :key="msg.id"
           :message="msg"
+          :attachments="chatStore.attachmentOutcomes[msg.id]"
           @retry="chatStore.retry"
         />
 
@@ -64,7 +65,7 @@
         </div>
       </div>
 
-      <!-- 输入区域（模型切换在输入框上方工具栏） -->
+      <!-- 输入区域（模型切换与选图在输入框上方工具栏） -->
       <div class="input-area">
         <div class="input-toolbar">
           <el-select
@@ -80,14 +81,45 @@
               :value="m.id"
             />
           </el-select>
+          <!-- 选图：文件选择器在 render 里（`File` 是本机能力，服务端/主进程都看不到用户选了什么） -->
+          <el-button
+            size="small"
+            text
+            :icon="Picture"
+            :disabled="chatStore.streaming"
+            @click="pickFiles"
+          >
+            图片
+          </el-button>
+          <input
+            ref="fileInputRef"
+            class="file-input"
+            type="file"
+            accept="image/*"
+            multiple
+            @change="onFilesChosen"
+          />
+        </div>
+        <!-- 待发送的附件：缩略图 + 名字，点 × 移除。发送成功后清空。
+             尺寸/张数上限不在这里拦：那一层在 main 的上传里（服务端握手给的数字），
+             越限的那张会带着一句原因跟着气泡上屏。 -->
+        <div v-if="pending.length > 0" class="pending-attachments">
+          <div v-for="item in pending" :key="item.key" class="pending-attachment">
+            <img :src="item.previewUrl" :alt="item.name" class="pending-thumb" />
+            <span class="pending-name">{{ item.name }}</span>
+            <button type="button" class="pending-remove" title="移除" @click="removePending(item.key)">
+              ×
+            </button>
+          </div>
         </div>
         <el-input
           v-model="inputText"
           type="textarea"
           :rows="3"
-          placeholder="输入消息... (Enter 发送, Shift+Enter 换行)"
+          placeholder="输入消息... (Enter 发送, Shift+Enter 换行, 可直接粘贴图片)"
           :disabled="chatStore.streaming"
           @keydown="onInputKeydown"
+          @paste="onPaste"
           resize="none"
           class="chat-input"
         />
@@ -120,8 +152,8 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from "vue";
 import { ElMessage } from "element-plus";
-import { ChatDotRound, Promotion, VideoPause } from "@element-plus/icons-vue";
-import type { SubAgentView } from "@ai-zen/desktop-shared";
+import { ChatDotRound, Picture, Promotion, VideoPause } from "@element-plus/icons-vue";
+import type { AttachmentInput, SubAgentView } from "@ai-zen/desktop-shared";
 import MessageBubble from "./MessageBubble.vue";
 import { useUiStore } from "../../stores/ui.js";
 import { useWorkspaceStore } from "../../stores/workspace.js";
@@ -149,6 +181,100 @@ const chatStore = useChatStore();
 const inputText = ref("");
 const messagesRef = ref<HTMLElement | null>(null);
 const scroller = () => messagesRef.value;
+const fileInputRef = ref<HTMLInputElement | null>(null);
+
+// ==================== 待发送的附件 ====================
+/**
+ * 一张已经读进内存、还没发出去的图。
+ *
+ * `data` 是**当时就读定**的字节：发出去的就是用户当时选的那一份（不再读第二次盘，也没有路径可读
+ * —— 剪贴板里的图本来就没有路径）。`previewUrl` 只是给人看的缩略图，用完要释放。
+ */
+interface PendingAttachment {
+  /** 本地键（v-for 与「移除」用；不是服务端的东西） */
+  key: number;
+  /** 展示用的名字（剪贴板图片是自己给的 `image.png` 这类） */
+  name: string;
+  /** MIME（拿不到时是 `application/octet-stream`，不在这一层猜） */
+  mime: string;
+  /** 字节 */
+  data: Uint8Array;
+  /** 缩略图地址（`URL.createObjectURL`） */
+  previewUrl: string;
+}
+
+const pending = ref<PendingAttachment[]>([]);
+let nextPendingKey = 1;
+
+/**
+ * 把一批 `File`（文件选择器 / 剪贴板给的）读成待发送的附件。
+ *
+ * 不在这里判上限（张数、单张大小）：那几个数字是服务端握手给的，越限的那张会带着一句原因跟着
+ * 气泡上屏 —— 在这里提前拦一道就是第二份规则，它一旦与服务端漂了，用户就看不到真的原因了。
+ */
+async function addFiles(files: readonly File[]): Promise<void> {
+  for (const file of files) {
+    const data = new Uint8Array(await file.arrayBuffer());
+    pending.value.push({
+      key: nextPendingKey++,
+      name: file.name || "图片",
+      mime: file.type || "application/octet-stream",
+      data,
+      previewUrl: URL.createObjectURL(file),
+    });
+  }
+}
+
+function removePending(key: number): void {
+  const index = pending.value.findIndex((item) => item.key === key);
+  if (index < 0) return;
+  URL.revokeObjectURL(pending.value[index].previewUrl);
+  pending.value.splice(index, 1);
+}
+
+/** 清空待发送的图（发出去之后）并释放缩略图地址 */
+function clearPending(): void {
+  for (const item of pending.value) URL.revokeObjectURL(item.previewUrl);
+  pending.value = [];
+}
+
+/** `PendingAttachment` → IPC 形状（字节 + 类型 + 名字） */
+function toAttachmentInput(item: PendingAttachment): AttachmentInput {
+  return { mime: item.mime, data: item.data, ...(item.name ? { name: item.name } : {}) };
+}
+
+/** 工具栏那个「图片」按钮：弹系统的文件选择器 */
+function pickFiles(): void {
+  fileInputRef.value?.click();
+}
+
+function onFilesChosen(event: Event): void {
+  const input = event.target as HTMLInputElement;
+  const files = Array.from(input.files ?? []);
+  // 清掉 value：同一个文件连选两次也要再触发一次 change
+  input.value = "";
+  if (files.length > 0) void addFiles(files);
+}
+
+/**
+ * 粘贴：**先问剪贴板里有没有图，没有才退回文字**（PRD F-H6）。
+ *
+ * 有图时 `preventDefault`：不让浏览器把它粘成一段占位文字（那一行字既不可读也不是原图）。没图时一个
+ * 键都不碰，文字照旧粘进输入框。
+ */
+function onPaste(event: ClipboardEvent): void {
+  const items = event.clipboardData?.items;
+  if (!items) return;
+  const files: File[] = [];
+  for (const item of Array.from(items)) {
+    if (item.kind !== "file" || !item.type.startsWith("image/")) continue;
+    const file = item.getAsFile();
+    if (file) files.push(file);
+  }
+  if (files.length === 0) return;
+  event.preventDefault();
+  void addFiles(files);
+}
 
 const activeConversationId = computed(() => conversationStore.activeConversationId);
 
@@ -334,13 +460,16 @@ async function handleSend() {
     clearTimeout(scrollUpResetTimer);
     scrollUpResetTimer = 0;
   }
-  const ok = await chatStore.send(text);
+  const attachments = pending.value.length > 0 ? pending.value.map(toAttachmentInput) : undefined;
+  const ok = await chatStore.send(text, attachments);
   if (ok) {
     // 只清掉**这次发出去的那一段**：等待期间用户可能又敲了新内容，那是他刚写的，
     // 不能跟着一起消失。判据是「当前输入框（去掉首尾空白）是否仍等于发出去时的快照」。
     // 不相等（用户改过/加过）就一个字符都不动 —— 宁可让旧那段多留一次（他看得见，自己删），
     // 也不能赌一把清掉：清错就是又一次「输入被弄丢」。
     if (inputText.value.trim() === text) inputText.value = "";
+    // 图已经交给 main 了（字节跟这次发送一起走的），这里清空待发送那一排
+    clearPending();
     // 只有真发出去了才滚底：没发出去时消息列表不会有任何变化，滚底等于把用户正在回看的
     // 历史位置平白挪走（他多半正打算复制/重看那段再重写）。
     scrollToBottom();
@@ -557,14 +686,76 @@ onMounted(() => {
   background-color: var(--el-bg-color);
 }
 
-// ==================== 输入框上方工具栏（模型切换） ====================
+// ==================== 输入框上方工具栏（模型切换 / 选图） ====================
 .input-toolbar {
   display: flex;
   align-items: center;
+  gap: 8px;
   margin-bottom: 10px;
 
   .model-select {
     width: 180px;
+  }
+
+  // 真的文件选择器（隐藏）：点工具栏的「图片」按钮就是替它 `.click()`
+  .file-input {
+    display: none;
+  }
+}
+
+// ==================== 待发送的附件（缩略图 + 名字 + 移除） ====================
+.pending-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.pending-attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 4px;
+  border: 1px solid var(--el-border-color);
+  border-radius: 6px;
+  background-color: var(--el-fill-color-light);
+  max-width: 220px;
+
+  .pending-thumb {
+    flex: none;
+    width: 32px;
+    height: 32px;
+    border-radius: 4px;
+    object-fit: cover;
+    background-color: var(--el-fill-color-dark);
+  }
+
+  .pending-name {
+    flex: 1;
+    font-size: 12px;
+    color: var(--el-text-color-regular);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .pending-remove {
+    flex: none;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--el-text-color-secondary);
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+
+    &:hover {
+      background-color: var(--el-fill-color-darker);
+      color: var(--el-text-color-primary);
+    }
   }
 }
 

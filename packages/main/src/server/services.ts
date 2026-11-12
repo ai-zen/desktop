@@ -21,6 +21,7 @@
 import type { AgentNS } from "@ai-zen/agents-client";
 import type {
   AgentOption,
+  AttachmentInput,
   ConfigSettings,
   ConfigUpdateReport,
   Conversation,
@@ -30,6 +31,7 @@ import type {
   ModelOption,
   Workspace,
 } from "@ai-zen/desktop-shared";
+import { mergeAttachmentOutcomes, uploadAttachments } from "./attachments.js";
 import type { ContractCall, ContractConnection } from "./contract.js";
 import type { ChatEventBridge } from "./events.js";
 
@@ -321,23 +323,61 @@ export class ServerChatService {
   constructor(private readonly ctx: ServiceContext) {}
 
   /**
-   * 发一段消息。**受理即返回**（PRD F-I12）：`conversation.send` 回来的是两个消息 id，
-   * 过程与结果全走事件。
+   * 发一段消息（可带图片附件）。**受理即返回**（PRD F-I12）：`conversation.send` 回来的是两个消息
+   * id，过程与结果全走事件。
    *
-   * 三条出口：
-   *   · 受理了 → 立刻把 `user` + `start` 推给 render（id 是服务端给的，不必编）；
+   * ## 附件的顺序（PRD D5 / F-H7 / F-H8）
+   *
+   * ```
+   * render 给的字节 → uploadAssets（asset.begin / 分片 / asset.end）→ assetIds
+   *                  → conversation.send { input: { content, assetIds } }
+   * ```
+   *
+   * 上传必须发生在 `conversation.send` **之前**：`assetIds` 是「已经传上去的那几张」的 id，而素材
+   * 怎么变成内容段（文件引用 / 内联 / 退化成文字）由服务端按实发模型决定。
+   *
+   * ## 上传失败不阻挡发送
+   *
+   * 一张都没传上去时这一轮就是**纯文本**（F-H7 的「全失败退回纯文本」）：文字照发，附件的结局逐张
+   * 上屏。把失败往上抛只会让用户连字都发不出去 —— 而失败原因本来就是他要看的一句话，不是异常。
+   *
+   * ## 三条出口
+   *
+   *   · 受理了 → 立刻把 `user` + `start` 推给 render（id 是服务端给的，不必编），随后推这一轮各附件
+   *     的结局；
    *   · `busy`（这段对话正跑着一轮，PRD D14）→ 什么都不推：那是「多点了一下发送」，不是错误；
    *   · 其余（`question_pending`、会话不在、连接断了）→ 推 `error`。不让 IPC 抛错：render 的
    *     `send()` 因此永远正常返回，错误条由事件驱动。
    */
-  async send(workspaceId: string, conversationId: string, content: string): Promise<void> {
+  async send(
+    workspaceId: string,
+    conversationId: string,
+    content: string,
+    attachments?: AttachmentInput[],
+  ): Promise<void> {
     void workspaceId; // 渲染层签名如此；契约只认会话 id
+
     try {
+      // 上传放在 try 里：它自己已经把「一张没传上去」收敛成返回值了，这里兜的是意料之外的抛错
+      // —— 那也该走 `error` 事件说一句话，而不是让 `chat.send` 变成一个 reject。
+      const files = attachments ?? [];
+      const upload =
+        files.length === 0
+          ? { assets: [], failures: [] }
+          : await uploadAttachments(this.ctx.connection(), conversationId, files);
+      const assetIds = upload.assets.map((asset) => asset.assetId);
+
       const accepted = await this.ctx.call("conversation.send", {
         conversationId,
-        input: { content },
+        input: { content, ...(assetIds.length > 0 ? { assetIds } : {}) },
       });
       this.ctx.events.beginTurn(conversationId, accepted.userMessageId, content);
+      // 上传阶段已有的失败与服务端给的结局合到一份逐张账上（顺序 = 用户摆放的顺序）
+      this.ctx.events.pushAttachments(
+        conversationId,
+        accepted.userMessageId,
+        mergeAttachmentOutcomes(upload, accepted.attachments),
+      );
     } catch (error) {
       if (isBiz(error, "busy")) return;
       this.ctx.events.pushError(conversationId, messageOf(error));

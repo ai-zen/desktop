@@ -126,7 +126,8 @@ describe("chat store · send / retry 的返回值", () => {
     chatMocks.sendChatMessage.mockResolvedValue(undefined);
 
     await expect(store.send("你好")).resolves.toBe(true);
-    expect(chatMocks.sendChatMessage).toHaveBeenCalledWith(WS, CONV, "你好");
+    // 第四个参数是附件：没带附件时就是 `undefined`（main 那边于是走纯文本那条老路）
+    expect(chatMocks.sendChatMessage).toHaveBeenCalledWith(WS, CONV, "你好", undefined);
     expect(store.error).toBe("");
   });
 
@@ -166,7 +167,8 @@ describe("chat store · send / retry 的返回值", () => {
 
     chatMocks.sendChatMessage.mockResolvedValue(undefined);
     await expect(store.retry()).resolves.toBe(true);
-    expect(chatMocks.sendChatMessage).toHaveBeenLastCalledWith(WS, CONV, "重试我");
+    // 重试只重发文字：附件已经在 main 传过一次，带同一批字节再传一遍会多出一份素材
+    expect(chatMocks.sendChatMessage).toHaveBeenLastCalledWith(WS, CONV, "重试我", undefined);
   });
 
   it("④ retry 在没东西可重试时返回 false（调用方不必猜 undefined 是什么意思）", async () => {

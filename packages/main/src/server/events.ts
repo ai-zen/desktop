@@ -45,7 +45,7 @@ import type {
   RunState,
 } from "@ai-zen/agents-client";
 import { DEFAULT_RECONNECT_POLICY, mergeResumed, reconnectUntilConnected } from "@ai-zen/agents-client";
-import type { ChatStreamEvent, StreamPhase } from "@ai-zen/desktop-shared";
+import type { ChatStreamEvent, AttachmentOutcome, StreamPhase } from "@ai-zen/desktop-shared";
 import type { ContractCall, ContractConnection } from "./contract.js";
 import { StreamingMessage } from "./stream.js";
 
@@ -146,6 +146,22 @@ export class ChatEventBridge {
   /** 直接推一条 `error`（`chat.send` 自己的失败出口：不让 IPC 抛错，错误条由事件驱动） */
   pushError(conversationId: string, message: string): void {
     this.push({ conversationId, type: "error", message });
+  }
+
+  /**
+   * 推一条「这一轮各附件的结局」（`conversation.send` 回来的逐张账，已与服务端给的合并）。
+   *
+   * 空数组不发：没带附件的那一轮根本没有这件事，推一个空列表只会让界面多一次无意义的写入。
+   * 跟着 `userMessageId` 走，是因为气泡按消息 id 找自己的结局（那个 id 在 `done` 的全量替换里
+   * 不变，L6）。
+   */
+  pushAttachments(
+    conversationId: string,
+    userMessageId: string,
+    attachments: AttachmentOutcome[],
+  ): void {
+    if (attachments.length === 0) return;
+    this.push({ conversationId, type: "attachments", userMessageId, attachments });
   }
 
   /** 推进度用的一句话（连接层拿它报「断线重连中」这类事，不算某一轮的错误） */

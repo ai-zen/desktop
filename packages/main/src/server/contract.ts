@@ -54,6 +54,21 @@ export interface ContractConnection {
   track(conversationId: string, anchor?: string): void;
   /** 不再跟着这段对话 */
   untrack(conversationId: string): void;
+  /**
+   * 写一个二进制帧（上传分片走这里，不走 JSON-RPC）。
+   *
+   * 上传的三段式里，中间那截字节是**同一条 WS 上的二进制帧**（服务端 `net/UploadReceiver`）：
+   * 分片是任意二进制，base64 进 JSON 会平白多出三分之一体积，服务端还得先解一层编码。
+   * 所以上传这件能力在 `call` 之外还需要这第二条出口 —— 客户端库的 `uploadAsset(s)` 就要它。
+   */
+  sendBinary(frame: Uint8Array<ArrayBuffer>): Promise<void>;
+  /**
+   * 这条连接声明的语言（握手时带上的那个）。
+   *
+   * 上传时本地就能判的几件事（单张超限、张数超限、空文件、认不出类型）要出一句人话，而那时
+   * 服务端还没参与 —— 这两句话由客户端库按这个语言渲染，于是和界面其余部分同一口径。
+   */
+  readonly language: string | undefined;
   /** 换一条 socket 重新握手（连上之后自动补拉 `track` 过的对话） */
   reconnect(): Promise<void>;
   /** 关掉这条连接 */

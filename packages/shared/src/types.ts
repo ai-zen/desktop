@@ -47,6 +47,55 @@ export interface ConversationState {
   streaming: boolean;
 }
 
+// ==================== 附件（图片）====================
+
+/**
+ * 一张要上传的附件 —— render → main 的 IPC 形状。
+ *
+ * ## 为什么是「字节 + 类型 + 名字」这样三件
+ *
+ * render 手上只有 `File` / `Blob` / dataURL（剪贴板图片、文件选择器给的都是这些），而 main 那一头
+ * 要的是能直接交给客户端库 `uploadAssets` 的东西：字节（`Uint8Array`，IPC 走结构化克隆，原样到）
+ * 与这个字节**自称**的类型。名字只是给用户看的（「哪一张没发出去」），服务端落盘不用它拼路径。
+ *
+ * `data` 里没有 base64：dataURL 只在 render 内部用来做缩略图预览，跨进程传的是原始字节。
+ */
+export interface AttachmentInput {
+  /** MIME 类型（如 `image/png`）；拿不到真实类型时传 `application/octet-stream`，不在这一层猜 */
+  mime: string;
+  /** 原始文件名（剪贴板图片没有名字，那时省略） */
+  name?: string;
+  /** 字节本体 */
+  data: Uint8Array;
+}
+
+/**
+ * 一个附件最后是怎么走的（PRD F-H7）。
+ *
+ * 取值与服务端 `AttachmentOutcome.deliveredAs` 逐字一致（桌面端不另造一套词）：
+ * 文件引用 / 内联 / 退化成文字 / 没发出去。
+ */
+export type AttachmentDelivery = "file_reference" | "inline" | "text_fallback" | "dropped";
+
+/**
+ * 一张附件这一轮的结局 —— 界面上要显示的那几个事实。
+ *
+ * `problem` 是**已经渲染好的一句话**（服务端按这条连接的语言渲染过，客户端库自己的失败也用同一
+ * 张表），界面原文显示、一字不改：另写一份措辞就会有两种说法，其中一份还不跟着语言变（D8）。
+ *
+ * 没有 `problem` 就是没事（`file_reference` / `inline` / `text_fallback` 正常走完），界面不打扰。
+ */
+export interface AttachmentOutcome {
+  /** 服务端给的素材 id；本地上传就没成时是空串（没有 id 可给） */
+  assetId: string;
+  /** 它最后是怎么走的 */
+  deliveredAs: AttachmentDelivery;
+  /** 没送达 / 降级时的人话原因（原文）；没有就是 `null` */
+  problem: string | null;
+  /** 这张叫什么（服务端给了就用它给的，本地失败时是用户选的那个名字） */
+  name: string | null;
+}
+
 // ==================== Agent / Model 选项 ====================
 
 export interface AgentOption {
@@ -259,6 +308,25 @@ export type ChatStreamEvent =
    *  以及每轮结束补推的工具结果消息）。id 是服务端消息 id，流式那条由 main 编并随后被 `done` 里的真 id 取代；
    *  render 按 id 就地 upsert：有则替换、无则追加末尾 —— 事件到达顺序即消息顺序 */
   | { conversationId: string; type: "message"; id: string; message: AgentNS.Message }
+  /**
+   * 这一轮各附件的结局（`conversation.send` 回来的 `attachments`，逐张一条）。
+   *
+   * ## 为什么单独一条事件，而不是塞进 `user` 或消息内容里
+   *
+   * `user` 那条事件说的是「你这句话上屏了」；附件结局是**另一件事**（谁走成了文件引用、谁退化成
+   * 文字、谁根本没发出去），而且它要跟着 `userMessageId` 挂在那条气泡旁边 —— 那个 id 在
+   * `done` 的全量替换里是同一个（L6），所以按 id 记住就不会丢。塞进消息内容则会把它变成
+   * 「消息正文的一部分」，而消息正文是服务端的历史事实，不是一条告警。
+   *
+   * 空数组不会发（没带附件的那一轮根本没有这条事件）。
+   */
+  | {
+      conversationId: string;
+      type: "attachments";
+      /** 这批附件是跟着哪条用户消息发的（气泡按这个 id 找结局） */
+      userMessageId: string;
+      attachments: AttachmentOutcome[];
+    }
   | { conversationId: string; type: "done"; messages: AgentNS.Message[] }
   /** 任务迁移完成后推送：全量替换消息。旧历史带 omit（已作废）标记，UI 展示但不进 agent 请求 */
   | { conversationId: string; type: "migrated"; messages: AgentNS.Message[] }

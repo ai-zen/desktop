@@ -16,7 +16,13 @@ import { defineStore } from "pinia";
 // 通知用 toast 弹（与设置页同一种提示）：element-plus 已在 render 的 dependencies 里
 import { ElMessage } from "element-plus";
 import { AgentNS } from "@ai-zen/agents-core";
-import type { ChatStreamEvent, StreamPhase, SubAgentView } from "@ai-zen/desktop-shared";
+import type {
+  AttachmentInput,
+  AttachmentOutcome,
+  ChatStreamEvent,
+  StreamPhase,
+  SubAgentView,
+} from "@ai-zen/desktop-shared";
 import * as api from "../apis/index.js";
 import { useWorkspaceStore } from "./workspace.js";
 import { useConversationStore } from "./conversation.js";
@@ -46,6 +52,14 @@ interface ConversationChatState {
   agents: SubAgentView[];
   /** 现在看的是谁：`""`（`MAIN_AGENT_VIEW_ID`）= 主对话，否则是某个子 Agent 的 id */
   activeAgentId: string;
+  /**
+   * 用户消息 id → 那一轮各附件的结局（`attachments` 事件给的那份）。
+   *
+   * 按**消息 id** 存而不是按轮次序号：那个 id 在 `done` 的全量替换里是同一个（服务端受理时就定了，
+   * L6），所以气泡在流式转完成之后还能找回自己的那几行字。键是服务端分配的值，客户端不数轮次
+   * （切会话、重连补拉都数不出对的那一个）。
+   */
+  attachments: Record<string, AttachmentOutcome[]>;
 }
 
 function emptyState(): ConversationChatState {
@@ -58,6 +72,7 @@ function emptyState(): ConversationChatState {
     runningTools: [],
     agents: [],
     activeAgentId: MAIN_AGENT_VIEW_ID,
+    attachments: {},
   };
 }
 
@@ -132,6 +147,13 @@ export const useChatStore = defineStore("chat", {
     activeAgentId: (state): string =>
       state.byConversation[state.activeConversationId]?.activeAgentId ?? MAIN_AGENT_VIEW_ID,
     /**
+     * 用户消息 id → 附件结局（气泡按消息 id 取自己那几行字）。
+     *
+     * 只给当前会话这一份：`messages` 也是这么取的（切会话就是换个槽位）。
+     */
+    attachmentOutcomes: (state): Record<string, AttachmentOutcome[]> =>
+      state.byConversation[state.activeConversationId]?.attachments ?? {},
+    /**
      * 消息列表**当前该显示的那一份**：选中主对话 = 主对话消息，选中子 Agent = 它自己的消息。
      *
      * 抽成 getter 而不是让视图自己 if：视图里 `useMessageWindow` / `useAutoScroll` 的每一个
@@ -182,6 +204,9 @@ export const useChatStore = defineStore("chat", {
         // 会话的标签挂回来 —— 点进去是永远不再更新的残影，还可能顶着一批早已失效的消息。
         agents: [],
         activeAgentId: MAIN_AGENT_VIEW_ID,
+        // 附件结局也不随重载保留：`chat.getState` 只说「现在有哪些消息」，服务端不重发某一轮的
+        // 附件结局（那是一次性的受理回执）。留着旧的那份会跟上一批气泡错位。
+        attachments: {},
       };
     },
 
@@ -210,7 +235,7 @@ export const useChatStore = defineStore("chat", {
     },
 
     /**
-     * 发送一条消息。
+     * 发送一条消息（可带图片附件）。
      *
      * 返回 `true` = 这一条**确实提交给了服务端**；`false` = 没发出去（没有活动工作区/会话
      * 而早退，或 invoke 层抛错）。
@@ -222,8 +247,14 @@ export const useChatStore = defineStore("chat", {
      *
      * 注意这个布尔**不改变任何既有语义**：不抛错（界面靠 `st.error` + 消息气泡上的重试
      * 按钮那套在工作），`st.error` / `st.lastFailedContent` / `st.streaming` 的含义一字未动。
+     *
+     * ## 附件怎么走
+     *
+     * 这里只把字节交出去（`api.sendChatMessage` → main），**不本地乐观插入缩略图**：附件最后是
+     * 文件引用、内联、还是退化成文字，只有服务端知道（F-H7），结局走 `attachments` 事件。重试（
+     * `retry`）只重发文字：上传已经在 main 做过一次，带着同一批字节再传一遍会多出一份素材。
      */
-    async send(content: string): Promise<boolean> {
+    async send(content: string, attachments?: AttachmentInput[]): Promise<boolean> {
       const wsStore = useWorkspaceStore();
       const convStore = useConversationStore();
       const workspaceId = wsStore.activeWorkspaceId;
@@ -237,7 +268,7 @@ export const useChatStore = defineStore("chat", {
       // 只提交：user 消息上屏 / streaming 均由事件驱动（user / start），
       // render 不本地乐观插入也不自行置位 —— 状态源是常驻服务端
       try {
-        await api.sendChatMessage(workspaceId, conversationId, content);
+        await api.sendChatMessage(workspaceId, conversationId, content, attachments);
       } catch (err) {
         // 仅兜底 invoke 层异常（业务错误都走 error 事件）
         st.error = err instanceof Error ? err.message : String(err);
@@ -326,6 +357,12 @@ export const useChatStore = defineStore("chat", {
         case "stream":
           st.phase = evt.phase;
           st.runningTools = evt.runningTools;
+          break;
+
+        // 这一轮各附件的结局：按用户消息 id 存着，气泡自己去取（文案是服务端/客户端库
+        // 渲染好的原文，这里一个字都不改 —— 怎么摆是 `attachmentNotes` 的事）
+        case "attachments":
+          st.attachments[evt.userMessageId] = evt.attachments;
           break;
 
         // 本轮用户消息上屏（id 由 main 编，只为给 v-for 一个稳定的 key；收尾那次 done 会换成服务端的真 id）

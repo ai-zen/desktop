@@ -60,6 +60,12 @@
           <div v-else class="content" v-html="textContentHtml"></div>
         </template>
 
+        <!-- 附件结局（服务端给的逐张账）：只列“没送达/降级”的那几句，正常送达的不出现。
+             文案是服务端按连接语言渲染好的原文，这里一字不改（详见 stores/attachmentNotes.ts）。 -->
+        <div v-if="notes.length > 0" class="attachment-notes">
+          <span v-for="(note, index) in notes" :key="index" class="attachment-note">{{ note }}</span>
+        </div>
+
         <div v-if="isError" class="error-bar">
           <el-icon :size="14"><WarningFilled /></el-icon>
           <span class="error-text">{{ errorText }}</span>
@@ -82,7 +88,9 @@
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
 import { AgentNS } from "@ai-zen/agents-core";
+import type { AttachmentOutcome } from "@ai-zen/desktop-shared";
 import MarkdownContent from "@/components/MarkdownContent.vue";
+import { attachmentNotes } from "../../stores/attachmentNotes.js";
 import {
   ArrowRight,
   ArrowDown,
@@ -95,6 +103,13 @@ import {
 
 const props = defineProps<{
   message: AgentNS.Message;
+  /**
+   * 这条消息那一轮的附件结局（`chat` store 的 `attachments` 事件给的那份）。
+   *
+   * 可选：没有附件的消息根本不传（气泡本来就什么都不显示）。文案不在这一层拼：
+   * 只问 `attachmentNotes` “该说哪几句”。
+   */
+  attachments?: AttachmentOutcome[];
 }>();
 const emit = defineEmits<{
   retry: [];
@@ -161,6 +176,9 @@ const roleClass = computed(() => {
 });
 
 const toolCalls = computed(() => props.message.tool_calls ?? []);
+
+/** 这条气泡要显示的附件结局（空数组 = 一个字也不出现） */
+const notes = computed(() => attachmentNotes(props.attachments));
 
 // ==================== 消息状态图标（非完成态才显示） ====================
 const statusMeta = computed(() => {
@@ -436,5 +454,24 @@ const errorText = computed(() => textContent.value || "发生错误");
     flex: 1;
     font-size: 13px;
   }
+}
+
+// ==================== 附件结局（逐张一句话，原文来自服务端） ====================
+// 用虚线分隔而不是另起一块背景：这几行属于这条消息，不是另一个对象。
+// 颜色继承气泡自己的文字色（用户气泡是蓝底白字，助手气泡是深灰字）。
+.attachment-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed currentColor;
+  font-size: 12px;
+  line-height: 1.5;
+  opacity: 0.85;
+}
+
+.attachment-note {
+  display: block;
 }
 </style>

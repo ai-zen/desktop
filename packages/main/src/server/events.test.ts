@@ -101,6 +101,9 @@ function fakeConnection(options: {
       return () => resumeHandlers.delete(handler);
     },
     resume: (async (conversationId: string) => ({ conversationId })) as ContractConnection["resume"],
+    // 上传那两条出口本文件用不到（事件桥不碰上传），但它们是连接的一部分：假件也得有
+    sendBinary: async () => {},
+    language: "zh",
     track(conversationId, anchor) {
       tracked.set(conversationId, anchor);
     },

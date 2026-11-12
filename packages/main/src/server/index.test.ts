@@ -31,6 +31,8 @@ interface Harness {
   ensureCalls: EnsureServerOptions[];
   /** 这一层发出去的契约调用 */
   calls: Array<{ method: string; params: unknown }>;
+  /** 上传分片的二进制帧（`sendBinary` 收到的） */
+  frames: Uint8Array[];
   /** 拉起服务端被调了几次 */
   spawns: () => number;
   /** 连接被关了吗 */
@@ -43,14 +45,38 @@ function harness(
 ): Harness {
   const ensureCalls: EnsureServerOptions[] = [];
   const calls: Array<{ method: string; params: unknown }> = [];
+  const frames: Uint8Array[] = [];
   const state = { spawns: 0, closed: false, events: [] as ChatStreamEvent[] };
+  let uploads = 0;
 
   const client = {
     hello: options.hello === undefined ? HELLO : options.hello,
+    language: "zh",
     call: async (method: string, params: unknown) => {
       calls.push({ method, params });
       if (method === "workspace.list") return { workspaces: [] };
+      // 上传三段式的另外两头与「受理一轮」的形状：`chat.send` 带附件时要真的走这两条
+      if (method === "asset.begin") {
+        uploads += 1;
+        return { uploadId: `upload-${uploads}`, maxBytes: 20 * 1024 * 1024, receivedBytes: 0 };
+      }
+      if (method === "asset.end") {
+        return {
+          asset: { assetId: "asset-1", mime: "image/png", bytes: 3, name: "图.png", width: null, height: null },
+        };
+      }
+      if (method === "conversation.send") {
+        return {
+          userMessageId: "m-user",
+          assistantMessageId: "m-assistant",
+          attachments: [],
+          acceptedAt: "2026-01-01T00:00:00.000Z",
+        };
+      }
       return {};
+    },
+    sendBinary: async (frame: Uint8Array) => {
+      frames.push(frame);
     },
     subscribe: () => () => {},
     onClose: () => () => {},
@@ -92,6 +118,7 @@ function harness(
     layer,
     ensureCalls,
     calls,
+    frames,
     spawns: () => state.spawns,
     closed: () => state.closed,
     events: state.events,
@@ -170,6 +197,30 @@ describe("IPC 转发", () => {
 
     await expect(h.layer.manager.invokeService("workspace", "list")).rejects.toThrow(/还没连上服务端/);
     expect(h.calls).toEqual([]);
+  });
+
+  it("`invokeService('chat','send', …, 附件)`：字节走上传，assetIds 进 `conversation.send`", async () => {
+    const h = harness();
+    await h.layer.start();
+
+    // render 递过来的一批附件（`AttachmentInput`：字节 + 类型 + 名字）
+    const data = Uint8Array.from([0x89, 0x50, 0x4e]);
+    await h.layer.manager.invokeService("chat", "send", "ws-1", "conv-1", "看看这张", [
+      { mime: "image/png", name: "图.png", data },
+    ]);
+
+    expect(h.calls.map((call) => call.method)).toEqual([
+      "asset.begin",
+      "asset.end",
+      "conversation.send",
+    ]);
+    expect(h.calls.at(-1)).toEqual({
+      method: "conversation.send",
+      params: { conversationId: "conv-1", input: { content: "看看这张", assetIds: ["asset-1"] } },
+    });
+    // 字节真的走的是二进制帧（不是 base64 塞进 JSON）
+    expect(h.frames).toHaveLength(1);
+    expect(h.events.map((event) => event.type)).toEqual(["user", "start"]);
   });
 
   it("未知服务 / 未知方法：报出具体的键名（静默返回 undefined 只会更难查）", async () => {
