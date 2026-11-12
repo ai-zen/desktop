@@ -198,7 +198,8 @@ export const useChatStore = defineStore("chat", {
 
   actions: {
     /**
-     * 切换激活会话：同步视角 id，并**总是从服务端读取实时状态**（chat.getState → `session.snapshot`）。
+     * 切换激活会话：同步视角 id，并**总是从服务端读取实时状态**（chat.getState → 服务端的
+     * `conversation.state` + `message.list`）。
      * 返回的是服务端此刻的消息（含流式进行中的回复），
      * 使前端切回流式中的会话也能看到正确的进行中内容 —— 前端始终访问服务，
      * 不持有独立状态副本。
@@ -209,18 +210,25 @@ export const useChatStore = defineStore("chat", {
       // 保留重试上下文（切走再切回，失败内容仍在）
       const lastFailedContent = st.lastFailedContent;
       const state = await api.getChatState(workspaceId, conversationId);
+      // 快照里的现场状态原样读：`run` / `context` / `thinking` / `usage` / `questions` /
+      // `statusBlocks` 都在这一份里，下面只取界面今天用得到的那几样
+      const generation = state.run.generation;
       this.byConversation[conversationId] = {
         messages: state.messages,
-        streaming: state.streaming,
+        // 「在不在跑」就是服务端给的 `run.status`（回包里没有第二个布尔可读，也不该有）
+        streaming: state.run.status === "running",
         error: "",
         lastFailedContent,
-        // 六态不随重载保留：`chat.getState` 只回「在不在跑」，那一刻处在哪一态由服务端后续的
-        // `run.state` 推来（推来之前就用一句中的「正在思考…」）
-        phase: null,
-        toolCalls: [],
-        // 栏目不随重载保留：`chat.getState` 只给主对话的实时消息，没有子 Agent 的快照
-        // （栏目只活当前一轮，服务端那边由 `agents: []` 收尾）。沿用旧栏目等于把上一轮/上一次
-        // 会话的标签挂回来 —— 点进去是永远不再更新的残影，还可能顶着一批早已失效的消息。
+        // 六态与在跑的工具取自 `run.generation`（main 推 `stream` 时用的同一份事实）：重开一段
+        // 正在跑的对话，那行字当场就是真的那一态，而不是等下一片 `run.state` 才纠正过来
+        phase: generation?.phase ?? null,
+        toolCalls:
+          generation?.phase === "awaiting_tools"
+            ? generation.runningTools.map((running) => running.toolCall)
+            : [],
+        // 栏目不随重载保留：快照里的 `run.subagents` 是子 Agent 的事实（存在、状态、失败），而栏目
+        // 要的是子对话的消息（`message.list` 带 `toolCallId`），这一波没接。沿用旧栏目等于把上一轮
+        // / 上一次会话的标签挂回来 —— 点进去是永远不再更新的残影，还可能顶着一批早已失效的消息。
         agents: [],
         activeAgentId: MAIN_AGENT_VIEW_ID,
         // 附件结局也不随重载保留：`chat.getState` 只说「现在有哪些消息」，服务端不重发某一轮的

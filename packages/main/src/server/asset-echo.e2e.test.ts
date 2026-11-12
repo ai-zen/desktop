@@ -138,14 +138,20 @@ describe.runIf(ENABLED)("图片回显竖切：发图 → 重开 → 按素材 id
     // ---- 3. 按 id 取字节（气泡要显示的两档）-------------------------------------
     for (const variant of ["thumb", "original"] as const) {
       const content = (await layer.manager.invokeService("chat", "getAsset", assetId, variant)) as {
-        mime: string;
+        asset: { mime: string; bytes: number; name: string | null; width: number | null; height: number | null };
+        variant: string;
         bytes: Uint8Array;
       };
       log(
-        `✓ asset.get(${variant}) → ${content.mime}，${content.bytes.byteLength} 字节` +
+        `✓ asset.get(${variant}) → ${content.asset.mime}，${content.bytes.byteLength} 字节` +
+          `（引用：name=${content.asset.name} 声明字节数=${content.asset.bytes} 宽高=${content.asset.width}x${content.asset.height}，实际给的档=${content.variant}）` +
           `（发上去的是 ${PNG_BYTES.byteLength} 字节，PngSignature=${Array.from(content.bytes.slice(0, 4)).join(",")}）`,
       );
-      expect(content.mime).toBe("image/png");
+      expect(content.asset.mime).toBe("image/png");
+      // 整份引用下传：声明的字节数与实际字节一致，宽高是服务端从文件头解出来的真值
+      expect(content.asset.bytes).toBe(content.bytes.byteLength);
+      expect(content.variant).toBe(variant);
+      // `thumb` 目前等同原图（服务端这一波不做真实缩略图），两档字节逐字相同
       expect(Array.from(content.bytes)).toEqual(Array.from(PNG_BYTES));
     }
 

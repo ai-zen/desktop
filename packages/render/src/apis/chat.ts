@@ -4,11 +4,11 @@
  */
 
 import type {
-  AssetBytes,
+  AssetContent,
   AssetVariant,
   AttachmentInput,
+  ChatState,
   ChatStreamEvent,
-  ConversationState,
 } from "@ai-zen/desktop-shared";
 import { invokeService, subscribeServiceEvent } from "./base.js";
 
@@ -36,11 +36,11 @@ export function sendChatMessage(
 /**
  * 取一份历史图片的字节（`asset.get`，main 转发给服务端）。
  *
- * 返回的是字节本体，调用方自己造 `blob:` URL（`stores/assetImages.ts` 管这件事：同一份素材一屏
- * 只取一次、用完回收）。这里不带任何缓存与重试：取不到就抛（`InvokeServerError`），与其余调用
- * 同一口径。
+ * 返回的是整份回包（`asset` 里的 mime / 宽高 / 名字 / 字节数都在，`variant` 是实际给的档）加字节
+ * 本体，调用方自己造 `blob:` URL（`stores/assetImages.ts` 管这件事：同一份素材一屏只取一次、
+ * 用完回收）。这里不带任何缓存与重试：取不到就抛（`InvokeServerError`），与其余调用同一口径。
  */
-export function getChatAsset(assetId: string, variant: AssetVariant): Promise<AssetBytes> {
+export function getChatAsset(assetId: string, variant: AssetVariant): Promise<AssetContent> {
   return invokeService("chat", "getAsset", assetId, variant);
 }
 
@@ -49,11 +49,16 @@ export function abortChatMessage(conversationId: string): Promise<void> {
   return invokeService("chat", "abort", conversationId);
 }
 
-/** 读取会话实时状态（服务端快照，含流式进行中的消息） */
+/**
+ * 读取会话现场状态（服务端 `conversation.state` 原样 + 整段消息）。
+ *
+ * 「在不在跑」不另给一个布尔：就是 `run.status === "running"`。上下文、思考档位、用量、挂着的
+ * 问题、状态栏那几块全在这个回包里，谁需要谁读。
+ */
 export function getChatState(
   workspaceId: string,
   conversationId: string,
-): Promise<ConversationState> {
+): Promise<ChatState> {
   return invokeService("chat", "getState", workspaceId, conversationId);
 }
 

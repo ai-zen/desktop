@@ -530,9 +530,18 @@ describe("chat", () => {
     const content = await new ServerChatService(h.ctx).getAsset("a1", "thumb");
 
     expect(h.calls[0]).toEqual({ method: "asset.get", params: { assetId: "a1", variant: "thumb" } });
-    expect(content.mime).toBe("image/png");
-    // 宽高跟着字节一起回来（R76：界面按它先摆占位框）
-    expect([content.width, content.height]).toEqual([1, 1]);
+    // 整份 `AssetRef` 下传：类型、字节数、文件名、宽高都在（R76：界面按宽高先摆占位框）
+    expect(content.asset).toEqual({
+      assetId: "a1",
+      mime: "image/png",
+      bytes: 4,
+      name: "图.png",
+      width: 1,
+      height: 1,
+    });
+    expect([content.asset.width, content.asset.height]).toEqual([1, 1]);
+    // 实际给的档也一并下去（`thumb` 目前等同原图，服务端如实回报）
+    expect(content.variant).toBe("thumb");
     expect(Array.from(content.bytes)).toEqual([1, 2, 3, 4]);
   });
 
@@ -574,7 +583,14 @@ describe("chat", () => {
     const state = await new ServerChatService(h.ctx).getState("ws-1", CONVERSATION);
 
     expect(h.calls.map((call) => call.method)).toEqual(["conversation.state", "message.list"]);
-    expect(state).toEqual({ messages, streaming: true });
+    expect(state.messages).toEqual(messages);
+    // 服务端的现场状态原样整份回来：`run` 在跑，上下文 / 思考 / 用量 / 问题 / 状态栏都在
+    expect(state.run.status).toBe("running");
+    for (const field of ["context", "thinking", "usage", "questions", "statusBlocks"] as const) {
+      expect(state[field]).toEqual(wireConversationState()[field]);
+    }
+    // 派生布尔不在这里：要判「在不在跑」读 `run.status`
+    expect(state).not.toHaveProperty("streaming");
     expect(h.tracked.get(CONVERSATION)).toBe("m2");
     // 六态也交给了事件层：切回来不该显示成「什么都没在跑」
     expect(h.events).toEqual([

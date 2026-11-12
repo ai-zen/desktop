@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc && vite build",
+    "build": "vue-tsc && vite build && node scripts/check-no-server-runtime.mjs",
     "preview": "vite preview",
     "test": "vitest run"
   },
@@ -19,6 +19,7 @@
     "vue": "^3.5.40"
   },
   "devDependencies": {
+    "@ai-zen/agents-server": "link:../../../agents/packages/server",
     "@types/markdown-it": "^14.1.2",
     "@vitejs/plugin-vue": "^6.0.8",
     "sass": "^1.101.0",

@@ -24,13 +24,13 @@ import { getAsset as fetchAssetContent } from "@ai-zen/agents-client";
 import type { AgentNS } from "@ai-zen/agents-client";
 import type {
   AgentOption,
-  AssetBytes,
+  AssetContent,
   AssetVariant,
   AttachmentInput,
+  ChatState,
   ConfigSettings,
   ConfigUpdateReport,
   Conversation,
-  ConversationState,
   ConversationSummary,
   EndpointSettings,
   FolderFact,
@@ -402,21 +402,21 @@ export class ServerChatService {
    * 「一条消息里的图能不能显示」与 `send` / `getState` 是同一件事的两半（发送时把图传上去、
    * 重开时把图取回来），所以它落在 `chat` 上。
    *
-   * ## 只搬字节，不碰缓存
+   * ## 整份引用下传，不挑字段
+   *
+   * 服务端 `asset.get` 回的是 `{ asset, variant, data }`：`asset` 是**整份** `AssetRef`（素材 id、
+   * mime、字节数、文件名、原图宽高），`variant` 是实际给出的那一档。这一层只把 `data` 的 base64
+   * 解成字节（客户端库已经做了），其余原样交给 render —— 挑几个字段搬，剩下的就再也拿不到了，
+   * 服务端将来加字段也一样。
+   *
+   * ## 不碰缓存
    *
    * 什么时候取、取一次用几次、`blob:` URL 什么时候回收，全在 render（同一屏里同一份素材只该
    * 走一次这条通道）。这里既不缓存、也不重试：取不到就把错误原样抛上去（PRD F-H8 明确不做
    * 自动重试、不判失效、不做过期清理）。
    */
-  async getAsset(assetId: string, variant: AssetVariant = "thumb"): Promise<AssetBytes> {
-    const content = await fetchAssetContent(this.ctx.connection(), { assetId, variant });
-    // 宽高（R76）：服务端落定素材时从文件头解出来的像素尺寸，界据先摆占位框；解不出来时是 `null`
-    return {
-      mime: content.asset.mime,
-      width: content.asset.width,
-      height: content.asset.height,
-      bytes: content.bytes,
-    };
+  async getAsset(assetId: string, variant: AssetVariant = "thumb"): Promise<AssetContent> {
+    return await fetchAssetContent(this.ctx.connection(), { assetId, variant });
   }
 
   /** 中止本轮（PRD D14：用户的显式动作，不排队）；收尾照常走 `run.state` 的 `settled` */
@@ -427,13 +427,20 @@ export class ServerChatService {
   /**
    * 会话实时状态（render 每次点开会话都调它）。
    *
-   * 两跳、串行：先 `conversation.state`（这一段在不在跑、跑到哪一态、用量、问题），再
-   * `message.list`（整段消息，含流式中那条的部分内容 —— PRD L5）。
+   * 两跳、串行：先 `conversation.state`（这一段在不在跑、跑到哪一态、上下文、思考档位、用量、
+   * 挂着的问题、状态栏那几块），再 `message.list`（整段消息，含流式中那条的部分内容 —— PRD L5）。
+   *
+   * ## 返回的就是服务端那两份，不加工
+   *
+   * `conversation.state` 那一份原样展开、再把 `message.list` 的 `messages` 接上去：服务端说
+   * `run.status` 是 `running`，那就是在跑 —— 这一层不再把它压成一个 `streaming` 布尔（多一个
+   * 派生值就多一份会与服务端说法漂开的第二真相）。界面要什么读什么，剩下的不因为今天没人画就
+   * 在半路上丢掉。
    *
    * 把这条消息列表交给事件层当**基线**，并把本地锚点记成最后一条的 id：下一次断线重连，客户端库
    * 拿这个锚点做 `message.list({after})`，续传天然就是「那条的最新内容 + 之后的」。
    */
-  async getState(workspaceId: string, conversationId: string): Promise<ConversationState> {
+  async getState(workspaceId: string, conversationId: string): Promise<ChatState> {
     void workspaceId;
     const { state } = await this.ctx.call("conversation.state", { conversationId });
     const listed = await this.ctx.call("message.list", { conversationId });
@@ -444,11 +451,7 @@ export class ServerChatService {
     const connection = this.ctx.connection();
     connection.track(conversationId, lastId(listed.messages));
 
-    return {
-      messages: listed.messages,
-      // 「在跑」的唯一判据是服务端给的 `run.status`，客户端不自己推
-      streaming: state.run.status === "running",
-    };
+    return { ...state, messages: listed.messages };
   }
 }
 

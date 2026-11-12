@@ -15,17 +15,21 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentNS } from "@ai-zen/agents-core";
-import type { AssetBytes, AssetVariant } from "@ai-zen/desktop-shared";
+import type { AssetContent, AssetVariant } from "@ai-zen/desktop-shared";
 
 const mocks = vi.hoisted(() => ({
-  getChatAsset: vi.fn<(assetId: string, variant: AssetVariant) => Promise<AssetBytes>>(),
+  getChatAsset: vi.fn<(assetId: string, variant: AssetVariant) => Promise<AssetContent>>(),
 }));
 
 vi.mock("../apis/chat.js", () => ({ getChatAsset: mocks.getChatAsset }));
 
-/** 每份素材的字节 + 像素尺寸（字节内容是假的：这一层不读字节，只把它塞进 Blob） */
-function bytesOf(): AssetBytes {
-  return { mime: "image/png", width: 800, height: 600, bytes: Uint8Array.from([137, 80, 78, 71]) };
+/** 每份素材的整份引用（宽高在里面）+ 字节（字节内容是假的：这一层不读字节，只把它塞进 Blob） */
+function bytesOf(): AssetContent {
+  return {
+    asset: { assetId: "a1", mime: "image/png", bytes: 4, name: "图.png", width: 800, height: 600 },
+    variant: "thumb",
+    bytes: Uint8Array.from([137, 80, 78, 71]),
+  };
 }
 
 /** 落库形态的内容段：core 的段 + 本地扩展字段（服务端存的就是这个形状） */
@@ -160,7 +164,7 @@ describe("一份素材一屏只取一次", () => {
   it("字节回来之前使用者就走光了：那一份当场回收", async () => {
     const { acquireAsset, releaseAssetUrl } = await module();
     mocks.getChatAsset.mockImplementation(
-      () => new Promise<AssetBytes>((resolve) => setTimeout(() => resolve(bytesOf()), 5)),
+      () => new Promise<AssetContent>((resolve) => setTimeout(() => resolve(bytesOf()), 5)),
     );
 
     const pending = acquireAsset("a1", "thumb");

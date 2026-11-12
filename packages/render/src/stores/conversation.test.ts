@@ -17,7 +17,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
-import type { ConversationSummary } from "@ai-zen/desktop-shared";
+import type { ChatState, ConversationSummary } from "@ai-zen/desktop-shared";
 import { useChatStore } from "./chat.js";
 import { useConversationStore } from "./conversation.js";
 
@@ -66,6 +66,45 @@ function pending<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   return { promise, resolve };
 }
 
+/**
+ * 一份「什么都不在跑」的服务端现场状态（`chat.getState` 的返回）。
+ *
+ * 只有这是服务端真会给的形状，`activate` 才读得下去：`run.status` 是「在不在跑」唯一判据，
+ * 上下文 / 思考 / 用量 / 问题 / 状态栏块也跟着快照一起回来。
+ */
+function idleState(): ChatState {
+  const usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  const usageSnapshot = {
+    turn: usage,
+    total: usage,
+    subAgent: usage,
+    rate: { value: 0, unit: "tokens_per_second", basis: "completion" } as const,
+    updatedAt: "2026-11-11T00:00:00.000Z",
+  };
+  return {
+    conversationId: CONV,
+    run: {
+      conversationId: CONV,
+      status: "idle",
+      assistantMessageId: null,
+      startedAt: null,
+      settledAt: null,
+      generation: null,
+      outcome: null,
+      problem: null,
+      subagents: [],
+      usage: usageSnapshot,
+    },
+    context: { usage, handoffThreshold: 0, guardThreshold: 0, overHandoff: false, overGuard: false },
+    thinking: { preset: null, levels: [], selected: null, source: "not_adjustable", params: {} },
+    usage: usageSnapshot,
+    questions: [],
+    statusBlocks: [],
+    updatedAt: "2026-11-11T00:00:00.000Z",
+    messages: [],
+  };
+}
+
 beforeEach(() => {
   setActivePinia(createPinia());
   vi.clearAllMocks();
@@ -73,7 +112,7 @@ beforeEach(() => {
 
 describe("select", () => {
   it("要等 chat store 把快照拿到才 resolve（activate 不再是没人接的 promise）", async () => {
-    const state = pending<{ messages: []; streaming: boolean }>();
+    const state = pending<ChatState>();
     apiMocks.getChatState.mockReturnValue(state.promise);
 
     const conversation = useConversationStore();
@@ -93,9 +132,11 @@ describe("select", () => {
     await Promise.resolve();
     expect(settled).toBe(false);
 
-    state.resolve({ messages: [], streaming: false });
+    state.resolve(idleState());
     await selecting;
     expect(settled).toBe(true);
+    // 快照里的 `run.status` 就是「在不在跑」：idle 不算在跑
+    expect(chat.streaming).toBe(false);
   });
 
   it("activate 失败时把错误抛给调用方，且选中态不回滚", async () => {

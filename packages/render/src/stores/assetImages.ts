@@ -11,10 +11,10 @@
  *
  * ## 宽高一起交给视图（R76）
  *
- * `asset.get` 回包里带着服务端从文件头解出来的 `width` / `height`，所以视图在拿到字节的同一刻就
- * 知道这张图该占多大：`AssetImage.vue` 按这两个数把外层框先撑成原比例，解码完成前后同一个尺寸，
- * 气泡不会因为「图来了」而跳一下。解不出来（`null`）就不撑框 —— 不做兜底分支，界面按图片自己的
- * 尺寸出现。
+ * `asset.get` 回包里的 `asset` 带着服务端从文件头解出来的 `width` / `height`，所以视图在拿到字节
+ * 的同一刻就知道这张图该占多大：`AssetImage.vue` 按这两个数把外层框先撑成原比例，解码完成前后
+ * 同一个尺寸，气泡不会因为「图来了」而跳一下。解不出来（`null`）就不撑框 —— 不做兜底分支，界面
+ * 按图片自己的尺寸出现。
  *
  * ## 为什么读 `__asset_id` 的这几行在这里，而不从客户端库 import
  *
@@ -140,9 +140,10 @@ export function releaseAssetUrl(assetId: string, variant: AssetVariant): void {
 
 /** 取一次字节并造出 URL，写回这一份持有里 */
 async function load(lease: Lease, assetId: string, variant: AssetVariant): Promise<LoadedAsset> {
-  const { mime, width, height, bytes } = await getChatAsset(assetId, variant);
+  const { asset, bytes } = await getChatAsset(assetId, variant);
   // 跨 IPC 过来的字节是结构化克隆出来的，一定是 ArrayBuffer 支撑的（`BlobPart` 认这个）
-  const url = URL.createObjectURL(new Blob([bytes as Uint8Array<ArrayBuffer>], { type: mime }));
+  const url = URL.createObjectURL(new Blob([bytes as Uint8Array<ArrayBuffer>], { type: asset.mime }));
+  const { width, height } = asset;
   if (lease.users === 0) {
     // 字节回来之前使用者就都走了（例如刚打开就切走了会话）：这一份没人要，当场回收
     URL.revokeObjectURL(url);

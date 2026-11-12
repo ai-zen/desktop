@@ -78,6 +78,9 @@ importers:
         specifier: ^3.5.40
         version: 3.5.40(typescript@5.9.3)
     devDependencies:
+      '@ai-zen/agents-server':
+        specifier: link:../../../agents/packages/server
+        version: link:../../../agents/packages/server
       '@types/markdown-it':
         specifier: ^14.1.2
         version: 14.1.2
@@ -108,6 +111,10 @@ importers:
       '@ai-zen/agents-core':
         specifier: ^4.1.0
         version: 4.1.0(ws@8.21.1)(zod@4.4.3)
+    devDependencies:
+      '@ai-zen/agents-server':
+        specifier: link:../../../agents/packages/server
+        version: link:../../../agents/packages/server
 
 packages:
 

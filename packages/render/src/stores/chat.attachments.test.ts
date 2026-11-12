@@ -18,9 +18,12 @@ import { attachmentNotes } from "./attachmentNotes.js";
 const CONV = "conv-1";
 const USER_MESSAGE = "m-user";
 
-/** 服务端给的原因就是这一整份（码 + 参数 + 已渲染的那句），不是一句摘出来的话 */
+/**
+ * 服务端给的原因就是这一整份（码 + 参数 + 已渲染的那句），不是一句摘出来的话。
+ * `messageKey` 用服务端文案表里真有的那个键（"图看不了，改成文字"就是 `message.imageAsText`）。
+ */
 function problem(message: string): ProblemFact {
-  return { code: "message.imageFallback", messageKey: "message.imageFallback", params: {}, message };
+  return { code: "message.imageAsText", messageKey: "message.imageAsText", params: {}, message };
 }
 
 function outcome(

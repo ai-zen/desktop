@@ -1,36 +1,73 @@
 // ==================== 类型契约（shared）====================
 // 实体 + IPC 事件 DTO。纯类型，零运行时。
 // 消息模型直接沿用 Core 的 AgentNS.Message（三层统一，不做 adapter）。
+//
+// ## 服务端定过的形状一律引用，不再抄第二份
+//
+// 这一层曾经把服务端的 `LocalizedText` / `ProblemFact` / `FolderFact` / `ModelState` 重述了一遍
+// （那时候 render 只被允许依赖已发布的 core）。现在 `@ai-zen/agents-server` 是一条**开发时依赖**：
+// 这里 `import type` 它、原样再导出，同一份形状因此只有一个定义 —— 服务端改了字段，这里跟着改，
+// 而不是各自漂。
+//
+// 运行期零依赖：`import type` 在编译产物里一个字节都不留，render 的产物由
+// `packages/render/scripts/check-no-server-runtime.mjs` 在构建之后钉住这一条。
 
 import type { AgentNS } from "@ai-zen/agents-core";
+import type {
+  AssetGetResult,
+  AssetVariant,
+  AttachmentDelivery,
+  AttachmentOutcome as WireAttachmentOutcome,
+  ConversationState,
+  FolderFact,
+  GenerationPhaseName,
+  LocalizedText as WireLocalizedText,
+  ModelState,
+  NoticeLevel,
+  ProblemFact as WireProblemFact,
+} from "@ai-zen/agents-server";
+
+// ==================== 服务端已有的形状（原样再导出）====================
+
+export type {
+  AssetVariant,
+  AttachmentDelivery,
+  ConversationState,
+  FolderFact,
+  ModelState,
+  NoticeLevel,
+};
+
+/** 生成六态的名字：服务端 `GenerationPhaseName` 逐字一致（render 只按它挑界面用词） */
+export type StreamPhase = GenerationPhaseName;
 
 // ==================== 服务端的文案与事实 ====================
 
 /**
- * 服务端 `LocalizedText`（`packages/server/src/wire/states.ts`）的同形状。
+ * 服务端 `LocalizedText`（`packages/server/src/wire/states.ts`）原样，只有一处放宽。
  *
  * 四样一起搬，而不是只搬那一句：`code` 是客户端按它分支的稳定码、`messageKey` 是文案表里的键、
  * `params` 是重排这句话要用的原始参数、`message` 是**当前连接语言**下能直接摆上屏的句子。
- * 只留 `message` 就是把前三样扔掉 —— 换语言、按码挑图标、拿参数重算全都不可能。
  *
- * `code` / `messageKey` 为空串 = 这一句不是服务端产出的（main 或客户端库自己的一句话）：
- * 那种句子没有业务码，也不在服务端的文案表里。
+ * ## `messageKey` 为什么允许空串
+ *
+ * 服务端那一份的 `messageKey` 是它文案表里的键。而 main 与客户端库自己产出的句子（连不上、
+ * 拉起服务端失败、重连放弃……）不在那张表里：那些句子没有翻译，只有已经说好的那一句 `message`。
+ * 放宽只往「多一种取值」的方向走 —— 服务端给的每一句仍然合法，反方向不成立。`code` 空串同理
+ * 表示「这句不是服务端产出的」。其余字段一字不改地来自服务端那一份。
  */
-export interface LocalizedText {
-  code: string;
-  messageKey: string;
-  params: Record<string, unknown>;
-  message: string;
-}
+export type LocalizedText = Omit<WireLocalizedText, "messageKey"> & {
+  messageKey: WireLocalizedText["messageKey"] | "";
+};
 
 /**
- * 失败/降级这类「有事发生了」的事实：`LocalizedText` 之上多一个**结构化的原因**
- * （哪个工具、哪条错误、还差什么），客户端据此做「点一下把失败的那个重跑」这种交互，
- * 而不是去解析句子。
+ * 失败/降级这类「有事发生了」的事实：服务端 `ProblemFact` 原样（`LocalizedText` 之上多一个
+ * **结构化的原因**：哪个工具、哪条错误、还差什么），只有 `messageKey` 同 {@link LocalizedText}
+ * 一样允许空串。
  */
-export interface ProblemFact extends LocalizedText {
-  detail?: unknown;
-}
+export type ProblemFact = Omit<WireProblemFact, "messageKey"> & {
+  messageKey: WireLocalizedText["messageKey"] | "";
+};
 
 // ==================== Workspace ====================
 
@@ -41,32 +78,14 @@ export interface Workspace {
   folder: FolderFact;
 }
 
-/** 目录的事实：路径 + 还在不在（服务端 `FolderFact`，PRD D12） */
-export interface FolderFact {
-  /** 服务端规范化后的绝对路径 */
-  cwd: string;
-  /** 目录还在不在；不在时对话与历史照常可用，只是不能读文件 */
-  exists: boolean;
-}
-
 // ==================== Conversation ====================
-
-/** 这段会话当前模型的事实（服务端 `ModelState`） */
-export interface ConversationModelState {
-  modelId: string;
-  name: string;
-  /** 这个模型能不能看图（PRD D20 / F-B8 的判定依据） */
-  vision: boolean;
-  /** 这个模型是谁定的：助手定义上那个，还是这段会话自己定的 */
-  source: "agent" | "conversation";
-}
 
 export interface Conversation {
   id: string;
   workspaceId: string;
   agentId: string;
   /** 这段会话的**当前模型**（服务端 `ModelState` 原样：三级解析后的生效值，含名字与能不能看图） */
-  model: ConversationModelState;
+  model: ModelState;
   name: string;
   /** 直接沿用 Core 消息模型（三层统一，无 adapter） */
   messages: AgentNS.Message[];
@@ -87,10 +106,23 @@ export interface ConversationSummary {
   running?: boolean;
 }
 
-/** chat.getState 返回：会话实时状态（服务端 `session.snapshot` 原样转回，含流式进行中的消息） */
-export interface ConversationState {
+/**
+ * `chat.getState` 的返回：服务端的**整份现场状态** + 这段对话的整段消息。
+ *
+ * 前半截就是服务端 `conversation.state` 的原文 —— `run`（在不在跑、跑到哪一态、结局、子 Agent、
+ * 本轮用量）/ `context`（上下文占用与两条线）/ `thinking`（思考强度档位）/ `usage`（三个口径与
+ * 速率）/ `questions`（挂在这段对话上的问题）/ `statusBlocks`（状态栏那几块事实）全在里面，一个
+ * 字段都不在客户端侧丢掉：界面今天只画其中一部分，不等于另一部分不存在。
+ *
+ * 后半截是 `message.list` 给的消息本体（服务端的现场状态里没有消息，而「重开这段对话看到的那一屏」
+ * 是这两样合起来）。
+ *
+ * 「在不在跑」**不另给一个布尔**：它就是 `run.status === "running"`。派生值留在这里只会多一份会
+ * 与服务端说法漂开的第二真相。
+ */
+export interface ChatState extends ConversationState {
+  /** 整段消息（含流式中那条的部分内容），core 原样 */
   messages: AgentNS.Message[];
-  streaming: boolean;
 }
 
 // ==================== 附件（图片）====================
@@ -116,14 +148,6 @@ export interface AttachmentInput {
 }
 
 /**
- * 一个附件最后是怎么走的（PRD F-H7）。
- *
- * 取值与服务端 `AttachmentOutcome.deliveredAs` 逐字一致（桌面端不另造一套词）：
- * 文件引用 / 内联 / 退化成文字 / 没发出去。
- */
-export type AttachmentDelivery = "file_reference" | "inline" | "text_fallback" | "dropped";
-
-/**
  * 一张附件这一轮的结局 —— 服务端 `AttachmentOutcome` 原样，另加一个名字。
  *
  * `section` 是它**真正变成的那个内容段**（core 的 `MessageContentSection`：内联图片是 `image_url`、
@@ -134,53 +158,38 @@ export type AttachmentDelivery = "file_reference" | "inline" | "text_fallback" |
  * `problem.message`、一字不改（另写一份措辞就有两种说法，其中一份还不跟着语言变，D8）；
  * 需要按码分支时读 `problem.code`。没有 `problem` 就是没事（`file_reference` / `inline` /
  * `text_fallback` 正常走完），界面不打扰。
+ *
+ * `problem` 用的是这一层那份（`messageKey` 允许空串）：没传上去的那几张，原因是客户端库在
+ * **上传阶段**说的（空文件、认不出类型），那些句子没有服务端的文案键。
  */
-export interface AttachmentOutcome {
-  /** 服务端给的素材 id；本地上传就没成时是空串（没有 id 可给） */
-  assetId: string;
-  /** 它最后是怎么走的 */
-  deliveredAs: AttachmentDelivery;
-  /** 真正拼进消息的那个内容段，core 原样；没发出去时为空 */
-  section: AgentNS.MessageContentSection | null;
+export type AttachmentOutcome = Omit<WireAttachmentOutcome, "problem"> & {
   /** 没送达 / 降级时的原因（结构化）；没有就是 `null` */
   problem: ProblemFact | null;
   /** 这张叫什么（服务端给了就用它给的，本地失败时是用户选的那个名字） */
   name: string | null;
-}
+};
 
 // ==================== 素材（历史图片回显）====================
 
 /**
- * 取素材的哪一档 —— 与服务端 `asset.get` 的 `variant` 同一组值。
+ * `chat.getAsset` 的返回：服务端 `asset.get` 的整份回包，只把 base64 换成字节。
  *
- * `thumb` 目前**等同原图**（服务端这一波不引入原生图像库，PRD F-H8）：界面按 `thumb` 取、原样
- * 显示，不在客户端自己缩一份假的缩略图出来。
- */
-export type AssetVariant = "original" | "thumb";
-
-/**
- * 一份取回来的素材：它是什么类型 + 字节本体 + **原图像素尺寸**。
+ * 服务端那一份是 `{ asset: AssetRef, variant, data }`；到这里去掉 `data`、换成 `bytes`。
+ * `asset` 是**整份引用**：`assetId` / `mime` / `bytes`（字节数）/ `name` / `width` / `height`
+ * 全在，调用方要哪个读哪个（只挑四个字段搬，剩下的就再也拿不到了 —— 服务端加字段时也一样）。
  *
- * render 拿到字节做两件事 —— `new Blob([bytes], { type: mime })` 造一个 `blob:` URL 交给 `<img>`，
- * 以及按 `width` / `height` 先摆好占位框（R76：图片在解码完成前就按原比例占住位置，气泡不抖）。
- * 文件名、sha256 这些界面不用，不搬（完整的那份引用 `AssetRef` 留在服务端与客户端库里）。
- *
- * `width` / `height` 是服务端落定素材时从文件头解出来的像素尺寸；解不出来（非 PNG / JPEG、读不出来）
- * 就是 `null` —— 那时不设占位框，界面按图片自己的尺寸出现。
+ * `variant` 是**实际给出的那一档**：`thumb` 目前等同原图（服务端这一波不引入原生图像库），
+ * 它如实回报给了哪一档，客户端按 `asset.width` / `asset.height` 自己缩，不造一份假缩略图。
  *
  * `bytes` 走 IPC 的结构化克隆（与 `AttachmentInput.data` 同一种形状，只是反过来走：main → render），
- * 不经 base64。
+ * 不经 base64。render 拿到它做两件事：`new Blob([bytes], { type: asset.mime })` 造一个 `blob:` URL
+ * 交给 `<img>`，以及按 `asset.width` / `asset.height` 先摆好占位框（R76：解码完成前就按原比例占住
+ * 位置，气泡不抖）。
  */
-export interface AssetBytes {
-  /** MIME 类型，如 `image/png`（`Blob` 的 type，决定浏览器怎么解这串字节） */
-  mime: string;
-  /** 原图像素宽度；服务端没解出来时为空 */
-  width: number | null;
-  /** 原图像素高度；服务端没解出来时为空 */
-  height: number | null;
+export type AssetContent = Omit<AssetGetResult, "data"> & {
   /** 字节本体 */
   bytes: Uint8Array;
-}
+};
 
 // ==================== Agent / Model 选项 ====================
 
@@ -325,8 +334,10 @@ export type ConnectionState =
 /**
  * 子 Agent 的状态：`running` 是进行态，`done` / `failed` 是终态。
  *
- * 取值与服务端 `sub-agent-start` / `sub-agent-end` 那两条事件逐字一致（协议不另造词汇）：
- * 前者只会带来 `running`，后者带来 `done` / `failed`，快照也回这三个值之一。
+ * 这三档是 render 栏目在用的词（`agentView` 的选中/标签逻辑按它分支）。服务端 `SubAgentSnapshot`
+ * 那一组是 `running` / `done` / `error` / `aborted`，而 main 这一波不推 `agents` 事件 —— 两边没有
+ * 在跑的对接点，因此没有可以合并的“同一份形状”。要对齐要么把 render 的四分支改成服务端那四档，
+ * 要么等子 Agent 推送接上时一起做，都不在“只留一份 token 类型”这一波里。
  */
 export type SubAgentStatus = "running" | "done" | "failed";
 
@@ -350,19 +361,8 @@ export interface SubAgentView {
 
 // ==================== 推送事件 DTO ====================
 
-/**
- * 生成六态（PRD L8 / F-I3）：连上 / 等首字 / 在想 / 在输出 / 拼工具调用 / 等工具。
- *
- * 取值与服务端 `GenerationState.phase` 逐字一致（事件里用的就是这组值）：main 不另造一套词，
- * 只是把它搬进 render 认的形状里。
- */
-export type StreamPhase =
-  | "connected"
-  | "awaiting_first_token"
-  | "thinking"
-  | "generating"
-  | "assembling_tool_calls"
-  | "awaiting_tools";
+// 生成六态的名字就是服务端那一组（见上面 `StreamPhase` 的再导出）：main 不另造一套词，
+// 只是把它搬进 render 认的形状里。
 
 /** chat:push 单通道推送（discriminated union）
  *  状态源是常驻服务端：send 只提交（快速返回），user/start/message/done 全由事件回流 */
@@ -461,8 +461,8 @@ export type ChatStreamEvent =
    */
   | {
       type: "notice";
-      /** 三档语气，取值与服务端 `NoticeLevel` 逐字一致 */
-      level: "info" | "warning" | "error";
+      /** 三档语气，就是服务端的 `NoticeLevel` */
+      level: NoticeLevel;
       /** 秒数；`null` 表示不自动消失，留到被手动清掉 */
       duration: number | null;
       text: LocalizedText;
