@@ -3,11 +3,11 @@
  *
  * 这条用例不跑就跳过（`AI_ZEN_SLICE=1 pnpm test`），因为它要三样真东西：
  *
- *   1. `dist/server.mjs`（`pnpm build` 出来的那份**随包分发**的服务端，本机拉起走的就是它）；
+ *   1. `dist/host.mjs`（`pnpm build` 出来的那份**随包分发**的宿主，本机拉起走的就是它）；
  *   2. 一个假的 OpenAI 兼容端点（用例自己起一个 http 服务，回几条 SSE，不碰真网络）；
  *   3. 一个临时数据根（`AI_ZEN_DIR`，里面写着这个假端点与一个绑它的助手）。
  *
- * 走的是**生产路径**：`createServerLayer` → `ensureServer`（本机发现文件 / 拉起 / 握手）→ 六个
+ * 走的是**生产路径**：`createHostLayer` → `ensureHost`（本机发现文件 / 拉起 / 握手）→ 六个
  * Service → 事件桥。所以它红了意味着「装到用户机器上跑不起来」，而不是「某个假件对不上」。
  *
  * 唯一被换掉的是模型那一端（假端点）：真端点在 CI 里既不可达也不该被计费，而这一条要验的是
@@ -21,13 +21,13 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AddressInfo } from "node:net";
-import { ensureServer } from "@ai-zen/agents-client";
+import { ensureHost } from "@ai-zen/agents-client";
 import type { ChatStreamEvent } from "@ai-zen/desktop-shared";
 import { afterAll, describe, expect, it } from "vitest";
-import { createServerLayer, type ServerLayer } from "./index.js";
+import { createHostLayer, type HostLayer } from "./index.js";
 
-/** 随包分发的服务端（与本文件同包：`packages/main/dist/server.mjs`） */
-const SERVER_ENTRY = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "dist", "server.mjs");
+/** 随包分发的宿主（与本文件同包：`packages/main/dist/host.mjs`） */
+const HOST_ENTRY = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "dist", "host.mjs");
 
 const ENABLED = process.env.AI_ZEN_SLICE === "1";
 
@@ -39,7 +39,7 @@ describe.runIf(ENABLED)("竖切：连接 → 项目 → 会话 → 发消息 →
   });
 
   it("一条竖切跑通", { timeout: 180_000 }, async () => {
-    expect(existsSync(SERVER_ENTRY), `先 pnpm build 出 ${SERVER_ENTRY}`).toBe(true);
+    expect(existsSync(HOST_ENTRY), `先 pnpm build 出 ${HOST_ENTRY}`).toBe(true);
 
     // ---- 1. 假的 OpenAI 兼容端点（流式回两片正文 + 用量的收尾片）------------------
     const llm = await startMockModel();
@@ -52,22 +52,22 @@ describe.runIf(ENABLED)("竖切：连接 → 项目 → 会话 → 发消息 →
     await writeConfig(dataRoot, llm.port);
     log(`数据根：${dataRoot}`);
 
-    // ---- 3. 第一段：连上本地服务端（没有就拉起 dist/server.mjs）------------------
+    // ---- 3. 第一段：连上本地宿主（没有就拉起 dist/host.mjs）------------------
     const first = collect();
-    let layer: ServerLayer = createServerLayer({
+    let layer: HostLayer = createHostLayer({
       aiZenDir: dataRoot,
       clientInfo: { name: "@ai-zen/desktop", version: "0.0.0-slice" },
       defaultCwd: () => dataRoot,
       push: first.push,
-      serverEntry: SERVER_ENTRY,
+      hostEntry: HOST_ENTRY,
       log: log,
     });
     cleanup.push(() => layer.dispose());
 
     await layer.start();
     log(`✓ 已连上（握手：${JSON.stringify(layer.hello())}）`);
-    // 拉起之后要杀掉的 pid 从发现文件里读（`ensureServer` 刚写完它）
-    const facts = JSON.parse(await readFile(join(dataRoot, "run", "server.json"), "utf8")) as {
+    // 拉起之后要杀掉的 pid 从发现文件里读（`ensureHost` 刚写完它）
+    const facts = JSON.parse(await readFile(join(dataRoot, "run", "host.json"), "utf8")) as {
       pid: number;
     };
     cleanup.push(() => {
@@ -105,14 +105,14 @@ describe.runIf(ENABLED)("竖切：连接 → 项目 → 会话 → 发消息 →
       "mock-agent",
     )) as { id: string; model: { modelId: string; name: string; vision: boolean; source: string } };
     log(`✓ conversation.create → ${conversation.id}（模型 ${conversation.model.modelId}）`);
-    // 模型整块是服务端给的那份（id / 名字 / 能不能看图 / 谁定的），不只是 id
+    // 模型整块是宿主给的那份（id / 名字 / 能不能看图 / 谁定的），不只是 id
     expect(conversation.model).toEqual({
       modelId: "mock-model",
       name: "假模型",
       vision: false,
       source: "agent",
     });
-    // 刚建出来的是**草稿**：服务端要等第一条用户消息才落库（R56 / F-C2「没有用户消息就不写」），
+    // 刚建出来的是**草稿**：宿主要等第一条用户消息才落库（R56 / F-C2「没有用户消息就不写」），
     // 所以此刻它不在侧栏列表里。这不是 bug，是那一条决定的形状。
     const stillEmpty = (await layer.manager.invokeService("conversation", "list", workspace.id)) as unknown[];
     expect(stillEmpty).toEqual([]);
@@ -125,7 +125,7 @@ describe.runIf(ENABLED)("竖切：连接 → 项目 → 会话 → 发消息 →
 
     const types = first.events.map((event) => event.type);
     log(`✓ 事件序列：${types.join(" → ")}`);
-    // 先「进入流式态」，随后上屏那条用户消息 —— 它要回服务端取一次（带图那句在库里是内容段
+    // 先「进入流式态」，随后上屏那条用户消息 —— 它要回宿主取一次（带图那句在库里是内容段
     // 数组），所以中间可能夹着一条 `run.state` 的六态推送
     expect(types[0]).toBe("start");
     const userEvent = first.events.find(
@@ -154,7 +154,7 @@ describe.runIf(ENABLED)("竖切：连接 → 项目 → 会话 → 发消息 →
     log(`✓ done：${done.messages.length} 条消息 → ${texts.map((text) => JSON.stringify(text)).join(" ")}`);
     expect(texts.join("")).toContain("你好");
     expect(texts.join("")).toContain("世界");
-    // 用户那句在历史里，且是服务端给的那条（不是客户端编的）：服务端会把自己注入的
+    // 用户那句在历史里，且是宿主给的那条（不是客户端编的）：宿主会把自己注入的
     // 「当前目录」那一段一起写进去（F-D9），所以这里只看它包含用户敲的字
     expect(texts[0]).toContain("介绍一下你自己");
 
@@ -168,19 +168,19 @@ describe.runIf(ENABLED)("竖切：连接 → 项目 → 会话 → 发消息 →
     expect(listed.map((item) => item.id)).toEqual([conversation.id]);
     expect(listed[0]?.messageCount).toBeGreaterThanOrEqual(2);
 
-    // ---- 8. 重启：关掉这一层，再照 run/server.json 连回来 ------------------------
+    // ---- 8. 重启：关掉这一层，再照 run/host.json 连回来 ------------------------
     layer.dispose();
     const second = collect();
-    layer = createServerLayer({
+    layer = createHostLayer({
       aiZenDir: dataRoot,
       clientInfo: { name: "@ai-zen/desktop", version: "0.0.0-slice" },
       defaultCwd: () => dataRoot,
       push: second.push,
-      serverEntry: SERVER_ENTRY,
+      hostEntry: HOST_ENTRY,
       log: log,
     });
     await layer.start();
-    log("✓ 重启后已按 run/server.json 连回同一个服务端（没有重复拉起）");
+    log("✓ 重启后已按 run/host.json 连回同一个宿主（没有重复拉起）");
 
     const restored = (await layer.manager.invokeService(
       "chat",
@@ -200,7 +200,7 @@ describe.runIf(ENABLED)("竖切：连接 → 项目 → 会话 → 发消息 →
       `✓ conversation.state + message.list → ${restored.messages.length} 条历史，run.status=${restored.run.status}：` +
         restored.messages.map(textOf).map((text) => JSON.stringify(text)).join(" "),
     );
-    // 除了消息，服务端那份现场状态也整份回来了（状态栏那类事实在 `statusBlocks` 里）
+    // 除了消息，宿主那份现场状态也整份回来了（状态栏那类事实在 `statusBlocks` 里）
     log(
       `✓ 现场事实：上下文 ${restored.context.usage.total_tokens}/${restored.context.handoffThreshold} token，` +
         `思考档位=${restored.thinking.selected}，累计用量=${restored.usage.total.total_tokens}，` +
@@ -213,10 +213,10 @@ describe.runIf(ENABLED)("竖切：连接 → 项目 → 会话 → 发消息 →
 
     // ---- 9. 断线补拉的那一半：`message.list({ after })` -------------------------
     // 重连之后客户端库就是靠这一步把「本地最后一条」之后的内容补回来（L5 / A12）。
-    // `after` 命中的那条**本身**也在结果里，而且内容是服务端最新的 —— 所以流式中那条是替换、
+    // `after` 命中的那条**本身**也在结果里，而且内容是宿主最新的 —— 所以流式中那条是替换、
     // 不是又追加一条。
     const anchor = restored.messages[0]?.id ?? "";
-    const { client } = await ensureServer({
+    const { client } = await ensureHost({
       dataRoot,
       clientInfo: { name: "@ai-zen/desktop-slice", version: "0.0.0-slice" },
       settings: { mode: "local" },
@@ -286,11 +286,11 @@ function collect(): {
 /**
  * 一个假的 OpenAI 兼容端点：只回 `/chat/completions` 的流式两片正文。
  *
- * 形状按 openai 的 chunk 来（`choices[0].delta`），因为服务端那边正是原样把 delta 转成 `message.delta`
+ * 形状按 openai 的 chunk 来（`choices[0].delta`），因为宿主那边正是原样把 delta 转成 `message.delta`
  * 推出去的 —— 这样一来「流式上屏」验的就是真链路，而不是我造的一个近路。
  */
 async function startMockModel(): Promise<{ port: number; stop: () => Promise<void> }> {
-  const server: HttpServer = createHttpServer((request, response) => {
+  const host: HttpServer = createHttpServer((request, response) => {
     if (!request.url?.endsWith("/chat/completions")) {
       response.writeHead(404).end();
       return;
@@ -347,11 +347,11 @@ async function startMockModel(): Promise<{ port: number; stop: () => Promise<voi
     });
   });
 
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const port = (server.address() as AddressInfo).port;
+  await new Promise<void>((resolve) => host.listen(0, "127.0.0.1", resolve));
+  const port = (host.address() as AddressInfo).port;
   return {
     port,
-    stop: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    stop: () => new Promise<void>((resolve) => host.close(() => resolve())),
   };
 }
 

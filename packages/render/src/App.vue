@@ -73,14 +73,14 @@ async function init(): Promise<void> {
   await uiStore.loadOptions();
 
   /**
-   * 凭据门：服务端上**一个能用的 API Key 都没有** → 把用户送到设置页的「API Key」那一节。
+   * 凭据门：宿主上**一个能用的 API Key 都没有** → 把用户送到设置页的「API Key」那一节。
    *
    * 为什么是「送到设置页」而不是另做一屏：那一节本来就是「选端点 + 填密钥」的完整界面
    * （含每个端点的注册链接与明文核对），再画一屏等于把同一件事实现两遍。这里只负责
    * **在那个该被看见的时刻把它推到用户眼前**，否则症状是「连上了、界面全在，一发消息就报
    * 没有 Key」—— 而报错的地方离要改的地方很远。
    *
-   * 读不到配置（老服务端 / 通道出问题）就不拦：凭据缺失是一种**确定**的状态，猜不得。
+   * 读不到配置（老宿主 / 通道出问题）就不拦：凭据缺失是一种**确定**的状态，猜不得。
    */
   const settingsConfig = await getConfigSettings().catch(() => null);
   const hasApiKey = settingsConfig?.endpoints.some((endpoint) => endpoint.apiKey?.trim()) ?? true;
@@ -141,7 +141,7 @@ onMounted(async () => {
  * 连接状态一变，界面就该跟着动：`false → true` 跑一次 `init()`。
  *
  * 离开 ready（断开 → `connecting` / `error`）时把哨兵放下：用户改完配置「重连」成功之后，
- * 数据是**另一台服务端**的，必须重拉一遍（`init()` 里那几句正是重拉）。
+ * 数据是**另一台宿主**的，必须重拉一遍（`init()` 里那几句正是重拉）。
  */
 watch(
   () => connectionStore.isReady,

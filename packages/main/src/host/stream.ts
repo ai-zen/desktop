@@ -3,21 +3,21 @@
  *
  * ## 为什么这里只有「拼」，没有「判断」
  *
- * 服务端推的 `message.delta.delta` 就是 core 的 `AgentNS.Delta`（正文 / 思考 / 工具调用由它自己
+ * 宿主推的 `message.delta.delta` 就是 core 的 `AgentNS.Delta`（正文 / 思考 / 工具调用由它自己
  * 的字段区分），而「一片增量怎么攒进一条消息」这件事 core 里**已经有唯一一份实现**：
  * `applyChunk()`。它认的入参形状是 `ChatCompletionChunk`，而 `Delta` 恰好就是
  * `chunk.choices[0].delta`，所以这里把增量原样塞回去喂给它 —— 不抄一遍拼接规则（正文怎么加、
  * 工具参数的「整串重发」与「只发增量」两种厂商行为怎么认、内容段数组怎么按 index 落位）。
  *
  * 抄一份的代价是漂移，而漂移只在边界情形上显形：半截的工具参数、内容段数组里的图片段。
- * 屏幕上表现为「答案比真正存下来的那条少一截」，而真正的消息在服务端是好的 —— 这种 bug 最难信。
+ * 屏幕上表现为「答案比真正存下来的那条少一截」，而真正的消息在宿主是好的 —— 这种 bug 最难信。
  *
  * ## 一轮一条
  *
- * 一轮只拼**一条**助手消息：服务端在受理时就把这条消息的 id 分配好了（PRD L6），`message.delta`
+ * 一轮只拼**一条**助手消息：宿主在受理时就把这条消息的 id 分配好了（PRD L6），`message.delta`
  * 每一片都带着它。id 换了就说明这是另一条（下一轮，或工具轮次之后的新一条），把手里那条丢掉重开。
  *
- * 工具**结果**消息不由这里拼：它们是服务端自己写进库的完整消息，客户端在收尾时按 `message.list`
+ * 工具**结果**消息不由这里拼：它们是宿主自己写进库的完整消息，客户端在收尾时按 `message.list`
  * 整份拿（见 `events.ts` 的 `settle`）。
  */
 
@@ -50,7 +50,7 @@ export class StreamingMessage {
       // 空正文而不是「不发 content」：`applyChunk` 在字符串与内容段数组之间做判断，缺字段时
       // 它会自己补一个空串，但先放好一个空串能让「第一次增量就是数组内容段」那条路也走对
       content: "",
-      // 「还在写」是这一刻的事实（服务端那条在库里就是这个状态，见 PRD D15 的边流边写）
+      // 「还在写」是这一刻的事实（宿主那条在库里就是这个状态，见 PRD D15 的边流边写）
       status: CoreNS.MessageStatus.Writing,
     };
     return this.message;
@@ -73,7 +73,7 @@ export class StreamingMessage {
     return message;
   }
 
-  /** 用量只到 `usage` 事件里（增量里没有）：钉到这条消息上，与收尾时服务端给的那条同口径 */
+  /** 用量只到 `usage` 事件里（增量里没有）：钉到这条消息上，与收尾时宿主给的那条同口径 */
   attachUsage(usage: AgentNS.Usage): AgentNS.Message | null {
     if (!this.message) return null;
     this.message.usage = usage;

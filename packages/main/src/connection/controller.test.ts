@@ -4,7 +4,7 @@
  * ## 为什么用假层 + 计数器，而不是真 daemon
  *
  * 「保存之后立刻重建连接」这件事的证据不是「连上了没有」，而是**旧层被怎么处理、新层什么时候
- * 被建**：旧层必须 `dispose()` 恰好一次（否则两台服务端的事件会一起推到 `chat:push`，消息串
+ * 被建**：旧层必须 `dispose()` 恰好一次（否则两台宿主的事件会一起推到 `chat:push`，消息串
  * 台），新层必须 `start()`（否则 `events.watch` 没订阅，界面安静地不动），而且**落盘失败时
  * 旧层一次都不许被 dispose**（否则界面显示远程、实际什么都没连着）。
  *
@@ -18,24 +18,24 @@
  * 另有一条用例让落盘失败，断言 `dispose` 一次都没被调用 —— 反向验证（把顺序倒过来）见交付
  * 报告：倒过来之后正是这条会红。
  *
- * ## 试连为什么不走真服务端
+ * ## 试连为什么不走真宿主
  *
  * `test()` 里没有一行是本仓的实现：地址交给客户端库的 `parseAddress`、握手交给 `Client.connect`、
  * 报错文案也由它出。这一组只验**面板上最常遇到的那种失败**（地址不合法 —— 它在建连之前就返回）
  * 与「不落盘、不动当前连接」这两件事；握手成功后的映射（协议版本、版本串）在
- * `server/index.test.ts` 里用假连接验，那里看得见 `helloOf` 的每一行。
+ * `host/index.test.ts` 里用假连接验，那里看得见 `helloOf` 的每一行。
  */
 
 import type { ConnectionSettings, ConnectionState } from "@ai-zen/desktop-shared";
 import { describe, expect, it } from "vitest";
-import type { ServerLayerOptions } from "../server/index.js";
+import type { HostLayerOptions } from "../host/index.js";
 import {
   ConnectionController,
   type ConnectionLayer,
   type TimerScheduler,
 } from "./controller.js";
 
-/** 用户会填的那种地址（带子路径的 `wss://`：`parseServerUrl` 认得的四种之一） */
+/** 用户会填的那种地址（带子路径的 `wss://`：`parseHostUrl` 认得的四种之一） */
 const REMOTE_URL = "wss://ai-zen.example.com/ai-zen";
 /** 一眼能认出来的凭证：用它断言「日志里没有它」（D22） */
 const TOKEN = "dGhpcy1pcy1hLXRva2VuLW5ldmVyLWxvZ2dlZA";
@@ -46,8 +46,8 @@ const TOKEN = "dGhpcy1pcy1hLXRva2VuLW5ldmVyLWxvZ2dlZA";
 
 /** 假层：被 start 几次、被 dispose 几次，以及「建它的时候收到了什么」 */
 interface FakeLayer extends ConnectionLayer {
-  /** `createLayer` 收到的入参（`local` 模式下 `serverUrl` / `serverToken` 必须是 `undefined`） */
-  settings: ServerLayerOptions;
+  /** `createLayer` 收到的入参（`local` 模式下 `hostUrl` / `hostToken` 必须是 `undefined`） */
+  settings: HostLayerOptions;
   starts: number;
   disposes: number;
 }
@@ -139,7 +139,7 @@ interface Harness {
  * 先记一笔再决定成不成功 —— 「落盘失败」这件事在真盘上很难稳定复现（磁盘满、只读挂载），
  * 而它恰恰是 D18 那条顺序唯一能看见的边界。
  *
- * `hello` 缺省给一份固定的（真件来自握手回执，见 `server/index.ts` 的 `readHello`）；
+ * `hello` 缺省给一份固定的（真件来自握手回执，见 `host/index.ts` 的 `readHello`）；
  * `hello: false` 用来验「拿不到身份时填 0 / 空串」那条分支。
  */
 function harness(options: { settings?: ConnectionSettings | null; hello?: boolean } = {}): Harness {
@@ -288,9 +288,9 @@ describe("保存设置：换层（D18）", () => {
     const old = h.layers[0]!;
     expect(old.starts).toBe(1);
 
-    const { settings } = await h.controller.save({ mode: "remote", serverUrl: REMOTE_URL });
+    const { settings } = await h.controller.save({ mode: "remote", hostUrl: REMOTE_URL });
 
-    expect(settings).toEqual({ mode: "remote", serverUrl: REMOTE_URL });
+    expect(settings).toEqual({ mode: "remote", hostUrl: REMOTE_URL });
     // 旧层收摊恰好一次（多一次 = 有人重复 dispose；零次 = 两条连接同时活着，事件会串台）
     expect(old.disposes).toBe(1);
     expect(h.layers).toHaveLength(2);
@@ -306,7 +306,7 @@ describe("保存设置：换层（D18）", () => {
     // 启动那一段：建 → start（没有落盘、也没有旧的可以 dispose）
     expect(h.trace).toEqual(["create", "start"]);
 
-    await h.controller.save({ mode: "remote", serverUrl: REMOTE_URL });
+    await h.controller.save({ mode: "remote", hostUrl: REMOTE_URL });
 
     // 这条序列就是 D18 的原文：write 在最前，dispose 在 create/start 之前
     expect(h.trace.slice(2)).toEqual(["write", "dispose", "create", "start"]);
@@ -319,7 +319,7 @@ describe("保存设置：换层（D18）", () => {
     h.failNextWrite();
 
     await expect(
-      h.controller.save({ mode: "remote", serverUrl: REMOTE_URL }),
+      h.controller.save({ mode: "remote", hostUrl: REMOTE_URL }),
     ).rejects.toThrow(/磁盘写不进去/);
 
     // 落盘失败 ⇒ 不许动连接：否则界面上写着「远程」，实际还连着本地那条
@@ -332,13 +332,13 @@ describe("保存设置：换层（D18）", () => {
     expect(h.writes).toEqual([]);
   });
 
-  it("非法 serverUrl：抛人话、不落盘、不动连接", async () => {
+  it("非法 hostUrl：抛人话、不落盘、不动连接", async () => {
     const h = harness();
     await h.controller.start();
     const old = h.layers[0]!;
 
     await expect(
-      h.controller.save({ mode: "remote", serverUrl: "ws://" }),
+      h.controller.save({ mode: "remote", hostUrl: "ws://" }),
     ).rejects.toThrow(/ws:\/\//);
 
     // 校验在落盘之前：`trace` 里连 write 都不该出现
@@ -352,9 +352,9 @@ describe("保存设置：换层（D18）", () => {
     const h = harness();
     await h.controller.start(); // 第 1 层：本地
 
-    await h.controller.save({ mode: "remote", serverUrl: REMOTE_URL, serverToken: TOKEN }); // 第 2 层
+    await h.controller.save({ mode: "remote", hostUrl: REMOTE_URL, hostToken: TOKEN }); // 第 2 层
     await h.controller.save({ mode: "local" }); // 第 3 层
-    await h.controller.save({ mode: "remote", serverUrl: REMOTE_URL }); // 第 4 层
+    await h.controller.save({ mode: "remote", hostUrl: REMOTE_URL }); // 第 4 层
 
     expect(h.layers).toHaveLength(4);
     // 前 3 层各被 start 一次、dispose 恰好一次（越早的越早收摊，谁都没被落下）
@@ -369,19 +369,19 @@ describe("保存设置：换层（D18）", () => {
     expect(h.controller.layer()).toBe(last);
 
     // 换层是**重建**，不是改字段：`local` 那一层的两个值必须是 `undefined`（不是空串）
-    expect(h.layers[1]!.settings.serverUrl).toBe(REMOTE_URL);
-    expect(h.layers[1]!.settings.serverToken).toBe(TOKEN);
-    expect(h.layers[2]!.settings.serverUrl).toBeUndefined();
-    expect(h.layers[2]!.settings.serverToken).toBeUndefined();
+    expect(h.layers[1]!.settings.hostUrl).toBe(REMOTE_URL);
+    expect(h.layers[1]!.settings.hostToken).toBe(TOKEN);
+    expect(h.layers[2]!.settings.hostUrl).toBeUndefined();
+    expect(h.layers[2]!.settings.hostToken).toBeUndefined();
     // 同一份远程配置再来一次，仍然建的是**新**层
-    expect(h.layers[3]!.settings.serverUrl).toBe(REMOTE_URL);
+    expect(h.layers[3]!.settings.hostUrl).toBe(REMOTE_URL);
   });
 
   it("日志只说模式与地址，凭证一个字都不出现（D22）", async () => {
     const h = harness();
     await h.controller.start();
 
-    await h.controller.save({ mode: "remote", serverUrl: REMOTE_URL, serverToken: TOKEN });
+    await h.controller.save({ mode: "remote", hostUrl: REMOTE_URL, hostToken: TOKEN });
 
     const text = h.logs.join("\n");
     // 地址要说得出来（排查「我连的是谁」是第一条信息）
@@ -412,10 +412,10 @@ describe("保存设置：换层（D18）", () => {
  * 那两个注入项故意写成抛错：`test()` 一旦去建层或落盘，用例当场就红 —— D19 的「不落盘、不影响
  * 当前连接」因此在结构上被钉住，而不只是「我没在代码里看到」。
  *
- * 这一组不需要一台真服务端：地址不合法那条路在**建连之前**就返回（`Client.connect` 里那句
+ * 这一组不需要一台真宿主：地址不合法那条路在**建连之前**就返回（`Client.connect` 里那句
  * `parseAddress` 是地址形状的唯一判据），而它恰好就是面板上最容易遇到的那种失败。握手成功之后的
- * 那半段（协议版本、版本串）由 `server/index.ts` 的 `helloOf` 一张映射决定，那一条在
- * `server/index.test.ts` 里用假连接钉住。
+ * 那半段（协议版本、版本串）由 `host/index.ts` 的 `helloOf` 一张映射决定，那一条在
+ * `host/index.test.ts` 里用假连接钉住。
  */
 function probeOnly(aiZenDir: string): ConnectionController {
   return new ConnectionController({
@@ -436,21 +436,21 @@ function probeOnly(aiZenDir: string): ConnectionController {
 describe("测试连接（connection:test，D19）", () => {
   it("非法地址：ok:false、不抛，message 是客户端库给的那句人话（带原串）", async () => {
     const probe = await probeOnly("/tmp/aiz-desktop-probe").test({
-      serverUrl: "ws://",
+      hostUrl: "ws://",
     });
 
     expect(probe.ok).toBe(false);
     if (probe.ok) throw new Error("非法地址不该连上");
-    expect(probe.message).toMatch(/Not a valid server address/);
+    expect(probe.message).toMatch(/Not a valid host address/);
     expect(probe.message).toContain("ws://");
   });
 
   it("空地址：同样 ok:false、不抛（面板里刚清空就点了测试）", async () => {
-    const probe = await probeOnly("/tmp/aiz-desktop-probe").test({ serverUrl: "" });
+    const probe = await probeOnly("/tmp/aiz-desktop-probe").test({ hostUrl: "" });
 
     expect(probe.ok).toBe(false);
     if (probe.ok) throw new Error("空地址不该连上");
-    expect(probe.message).toMatch(/Not a valid server address/);
+    expect(probe.message).toMatch(/Not a valid host address/);
   });
 
   it("试连不建层、不落盘（注入的那两个动作一被调用就抛）", async () => {
@@ -459,7 +459,7 @@ describe("测试连接（connection:test，D19）", () => {
     const current = h.layers[0]!;
     const before = h.trace.length;
 
-    const probe = await h.controller.test({ serverUrl: "ws://", serverToken: TOKEN });
+    const probe = await h.controller.test({ hostUrl: "ws://", hostToken: TOKEN });
 
     expect(probe.ok).toBe(false);
     // 没有 write / dispose / create / start：试连只回答一个问题
@@ -481,25 +481,25 @@ describe("测试连接（connection:test，D19）", () => {
  * 你失败两次。
  */
 describe("连接状态机（D23）：三态的推送序列", () => {
-  it("首次就成功：只推一条 ready（带服务端自报的协议版本与版本串）", async () => {
+  it("首次就成功：只推一条 ready（带宿主自报的协议版本与版本串）", async () => {
     const h = harness();
 
     await h.controller.start();
 
     // 起始态（connecting / attempt 0）不推：它就是 `state()` 在此之前给出的那一份
     expect(h.states).toEqual([
-      { status: "ready", label: "本机服务端", protocol: 3, version: "0.0.0-test" },
+      { status: "ready", label: "本机宿主", protocol: 3, version: "0.0.0-test" },
     ]);
     expect(await h.controller.state()).toEqual(h.states[0]);
   });
 
-  it("拿不到服务端身份时：ready 里填 0 / 空串（连上了但不知道哪一版）", async () => {
+  it("拿不到宿主身份时：ready 里填 0 / 空串（连上了但不知道哪一版）", async () => {
     const h = harness({ hello: false });
 
     await h.controller.start();
 
     expect(h.states).toEqual([
-      { status: "ready", label: "本机服务端", protocol: 0, version: "" },
+      { status: "ready", label: "本机宿主", protocol: 0, version: "" },
     ]);
   });
 
@@ -510,7 +510,7 @@ describe("连接状态机（D23）：三态的推送序列", () => {
     await h.controller.start(); // 第 1 次尝试失败 → 等 1s
 
     expect(h.states).toEqual([
-      { status: "connecting", label: "本机服务端", attempt: 1, nextRetryInMs: 1000 },
+      { status: "connecting", label: "本机宿主", attempt: 1, nextRetryInMs: 1000 },
     ]);
     expect(h.timers.pending()).toEqual([1000]);
 
@@ -518,7 +518,7 @@ describe("连接状态机（D23）：三态的推送序列", () => {
     await flush();
     expect(h.states[1]).toEqual({
       status: "connecting",
-      label: "本机服务端",
+      label: "本机宿主",
       attempt: 2,
       nextRetryInMs: 2000,
     });
@@ -528,7 +528,7 @@ describe("连接状态机（D23）：三态的推送序列", () => {
     await flush();
     expect(h.states[2]).toEqual({
       status: "connecting",
-      label: "本机服务端",
+      label: "本机宿主",
       attempt: 3,
       nextRetryInMs: 5000,
     });
@@ -542,7 +542,7 @@ describe("连接状态机（D23）：三态的推送序列", () => {
     const last = h.states[3]!;
     expect(last.status).toBe("error");
     if (last.status !== "error") throw new Error("第四次失败之后应当是 error");
-    expect(last.label).toBe("本机服务端");
+    expect(last.label).toBe("本机宿主");
     expect(last.message).toContain("连不上（用例造的）");
     expect(last.message).toContain("已重试 3 次");
     expect(h.timers.pending()).toEqual([]);
@@ -562,7 +562,7 @@ describe("连接状态机（D23）：三态的推送序列", () => {
 
     expect(h.states.at(-1)).toEqual({
       status: "ready",
-      label: "本机服务端",
+      label: "本机宿主",
       protocol: 3,
       version: "0.0.0-test",
     });
@@ -613,7 +613,7 @@ describe("连接状态机（D23）：三态的推送序列", () => {
     const state = await h.controller.reconnect();
 
     // 立刻回到「首次尝试中」：attempt 归零，不是接着上一次的 4 数下去
-    expect(state).toEqual({ status: "connecting", label: "本机服务端", attempt: 0 });
+    expect(state).toEqual({ status: "connecting", label: "本机宿主", attempt: 0 });
     // 这一条必须**推**出去（`error` 是终态，用户点了「重连」得立刻看到它在动）。
     // 断言「在这一串里」而不是「最后一条」：这一轮的重试就在后台跑着，它可能已经抢先落了一步
     expect(h.states).toContainEqual(state);
@@ -622,7 +622,7 @@ describe("连接状态机（D23）：三态的推送序列", () => {
     // 这一轮自己的退避是从 1000 重新开始的（第 1 次重试）
     expect(h.states.at(-1)).toEqual({
       status: "connecting",
-      label: "本机服务端",
+      label: "本机宿主",
       attempt: 1,
       nextRetryInMs: 1000,
     });
@@ -640,13 +640,13 @@ describe("连接状态机（D23）：三态的推送序列", () => {
     const stale = h.timers.list();
 
     const state = await h.controller.reconnect();
-    expect(state).toEqual({ status: "connecting", label: "本机服务端", attempt: 0 });
+    expect(state).toEqual({ status: "connecting", label: "本机宿主", attempt: 0 });
     await flush();
 
     // 新一轮自己失败了，于是自己排了一个 1000ms（不是旧那个被留下来的）
     expect(h.states.at(-1)).toEqual({
       status: "connecting",
-      label: "本机服务端",
+      label: "本机宿主",
       attempt: 1,
       nextRetryInMs: 1000,
     });
@@ -660,7 +660,7 @@ describe("连接状态机（D23）：三态的推送序列", () => {
   });
 
   it("start() 之前查状态：connecting(0)，label 按盘上那份配置算（窗口比连接先出来）", async () => {
-    const h = harness({ settings: { mode: "remote", serverUrl: REMOTE_URL } });
+    const h = harness({ settings: { mode: "remote", hostUrl: REMOTE_URL } });
 
     expect(await h.controller.state()).toEqual({
       status: "connecting",
@@ -673,13 +673,13 @@ describe("连接状态机（D23）：三态的推送序列", () => {
 });
 
 describe("state 的 label（D23）与凭证（D22）", () => {
-  it("本地是本机服务端、远程是那个地址；label 与日志都不含凭证", async () => {
+  it("本地是本机宿主、远程是那个地址；label 与日志都不含凭证", async () => {
     const h = harness();
     await h.controller.start();
     expect(h.states.at(-1)!.status).toBe("ready");
-    expect(labelOfState(h.states.at(-1)!)).toBe("本机服务端");
+    expect(labelOfState(h.states.at(-1)!)).toBe("本机宿主");
 
-    await h.controller.save({ mode: "remote", serverUrl: REMOTE_URL, serverToken: TOKEN });
+    await h.controller.save({ mode: "remote", hostUrl: REMOTE_URL, hostToken: TOKEN });
 
     const remote = h.states.at(-1)!;
     expect(remote.status).toBe("ready");
@@ -691,7 +691,7 @@ describe("state 的 label（D23）与凭证（D22）", () => {
     // 失败那一支同样：`message` 会被推到界面上、也会进日志，它同样不许带凭证
     h.planStarts(["fail"]);
     await h.controller
-      .save({ mode: "remote", serverUrl: REMOTE_URL, serverToken: TOKEN })
+      .save({ mode: "remote", hostUrl: REMOTE_URL, hostToken: TOKEN })
       .catch(() => {});
     const pushed = JSON.stringify(h.states);
     expect(pushed).not.toContain(TOKEN);
@@ -703,7 +703,7 @@ describe("state 的 label（D23）与凭证（D22）", () => {
 
     await h.controller.save({
       mode: "remote",
-      serverUrl: "wss://user:secret@ai-zen.example.com/ai-zen",
+      hostUrl: "wss://user:secret@ai-zen.example.com/ai-zen",
     });
 
     const state = await h.controller.state();
@@ -727,7 +727,7 @@ describe("保存与重试的竞态（D27）", () => {
     await flush();
     expect(h.layers).toHaveLength(1);
 
-    const saving = h.controller.save({ mode: "remote", serverUrl: REMOTE_URL });
+    const saving = h.controller.save({ mode: "remote", hostUrl: REMOTE_URL });
     await flush();
 
     // 第一轮还挂着：save 一步都不许走（没落盘、没换层）——
@@ -741,7 +741,7 @@ describe("保存与重试的竞态（D27）", () => {
     await saving;
 
     // 落定之后才换层：write 在 dispose / create 之前（D18 的顺序照旧）
-    expect(h.writes).toEqual([{ mode: "remote", serverUrl: REMOTE_URL }]);
+    expect(h.writes).toEqual([{ mode: "remote", hostUrl: REMOTE_URL }]);
     expect(h.layers).toHaveLength(2);
     expect(h.trace).toEqual(["create", "start", "write", "dispose", "create", "start"]);
   });
@@ -753,13 +753,13 @@ describe("保存与重试的竞态（D27）", () => {
     expect(h.timers.pending()).toEqual([1000]);
     const scheduled = h.timers.list();
 
-    await h.controller.save({ mode: "remote", serverUrl: REMOTE_URL });
+    await h.controller.save({ mode: "remote", hostUrl: REMOTE_URL });
 
     // 计时器被清掉（否则到点它会拿着**旧配置**再连一次）
     expect(h.timers.pending()).toEqual([]);
     expect(h.layers).toHaveLength(2);
     expect(h.layers[0]!.disposes).toBe(1);
-    expect(h.layers[1]!.settings.serverUrl).toBe(REMOTE_URL);
+    expect(h.layers[1]!.settings.hostUrl).toBe(REMOTE_URL);
 
     // 哪怕那个旧回调还是被点起来了，也不许再建第三层（换代了）
     scheduled[0]!.run();
@@ -773,7 +773,7 @@ describe("保存与重试的竞态（D27）", () => {
     h.planStarts(["fail"]); // 换过去的那一份连不上
 
     const error: unknown = await h.controller
-      .save({ mode: "remote", serverUrl: REMOTE_URL, serverToken: TOKEN })
+      .save({ mode: "remote", hostUrl: REMOTE_URL, hostToken: TOKEN })
       .catch((thrown: unknown) => thrown);
 
     expect(error).toBeInstanceOf(Error);

@@ -8,6 +8,6 @@
     "@ai-zen/agents-core": "^4.1.0"
   },
   "devDependencies": {
-    "@ai-zen/agents-server": "link:../../../agents/packages/server"
+    "@ai-zen/agents-host": "link:../../../agents/packages/host"
   }
 }

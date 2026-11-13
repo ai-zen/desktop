@@ -2,8 +2,8 @@
  * **图片回显竖切（e2e）**：发一条带图消息 → 重开这段对话 → 按段上的素材引用把字节取回来。
  *
  * 与 `slice.e2e.test.ts` / `attachments.e2e.test.ts` 同口径、同样不跑就跳过（`AI_ZEN_SLICE=1`）：
- * 要 `dist/server.mjs`（随包分发的那份服务端）、一个假的 OpenAI 兼容端点、一个临时数据根。走的
- * 是**生产路径**：`createServerLayer` → `ensureServer`（本机发现文件 / 拉起 / 握手）→ 六个 Service
+ * 要 `dist/host.mjs`（随包分发的那份宿主）、一个假的 OpenAI 兼容端点、一个临时数据根。走的
+ * 是**生产路径**：`createHostLayer` → `ensureHost`（本机发现文件 / 拉起 / 握手）→ 六个 Service
  * → 三段式上传 → `chat.getState`（重开时 render 读的就是它）→ `chat.getAsset`。
  *
  * ## 它钉住的三件事（W13-B 的桌面侧契约）
@@ -11,8 +11,8 @@
  *   1. **消息里只有段上的素材引用**：重开对话拿到的 `image_url` 段，`url` 是空串、带 `__asset_id`
  *      —— 没有 `asset://`、没有 base64、没有 `assets/` 下的绝对路径；
  *   2. **按 id 能把字节取回来**：`thumb` / `original` 两档都回同一份字节，与发上去的那张逐字节相等
- *      （服务端这一波两档等同原图，PRD F-H8）；
- *   3. **取回的这一份是「重开之后」的**：先关掉这一层、按 `run/server.json` 连回来再取 —— 气泡里
+ *      （宿主这一波两档等同原图，PRD F-H8）；
+ *   3. **取回的这一份是「重开之后」的**：先关掉这一层、按 `run/host.json` 连回来再取 —— 气泡里
  *      的图因此不是「这一轮缓存在内存里的产物」，而是从 `assets/` 里重新读出来的。
  */
 
@@ -25,14 +25,14 @@ import { fileURLToPath } from "node:url";
 import type { AddressInfo } from "node:net";
 import type { ChatStreamEvent } from "@ai-zen/desktop-shared";
 import { afterAll, describe, expect, it } from "vitest";
-import { createServerLayer, type ServerLayer } from "./index.js";
+import { createHostLayer, type HostLayer } from "./index.js";
 
-/** 随包分发的服务端（与本文件同包：`packages/main/dist/server.mjs`） */
-const SERVER_ENTRY = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "dist", "server.mjs");
+/** 随包分发的宿主（与本文件同包：`packages/main/dist/host.mjs`） */
+const HOST_ENTRY = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "dist", "host.mjs");
 
 const ENABLED = process.env.AI_ZEN_SLICE === "1";
 
-/** 一张真的 1×1 PNG（70 字节）：字节数能对上，服务端才能按 `image/png` 落盘 */
+/** 一张真的 1×1 PNG（70 字节）：字节数能对上，宿主才能按 `image/png` 落盘 */
 const PNG_BYTES = Uint8Array.from(
   Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==",
@@ -48,11 +48,11 @@ describe.runIf(ENABLED)("图片回显竖切：发图 → 重开 → 按素材 id
   });
 
   it("重开对话之后仍能从 assets/ 取回那一张", { timeout: 180_000 }, async () => {
-    expect(existsSync(SERVER_ENTRY), `先 pnpm build 出 ${SERVER_ENTRY}`).toBe(true);
+    expect(existsSync(HOST_ENTRY), `先 pnpm build 出 ${HOST_ENTRY}`).toBe(true);
 
     const llm = await startMockModel();
     cleanup.push(() => llm.stop());
-    log(`假模型端点：http://127.0.0.1:${llm.port}/v1（这个模型没有视觉能力，图片会被服务端退化成文字）`);
+    log(`假模型端点：http://127.0.0.1:${llm.port}/v1（这个模型没有视觉能力，图片会被宿主退化成文字）`);
 
     const dataRoot = await mkdtemp(join(tmpdir(), "aiz-echo-"));
     cleanup.push(() => rm(dataRoot, { recursive: true, force: true }));
@@ -60,19 +60,19 @@ describe.runIf(ENABLED)("图片回显竖切：发图 → 重开 → 按素材 id
     log(`数据根：${dataRoot}`);
 
     const events = collect();
-    let layer: ServerLayer = createServerLayer({
+    let layer: HostLayer = createHostLayer({
       aiZenDir: dataRoot,
       clientInfo: { name: "@ai-zen/desktop", version: "0.0.0-echo" },
       defaultCwd: () => dataRoot,
       push: events.push,
-      serverEntry: SERVER_ENTRY,
+      hostEntry: HOST_ENTRY,
       log: log,
     });
     cleanup.push(() => layer.dispose());
 
     await layer.start();
     log(`✓ 已连上（握手：${JSON.stringify(layer.hello())}）`);
-    const facts = JSON.parse(await readFile(join(dataRoot, "run", "server.json"), "utf8")) as { pid: number };
+    const facts = JSON.parse(await readFile(join(dataRoot, "run", "host.json"), "utf8")) as { pid: number };
     cleanup.push(() => {
       try {
         process.kill(facts.pid);
@@ -101,18 +101,18 @@ describe.runIf(ENABLED)("图片回显竖切：发图 → 重开 → 按素材 id
     await events.waitFor((event) => event.type === "done", 90_000);
     log(`✓ 发完了：${events.events.map((event) => event.type).join(" → ")}`);
 
-    // ---- 2. 关掉这一层，再按 run/server.json 连回来（= 重开 App / 重开对话）-------
+    // ---- 2. 关掉这一层，再按 run/host.json 连回来（= 重开 App / 重开对话）-------
     layer.dispose();
-    layer = createServerLayer({
+    layer = createHostLayer({
       aiZenDir: dataRoot,
       clientInfo: { name: "@ai-zen/desktop", version: "0.0.0-echo" },
       defaultCwd: () => dataRoot,
       push: () => {},
-      serverEntry: SERVER_ENTRY,
+      hostEntry: HOST_ENTRY,
       log: log,
     });
     await layer.start();
-    log("✓ 重开之后已按 run/server.json 连回同一个服务端");
+    log("✓ 重开之后已按 run/host.json 连回同一个宿主");
 
     const state = (await layer.manager.invokeService(
       "chat",
@@ -148,10 +148,10 @@ describe.runIf(ENABLED)("图片回显竖切：发图 → 重开 → 按素材 id
           `（发上去的是 ${PNG_BYTES.byteLength} 字节，PngSignature=${Array.from(content.bytes.slice(0, 4)).join(",")}）`,
       );
       expect(content.asset.mime).toBe("image/png");
-      // 整份引用下传：声明的字节数与实际字节一致，宽高是服务端从文件头解出来的真值
+      // 整份引用下传：声明的字节数与实际字节一致，宽高是宿主从文件头解出来的真值
       expect(content.asset.bytes).toBe(content.bytes.byteLength);
       expect(content.variant).toBe(variant);
-      // `thumb` 目前等同原图（服务端这一波不做真实缩略图），两档字节逐字相同
+      // `thumb` 目前等同原图（宿主这一波不做真实缩略图），两档字节逐字相同
       expect(Array.from(content.bytes)).toEqual(Array.from(PNG_BYTES));
     }
 
@@ -206,7 +206,7 @@ function collect(): {
 
 /** 一个假的 OpenAI 兼容端点：只回 `/chat/completions` 的流式两片正文 */
 async function startMockModel(): Promise<{ port: number; stop: () => Promise<void> }> {
-  const server: HttpServer = createHttpServer((request, response) => {
+  const host: HttpServer = createHttpServer((request, response) => {
     if (!request.url?.endsWith("/chat/completions")) {
       response.writeHead(404).end();
       return;
@@ -262,11 +262,11 @@ async function startMockModel(): Promise<{ port: number; stop: () => Promise<voi
     });
   });
 
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const port = (server.address() as AddressInfo).port;
+  await new Promise<void>((resolve) => host.listen(0, "127.0.0.1", resolve));
+  const port = (host.address() as AddressInfo).port;
   return {
     port,
-    stop: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    stop: () => new Promise<void>((resolve) => host.close(() => resolve())),
   };
 }
 

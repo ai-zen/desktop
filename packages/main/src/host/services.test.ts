@@ -2,7 +2,7 @@
  * 六个 Service 用例：**render 要的形状 ↔ 契约方法**这两头对不对得上。
  *
  * 每个方法都只有一件事要做（翻译），所以这里的用例也就是一句话一条：给一份契约出参，断言
- * render 拿到的那份、以及发出去的那个方法名与入参。真服务端在这里只会有噪声 —— 它会把这层
+ * render 拿到的那份、以及发出去的那个方法名与入参。真宿主在这里只会有噪声 —— 它会把这层
  * 唯一要验的东西（字段名、参数名、降级到哪一步）藏进一次网络往返里。
  *
  * 有几条是**故意**这么定的，别顺手「修」掉：
@@ -19,12 +19,12 @@ import { describe, expect, it } from "vitest";
 import type { ContractConnection } from "./contract.js";
 import { ChatEventBridge } from "./events.js";
 import {
-  ServerAgentService,
-  ServerChatService,
-  ServerConfigService,
-  ServerConversationService,
-  ServerModelService,
-  ServerWorkspaceService,
+  HostAgentService,
+  HostChatService,
+  HostConfigService,
+  HostConversationService,
+  HostModelService,
+  HostWorkspaceService,
   type ServiceContext,
 } from "./services.js";
 
@@ -146,7 +146,7 @@ describe("workspace", () => {
       ],
     }));
 
-    const workspaces = await new ServerWorkspaceService(h.ctx).list();
+    const workspaces = await new HostWorkspaceService(h.ctx).list();
 
     expect(workspaces).toEqual([
       { id: "ws-1", name: "我的项目", folder: { cwd: "/code/a", exists: true } },
@@ -154,12 +154,12 @@ describe("workspace", () => {
     ]);
   });
 
-  it("create：没填 cwd 时用桌面端的默认目录（那是本机的事实，服务端不可能知道）", async () => {
+  it("create：没填 cwd 时用桌面端的默认目录（那是本机的事实，宿主不可能知道）", async () => {
     const h = harness(() => ({
       workspace: { id: "ws-9", name: "桌面", folder: { cwd: "/home/user/Desktop", exists: true } },
     }));
 
-    const workspace = await new ServerWorkspaceService(h.ctx).create("", "");
+    const workspace = await new HostWorkspaceService(h.ctx).create("", "");
 
     expect(h.calls[0]).toEqual({ method: "workspace.create", params: { cwd: "/home/user/Desktop" } });
     expect(workspace).toEqual({ id: "ws-9", name: "桌面", folder: { cwd: "/home/user/Desktop", exists: true } });
@@ -170,7 +170,7 @@ describe("workspace", () => {
       workspace: { id: "ws-9", name: "甲", folder: { cwd: "/code/a", exists: true } },
     }));
 
-    await new ServerWorkspaceService(h.ctx).create("甲", "/code/a");
+    await new HostWorkspaceService(h.ctx).create("甲", "/code/a");
 
     expect(h.calls[0]).toEqual({
       method: "workspace.create",
@@ -180,7 +180,7 @@ describe("workspace", () => {
 
   it("rename / remove：参数名是契约里的 `workspaceId`", async () => {
     const h = harness();
-    const service = new ServerWorkspaceService(h.ctx);
+    const service = new HostWorkspaceService(h.ctx);
 
     await service.rename("ws-1", "新名字");
     await service.remove("ws-1");
@@ -197,7 +197,7 @@ describe("workspace", () => {
 // ==================================================================
 
 describe("conversation", () => {
-  it("list：name / messageCount / running / modelId 都取自服务端那一项", async () => {
+  it("list：name / messageCount / running / modelId 都取自宿主那一项", async () => {
     const h = harness(() => ({
       conversations: [
         {
@@ -214,7 +214,7 @@ describe("conversation", () => {
       total: 1,
     }));
 
-    const list = await new ServerConversationService(h.ctx).list("ws-1");
+    const list = await new HostConversationService(h.ctx).list("ws-1");
 
     expect(h.calls[0]).toEqual({ method: "conversation.list", params: { workspaceId: "ws-1" } });
     expect(list).toEqual([
@@ -231,7 +231,7 @@ describe("conversation", () => {
     ]);
   });
 
-  it("create：建完再取一次消息（助手定义的预设消息由服务端写进会话）", async () => {
+  it("create：建完再取一次消息（助手定义的预设消息由宿主写进会话）", async () => {
     const preset = { id: "m-system", role: AgentNS.Role.System, content: "你是助手" };
     const h = harness((method) => {
       if (method === "conversation.create") {
@@ -255,7 +255,7 @@ describe("conversation", () => {
       return {};
     });
 
-    const conversation = await new ServerConversationService(h.ctx).create("ws-1", "agent-1");
+    const conversation = await new HostConversationService(h.ctx).create("ws-1", "agent-1");
 
     expect(h.calls.map((call) => call.method)).toEqual(["conversation.create", "message.list"]);
     expect(h.calls[0]?.params).toEqual({ workspaceId: "ws-1", agentId: "agent-1" });
@@ -265,34 +265,17 @@ describe("conversation", () => {
     expect(conversation.messages).toEqual([preset]);
   });
 
-  it("create：目录还没登记成项目 → 抛一句说清原因的话（桌面端还没有提问界面）", async () => {
-    const h = harness(() => ({
-      conversation: null,
-      requiresRegistration: true,
-      questionId: "q1",
-      cwd: "/code/new",
-    }));
-
-    const error: unknown = await new ServerConversationService(h.ctx)
-      .create("ws-1", "agent-1")
-      .catch((thrown: unknown) => thrown);
-
-    expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain("还没登记成项目");
-    expect((error as Error).message).toContain("/code/new");
-  });
-
-  it("read：服务端说 `not_found` 就翻回 `null`（调用方不必认识业务码）", async () => {
+  it("read：宿主说 `not_found` 就翻回 `null`（调用方不必认识业务码）", async () => {
     const h = harness(() => {
       throw new ClientErrorValue("not_found", "这段对话不存在");
     });
 
-    expect(await new ServerConversationService(h.ctx).read("ws-1", "conv-x")).toBeNull();
+    expect(await new HostConversationService(h.ctx).read("ws-1", "conv-x")).toBeNull();
   });
 
   it("remove / rename / setModel：只认会话 id（render 那个 workspaceId 参数不再转发）", async () => {
     const h = harness();
-    const service = new ServerConversationService(h.ctx);
+    const service = new HostConversationService(h.ctx);
 
     await service.remove("ws-1", "conv-1");
     await service.rename("ws-1", "conv-1", "新名字");
@@ -311,7 +294,7 @@ describe("conversation", () => {
 // ==================================================================
 
 describe("agent / model", () => {
-  it("agent.list：子 Agent 不进入口列表（服务端用 `isSubAgent` 明说了）", async () => {
+  it("agent.list：子 Agent 不进入口列表（宿主用 `isSubAgent` 明说了）", async () => {
     const h = harness(() => ({
       agents: [
         { id: "a1", name: "助手甲", description: "会写代码", isSubAgent: false },
@@ -320,7 +303,7 @@ describe("agent / model", () => {
       defaultAgentId: "a1",
     }));
 
-    expect(await new ServerAgentService(h.ctx).list()).toEqual([
+    expect(await new HostAgentService(h.ctx).list()).toEqual([
       { id: "a1", name: "助手甲", description: "会写代码" },
     ]);
   });
@@ -333,7 +316,7 @@ describe("agent / model", () => {
       ],
     }));
 
-    expect(await new ServerModelService(h.ctx).list()).toEqual([{ id: "m1", name: "能用" }]);
+    expect(await new HostModelService(h.ctx).list()).toEqual([{ id: "m1", name: "能用" }]);
   });
 });
 
@@ -342,7 +325,7 @@ describe("agent / model", () => {
 // ==================================================================
 
 describe("config", () => {
-  it("get：密钥是掩码，dataDir 用服务端给的 configDir", async () => {
+  it("get：密钥是掩码，dataDir 用宿主给的 configDir", async () => {
     const h = harness(() => ({
       config: {
         endpoints: [
@@ -354,7 +337,7 @@ describe("config", () => {
       issues: [],
     }));
 
-    const settings = await new ServerConfigService(h.ctx).get();
+    const settings = await new HostConfigService(h.ctx).get();
 
     expect(settings).toEqual({
       endpoints: [
@@ -383,7 +366,7 @@ describe("config", () => {
       return {};
     });
 
-    const report = await new ServerConfigService(h.ctx).update({
+    const report = await new HostConfigService(h.ctx).update({
       endpoints: [{ id: "e1", name: "DeepSeek", baseUrl: "https://api.deepseek.com", apiKey: "sk-…9f3a" }],
     });
 
@@ -411,7 +394,7 @@ describe("config", () => {
       return {};
     });
 
-    await new ServerConfigService(h.ctx).update({
+    await new HostConfigService(h.ctx).update({
       endpoints: [{ id: "e1", name: "DeepSeek", baseUrl: "https://api.deepseek.com", apiKey: "sk-new" }],
     });
 
@@ -419,10 +402,10 @@ describe("config", () => {
     expect(save?.params).toMatchObject({ endpoint: { apiKey: "sk-new" } });
   });
 
-  it("update：服务端已经没有的端点如实回报（不凭空加回来）", async () => {
+  it("update：宿主已经没有的端点如实回报（不凭空加回来）", async () => {
     const h = harness(() => ({ config: { endpoints: [], defaults: {}, configDir: "/d" }, issues: [] }));
 
-    const report = await new ServerConfigService(h.ctx).update({
+    const report = await new HostConfigService(h.ctx).update({
       endpoints: [{ id: "gone", name: "x", baseUrl: "y", apiKey: "k" }],
     });
 
@@ -433,7 +416,7 @@ describe("config", () => {
   it("update：空的默认值不写，但要说出来（窄方法只收非空 id）", async () => {
     const h = harness();
 
-    const report = await new ServerConfigService(h.ctx).update({ defaultModel: "", defaultAgent: "" });
+    const report = await new HostConfigService(h.ctx).update({ defaultModel: "", defaultAgent: "" });
 
     expect(report.skippedDefaults).toEqual(["defaultModel", "defaultAgent"]);
     expect(h.calls).toEqual([]);
@@ -442,7 +425,7 @@ describe("config", () => {
   it("update：默认值走 `config.setDefaults`", async () => {
     const h = harness();
 
-    await new ServerConfigService(h.ctx).update({ defaultModel: "m2", defaultAgent: "a2" });
+    await new HostConfigService(h.ctx).update({ defaultModel: "m2", defaultAgent: "a2" });
 
     expect(h.calls).toEqual([
       { method: "config.setDefaults", params: { defaults: { defaultModel: "m2", defaultAgent: "a2" } } },
@@ -476,7 +459,7 @@ describe("chat", () => {
       };
     });
 
-    await new ServerChatService(h.ctx).send("ws-1", CONVERSATION, "你好");
+    await new HostChatService(h.ctx).send("ws-1", CONVERSATION, "你好");
 
     expect(h.calls[0]).toEqual({
       method: "conversation.send",
@@ -494,7 +477,7 @@ describe("chat", () => {
       throw new ClientErrorValue("busy", "这段对话正在跑一轮");
     });
 
-    await new ServerChatService(h.ctx).send("ws-1", CONVERSATION, "你好");
+    await new HostChatService(h.ctx).send("ws-1", CONVERSATION, "你好");
 
     expect(h.events).toEqual([]);
   });
@@ -504,7 +487,7 @@ describe("chat", () => {
       throw new ClientErrorValue("question_pending", "这个问题还没回答，这段对话暂时不能发消息");
     });
 
-    await new ServerChatService(h.ctx).send("ws-1", CONVERSATION, "你好");
+    await new HostChatService(h.ctx).send("ws-1", CONVERSATION, "你好");
 
     const error = h.events[0];
     if (error?.type !== "error") throw new Error("应当推一条 error");
@@ -515,7 +498,7 @@ describe("chat", () => {
 
   it("abort：发 `conversation.abort`（收尾照常走 run.state）", async () => {
     const h = harness();
-    await new ServerChatService(h.ctx).abort(CONVERSATION);
+    await new HostChatService(h.ctx).abort(CONVERSATION);
     expect(h.calls[0]).toEqual({ method: "conversation.abort", params: { conversationId: CONVERSATION } });
   });
 
@@ -527,7 +510,7 @@ describe("chat", () => {
       data: "AQIDBA==",
     }));
 
-    const content = await new ServerChatService(h.ctx).getAsset("a1", "thumb");
+    const content = await new HostChatService(h.ctx).getAsset("a1", "thumb");
 
     expect(h.calls[0]).toEqual({ method: "asset.get", params: { assetId: "a1", variant: "thumb" } });
     // 整份 `AssetRef` 下传：类型、字节数、文件名、宽高都在（R76：界面按宽高先摆占位框）
@@ -540,7 +523,7 @@ describe("chat", () => {
       height: 1,
     });
     expect([content.asset.width, content.asset.height]).toEqual([1, 1]);
-    // 实际给的档也一并下去（`thumb` 目前等同原图，服务端如实回报）
+    // 实际给的档也一并下去（`thumb` 目前等同原图，宿主如实回报）
     expect(content.variant).toBe("thumb");
     expect(Array.from(content.bytes)).toEqual([1, 2, 3, 4]);
   });
@@ -552,39 +535,42 @@ describe("chat", () => {
       data: "AQIDBA==",
     }));
 
-    await new ServerChatService(h.ctx).getAsset("a1");
+    await new HostChatService(h.ctx).getAsset("a1");
 
     expect(h.calls[0]).toEqual({ method: "asset.get", params: { assetId: "a1", variant: "thumb" } });
   });
 
-  it("getAsset：服务端说 not_found 就把那句话原样抛上去（不降级成空字节）", async () => {
+  it("getAsset：宿主说 not_found 就把那句话原样抛上去（不降级成空字节）", async () => {
     const h = harness(() => {
       throw new ClientErrorValue("not_found", "这份素材已经不在了");
     });
 
-    await expect(new ServerChatService(h.ctx).getAsset("gone")).rejects.toThrow("已经不在了");
+    await expect(new HostChatService(h.ctx).getAsset("gone")).rejects.toThrow("已经不在了");
   });
 
-  it("getState：先状态后消息，并把锚点记成最后一条的 id（重连补拉的 after）", async () => {
+  it("getState：一次调用拿齐现场与消息，锚点记成最后一条的 id（重连补拉的 after）", async () => {
     const messages = [
       { id: "m1", role: AgentNS.Role.User, content: "问题" },
       { id: "m2", role: AgentNS.Role.Assistant, content: "写了一半" },
     ];
-    const h = harness((method) => {
+    const h = harness((method, params) => {
       if (method === "conversation.state") {
-        return { state: wireConversationState({ status: "running", generation: { phase: "generating", since: "…", chars: 4 } }) };
-      }
-      if (method === "message.list") {
-        return { conversationId: CONVERSATION, anchor: null, messages };
+        // 消息跟现场同一次拿：两份快照之间不留缝
+        expect(params).toEqual({ conversationId: CONVERSATION, includeMessages: true });
+        return {
+          state: wireConversationState({ status: "running", generation: { phase: "generating", since: "…", chars: 4 } }),
+          messages,
+        };
       }
       return {};
     });
 
-    const state = await new ServerChatService(h.ctx).getState("ws-1", CONVERSATION);
+    const state = await new HostChatService(h.ctx).getState("ws-1", CONVERSATION);
 
-    expect(h.calls.map((call) => call.method)).toEqual(["conversation.state", "message.list"]);
+    // 不再补一跳 `message.list`：消息就跟着 `conversation.state` 回来
+    expect(h.calls.map((call) => call.method)).toEqual(["conversation.state"]);
     expect(state.messages).toEqual(messages);
-    // 服务端的现场状态原样整份回来：`run` 在跑，上下文 / 思考 / 用量 / 问题 / 状态栏都在
+    // 宿主的现场状态原样整份回来：`run` 在跑，上下文 / 思考 / 用量 / 问题 / 状态栏都在
     expect(state.run.status).toBe("running");
     for (const field of ["context", "thinking", "usage", "questions", "statusBlocks"] as const) {
       expect(state[field]).toEqual(wireConversationState()[field]);

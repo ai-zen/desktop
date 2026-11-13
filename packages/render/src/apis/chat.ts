@@ -1,5 +1,5 @@
 /**
- * chat api — 聊天（对应 main ServerChatService）。
+ * chat api — 聊天（对应 main HostChatService）。
  * 发送消息 + 订阅流式推送（chat:push 单通道）。
  */
 
@@ -34,23 +34,23 @@ export function sendChatMessage(
 }
 
 /**
- * 取一份历史图片的字节（`asset.get`，main 转发给服务端）。
+ * 取一份历史图片的字节（`asset.get`，main 转发给宿主）。
  *
  * 返回的是整份回包（`asset` 里的 mime / 宽高 / 名字 / 字节数都在，`variant` 是实际给的档）加字节
  * 本体，调用方自己造 `blob:` URL（`stores/assetImages.ts` 管这件事：同一份素材一屏只取一次、
- * 用完回收）。这里不带任何缓存与重试：取不到就抛（`InvokeServerError`），与其余调用同一口径。
+ * 用完回收）。这里不带任何缓存与重试：取不到就抛（`InvokeHostError`），与其余调用同一口径。
  */
 export function getChatAsset(assetId: string, variant: AssetVariant): Promise<AssetContent> {
   return invokeService("chat", "getAsset", assetId, variant);
 }
 
-/** 中止生成（main 让服务端取消本轮，保留已生成部分，事件流自然收尾） */
+/** 中止生成（main 让宿主取消本轮，保留已生成部分，事件流自然收尾） */
 export function abortChatMessage(conversationId: string): Promise<void> {
   return invokeService("chat", "abort", conversationId);
 }
 
 /**
- * 读取会话现场状态（服务端 `conversation.state` 原样 + 整段消息）。
+ * 读取会话现场状态（宿主 `conversation.state` 原样 + 整段消息）。
  *
  * 「在不在跑」不另给一个布尔：就是 `run.status === "running"`。上下文、思考档位、用量、挂着的
  * 问题、状态栏那几块全在这个回包里，谁需要谁读。

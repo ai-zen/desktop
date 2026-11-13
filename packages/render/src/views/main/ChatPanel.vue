@@ -58,7 +58,7 @@
 
         <!-- 正在生成标识（v-show：DOM 常驻，仅切换 display，保持子节点顺序稳定）。
              只在主对话视图显示：子 Agent 的忙碌由它标签上的圆点表示（与 TUI 同一取舍）。
-             那行字是服务端给的生成六态（`stream` 事件），render 不自己猜「在想还是在等工具」 -->
+             那行字是宿主给的生成六态（`stream` 事件），render 不自己猜「在想还是在等工具」 -->
         <div v-show="chatStore.streaming && !chatStore.activeAgentId" class="streaming-hint">
           <span class="dot"></span>
           {{ chatStore.streamingHint || "正在思考..." }}
@@ -81,7 +81,7 @@
               :value="m.id"
             />
           </el-select>
-          <!-- 选图：文件选择器在 render 里（`File` 是本机能力，服务端/主进程都看不到用户选了什么） -->
+          <!-- 选图：文件选择器在 render 里（`File` 是本机能力，宿主/主进程都看不到用户选了什么） -->
           <el-button
             size="small"
             text
@@ -101,7 +101,7 @@
           />
         </div>
         <!-- 待发送的附件：缩略图 + 名字，点 × 移除。发送成功后清空。
-             尺寸/张数上限不在这里拦：那一层在 main 的上传里（服务端握手给的数字），
+             尺寸/张数上限不在这里拦：那一层在 main 的上传里（宿主握手给的数字），
              越限的那张会带着一句原因跟着气泡上屏。 -->
         <div v-if="pending.length > 0" class="pending-attachments">
           <div v-for="item in pending" :key="item.key" class="pending-attachment">
@@ -191,7 +191,7 @@ const fileInputRef = ref<HTMLInputElement | null>(null);
  * —— 剪贴板里的图本来就没有路径）。`previewUrl` 只是给人看的缩略图，用完要释放。
  */
 interface PendingAttachment {
-  /** 本地键（v-for 与「移除」用；不是服务端的东西） */
+  /** 本地键（v-for 与「移除」用；不是宿主的东西） */
   key: number;
   /** 展示用的名字（剪贴板图片是自己给的 `image.png` 这类） */
   name: string;
@@ -209,8 +209,8 @@ let nextPendingKey = 1;
 /**
  * 把一批 `File`（文件选择器 / 剪贴板给的）读成待发送的附件。
  *
- * 不在这里判上限（张数、单张大小）：那几个数字是服务端握手给的，越限的那张会带着一句原因跟着
- * 气泡上屏 —— 在这里提前拦一道就是第二份规则，它一旦与服务端漂了，用户就看不到真的原因了。
+ * 不在这里判上限（张数、单张大小）：那几个数字是宿主握手给的，越限的那张会带着一句原因跟着
+ * 气泡上屏 —— 在这里提前拦一道就是第二份规则，它一旦与宿主漂了，用户就看不到真的原因了。
  */
 async function addFiles(files: readonly File[]): Promise<void> {
   for (const file of files) {
@@ -279,7 +279,7 @@ function onPaste(event: ClipboardEvent): void {
 const activeConversationId = computed(() => conversationStore.activeConversationId);
 
 const currentModelId = computed(() => {
-  // 当前会话的 modelId（summary 上有）。取不到就空着 —— 模型解析是服务端的三级链
+  // 当前会话的 modelId（summary 上有）。取不到就空着 —— 模型解析是宿主的三级链
   // （会话级覆盖 > Agent 定义 > 全局默认），客户端没有第四档：拿「配置里第一个模型」
   // 顶上去，等于把「这段会话在用什么」换成一个没人验证过的猜测
   return conversationStore.activeConversation?.modelId ?? "";
@@ -305,7 +305,7 @@ interface AgentTabItem {
 /**
  * 栏目条目：主对话 + 各子 Agent。
  *
- * 标签文字直接印服务端给的 `index`，本地不数 —— 切到某个子 Agent、或中途接上连接时
+ * 标签文字直接印宿主给的 `index`，本地不数 —— 切到某个子 Agent、或中途接上连接时
  * 本地都没数过它，自己数就一定对不上。没有子 Agent 时返回空数组 = 栏目不存在（主对话就是全部）。
  */
 const agentTabs = computed<AgentTabItem[]>(() => {
@@ -486,7 +486,7 @@ async function handleSend() {
   // 失败/早退一律不动输入框（上面什么都没做）：字还在，用户按一次发送就能重发。
 }
 
-/** 停止生成：让服务端取消本轮，保留已生成部分，done 事件结束流式态 */
+/** 停止生成：让宿主取消本轮，保留已生成部分，done 事件结束流式态 */
 async function handleStop() {
   await chatStore.abort();
 }

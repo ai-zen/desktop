@@ -4,7 +4,7 @@
  *
  * ## 为什么要有这个对象
  *
- * 改动前 `app.ts` 上是 `private readonly server: ServerLayer = createServerLayer({…})`：**字段
+ * 改动前 `app.ts` 上是 `private readonly host: HostLayer = createHostLayer({…})`：**字段
  * 初始化，永远一份**。那种写法里「换个连接」只能靠重启 App，而需求是「面板上切本地 / 远程，
  * 立刻生效」。于是「当前是哪一层」必须收成一个有状态的对象 —— 但它不能待在 `app.ts` 里：
  * 那里有 electron（窗口、`app.getPath`、`webContents.send`），放进那个文件就等于「换层要不要
@@ -32,7 +32,7 @@
  *
  * ## 重试必须**整层重建**
  *
- * 不是「再 `start()` 一次」：`server/events.ts` 的 `ChatEventBridge.start()` 把
+ * 不是「再 `start()` 一次」：`host/events.ts` 的 `ChatEventBridge.start()` 把
  * `this.unsubscribeOpen = …` **直接覆盖**而不会先退订 —— 同一个桥重复 `start()` 会漏掉上一条
  * `onOpen` 订阅（那条订阅管的是「连接换了一条要重挂监听」，掉了就永远收不到，界面安静地不动）。
  * 所以每一次尝试都是 `dispose()` 旧层 → `build()` → `layer.start()`：新层是新的桥、新的连接，
@@ -53,7 +53,7 @@
  *   · `save()` 先**等**在飞的那一次尝试落定（成功或失败都算），再去换层 —— 不等的话，旧的尝试
  *     回来时会把它自己那一层写进 `current`，而我们刚建的那层就没人 `dispose()` 了；
  *   · 换层之前先**取消挂起的重试计时器**：不清的话，换完层它到点还会拿**旧配置**再连一次
- *     （用户已经选了别的服务端，进程却暗中去连上一台）。
+ *     （用户已经选了别的宿主，进程却暗中去连上一台）。
  *
  * 落盘失败时这两件事一件都不做：连接与计时器原样留着（旧配置该继续连就继续连）。
  *
@@ -63,7 +63,7 @@
  *
  *   · 落盘失败就**不许动连接**。否则界面上写着「远程」，实际还连着本地那条 —— 这是最难查的
  *     一种状态：看起来什么都没发生，而用户以为已经切过去了；
- *   · 旧层必须先 `dispose()`：一条连接活着的 `ServerConnection` 会继续收它那台服务端的事件，
+ *   · 旧层必须先 `dispose()`：一条连接活着的 `HostConnection` 会继续收它那台宿主的事件，
  *     不关掉的话 `chat:push` 会同时来自两台机器（消息串台）；
  *   · `start()` 必须在建之后：`events.watch` 是连接级的订阅，晚一步就会漏掉第一条阶段事件。
  *
@@ -81,7 +81,7 @@ import type {
   ConnectionState,
 } from "@ai-zen/desktop-shared";
 import { CONNECTION_LANGUAGE } from "../language.js";
-import type { LayerHello, ServerLayerOptions } from "../server/index.js";
+import type { LayerHello, HostLayerOptions } from "../host/index.js";
 // 措辞与映射全部来自包（`connection-settings.ts`）：`labelOf` / `describe` / `connectionConfigOf`
 // 在本仓只是别名，没有第二份实现 —— CLI 与桌面端说的是同一句话
 import {
@@ -129,8 +129,8 @@ type AttemptOutcome = { ok: true } | { ok: false; message: string };
 /**
  * 控制器眼里的「一层」：只有三件事。
  *
- * 刻意比 `ServerLayer` 更窄（`manager` 只留 `invokeService` 的形状），这样用例可以拿一个
- * 记事本似的假层顶上去 —— 而真件（`createServerLayer()` 的返回值）在结构上本来就满足它，
+ * 刻意比 `HostLayer` 更窄（`manager` 只留 `invokeService` 的形状），这样用例可以拿一个
+ * 记事本似的假层顶上去 —— 而真件（`createHostLayer()` 的返回值）在结构上本来就满足它，
  * 不需要断言、不需要适配。
  */
 export interface ConnectionLayer {
@@ -138,7 +138,7 @@ export interface ConnectionLayer {
   manager: {
     invokeService: (service: string, method: string, ...args: unknown[]) => Promise<unknown>;
   };
-  /** 连上服务端并开始收事件 */
+  /** 连上宿主并开始收事件 */
   start: () => Promise<void>;
   /**
    * 握手回执里的身份（`ready` 里那两位）。`start()` 成功之后才有；拿不到就 `null`。
@@ -163,8 +163,8 @@ export interface ConnectionControllerOptions {
   defaultCwd: () => string;
   /** `chat:push` 的出口 */
   push: (event: ChatStreamEvent) => void;
-  /** 建一层（生产 = `createServerLayer`，用例 = 假层 + 计数器） */
-  createLayer: (options: ServerLayerOptions) => ConnectionLayer;
+  /** 建一层（生产 = `createHostLayer`，用例 = 假层 + 计数器） */
+  createLayer: (options: HostLayerOptions) => ConnectionLayer;
   /** 读配置（生产 = `settings.ts` 的 `readSettings`，用例 = 一个内存变量）。`null` = 没配过 */
   readSettings: () => Promise<ConnectionSettings | null>;
   /** 写配置（生产 = `settings.ts` 的 `writeSettings`，用例 = 计数 + 可控失败） */
@@ -234,7 +234,7 @@ export class ConnectionController {
    * `void this.connection.start()` 再加一道 `.catch` 兜底日志。
    *
    * **没配过就连都不连**（`unset`）：以前这里用默认值 `{ mode: "local" }` 兜底，于是「第一次
-   * 启动」与「用户选过本地」变成同一格 —— 应用一启动就去拉起一个本地服务端，引导屏永远出不来。
+   * 启动」与「用户选过本地」变成同一格 —— 应用一启动就去拉起一个本地宿主，引导屏永远出不来。
    * 现在「没配过」是一个独立的状态，界面据此摆出首启的引导屏。
    */
   async start(): Promise<void> {
@@ -356,22 +356,22 @@ export class ConnectionController {
    *     处），非法就回一句人话；
    *   · 凭证：候选值优先，没给就退回 `<aiZenDir>/run/token`（连本机实例是最常见的情形，而远端那串
    *     凭证与本机文件毫无关系）；
-   *   · `Client.connect()` 返回时握手已经做完，`client.hello` 就是服务端自报的身份，拿到就立刻
-   *     `close()` —— 试连不该在服务端那边留下一条常驻连接。
+   *   · `Client.connect()` 返回时握手已经做完，`client.hello` 就是宿主自报的身份，拿到就立刻
+   *     `close()` —— 试连不该在宿主那边留下一条常驻连接。
    *
-   * 失败一律不抛：`ClientError.message` 已经是能上屏的那句话（服务端按连接语言渲染好的，或本地
+   * 失败一律不抛：`ClientError.message` 已经是能上屏的那句话（宿主按连接语言渲染好的，或本地
    * 那几条文案），这里再包一层只会多一句没人要看的话。
    *
    * 计时用 `Date.now()` 差：面板上那个「连上了（120ms）」没有秒表也不需要更准的东西。
    */
   async test(candidate: ConnectionTestCandidate): Promise<ConnectionProbe> {
-    const raw = typeof candidate?.serverUrl === "string" ? candidate.serverUrl : "";
+    const raw = typeof candidate?.hostUrl === "string" ? candidate.hostUrl : "";
     const startedAt = Date.now();
     let client: Client | null = null;
     try {
-      // 候选值没给就用本机那份（空串的意思就是「没带凭证，让服务端拒绝我」——那句话由它渲染）
+      // 候选值没给就用本机那份（空串的意思就是「没带凭证，让宿主拒绝我」——那句话由它渲染）
       const token =
-        candidate?.serverToken?.trim() || (await readLocalToken(this.options.aiZenDir)) || "";
+        candidate?.hostToken?.trim() || (await readLocalToken(this.options.aiZenDir)) || "";
       client = await Client.connect({
         target: raw,
         token,
@@ -381,13 +381,13 @@ export class ConnectionController {
       });
       const hello = client.hello;
       if (!hello) {
-        return { ok: false, message: "连上了服务端，但它的握手回执里没有身份（拿不到协议版本）" };
+        return { ok: false, message: "连上了宿主，但它的握手回执里没有身份（拿不到协议版本）" };
       }
       const protocol = Number.parseInt(hello.protocolVersion, 10);
       return {
         ok: true,
         protocol: Number.isFinite(protocol) ? protocol : 0,
-        version: hello.serverVersion,
+        version: hello.hostVersion,
         elapsedMs: Date.now() - startedAt,
       };
     } catch (error) {
@@ -415,7 +415,7 @@ export class ConnectionController {
    * 收摊（App 退出时调）：关掉当前那一层，之后不再持有任何连接。
    *
    * **计时器必须在这里清掉**：进程要退了，一个还挂着的 `setTimeout`（最长 5 秒）会把事件循环
-   * 撑着 —— `will-quit` 之后又醒过来一次，去连一个用户已经关掉的窗口后面的服务端。
+   * 撑着 —— `will-quit` 之后又醒过来一次，去连一个用户已经关掉的窗口后面的宿主。
    */
   dispose(): void {
     this.disposed = true;
@@ -490,7 +490,7 @@ export class ConnectionController {
     // 连上了，但这一轮已经被换掉（比如用户在这期间点了保存）：状态归新一轮管，这里不抢
     if (this.stale(generation)) return { ok: true };
 
-    // 服务端自报的身份：拿不到就填 `0` / `""`（连上了但不知道自己连的是哪一版，比编一个数字诚实）
+    // 宿主自报的身份：拿不到就填 `0` / `""`（连上了但不知道自己连的是哪一版，比编一个数字诚实）
     const hello = layer.hello?.() ?? null;
     this.setState({
       status: "ready",
@@ -576,7 +576,7 @@ export class ConnectionController {
    * 读配置（`readSettings` 的契约是不抛：注入实现真抛了也按「没配过」处理，别让启动挂住）。
    *
    * 这里**不再**回退成 `{ mode: "local" }`：那种兜底会把一次读盘失败变成「用户选过本地」，
-   * 于是应用默默去拉起一个本地服务端，而真相是磁盘上那份读不出来。`null` 让界面把选择权交回
+   * 于是应用默默去拉起一个本地宿主，而真相是磁盘上那份读不出来。`null` 让界面把选择权交回
    * 用户（首启屏）。
    */
   private async readSettings(): Promise<ConnectionSettings | null> {
@@ -599,7 +599,7 @@ export class ConnectionController {
    * `save()` / `attempt()` 里才能一眼读完；拆进两个私有方法里，下一个人只会看到两处
    * 「好像都能调」。
    *
-   * 新层在 `start()` 失败时**照样留在 `current` 上**：它的 `ServerConnection` 每次取用都会
+   * 新层在 `start()` 失败时**照样留在 `current` 上**：它的 `HostConnection` 每次取用都会
    * 判活重连（那是包里的不变式），于是「这次没连上」不会把这个进程永久钉在旧层上 ——
    * 而把 `current` 置空只会让之后每一次 IPC 都报「连接尚未建立」，比原来的错更难查。
    *
@@ -614,14 +614,14 @@ export class ConnectionController {
 
   /** 造一层（不 start：调用方决定什么时候连上） */
   private build(settings: ConnectionSettings): ConnectionLayer {
-    const { serverUrl, serverToken } = connectionConfigOf(settings);
+    const { hostUrl, hostToken } = connectionConfigOf(settings);
     return this.options.createLayer({
       aiZenDir: this.options.aiZenDir,
       clientInfo: this.options.clientInfo,
       defaultCwd: this.options.defaultCwd,
       push: this.options.push,
-      serverUrl,
-      serverToken,
+      hostUrl,
+      hostToken,
     });
   }
 }
@@ -642,7 +642,7 @@ export class ConnectionController {
  */
 function reasonOf(error: unknown, settings: ConnectionSettings): string {
   const message = messageOf(error);
-  const token = settings.serverToken?.trim();
+  const token = settings.hostToken?.trim();
   if (!token) return message;
   return message.split(token).join("***");
 }

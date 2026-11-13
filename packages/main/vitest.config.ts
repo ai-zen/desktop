@@ -2,10 +2,10 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
 /**
- * 与 agents 仓的 `server` / `client` 同口径：**保持默认隔离**（每个用例自己搭自己的假件）。
+ * 与 agents 仓的 `host` / `client` 同口径：**保持默认隔离**（每个用例自己搭自己的假件）。
  *
  * 只收 `src` 下的 `*.test.ts`：这一层的验收手段是「假连接 + 计数器」，用例文件贴着被测模块放
- * （`src/server/*.test.ts`），不做单独的 test 目录 —— 改了哪块，旁边就有它的用例。
+ * （`src/host/*.test.ts`），不做单独的 test 目录 —— 改了哪块，旁边就有它的用例。
  *
  * ## 为什么要一条别名
  *

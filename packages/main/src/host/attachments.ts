@@ -9,7 +9,7 @@
  *
  *   1. **把 render 的 `AttachmentInput` 翻成库要的 `AssetSource`**（字节那条路，不是文件路径：
  *      桌面端剪贴板图片根本没有路径）；
- *   2. **把「上传阶段的失败」与「服务端给的结局」合到同一份逐张账上**，让界面按用户摆放的顺序
+ *   2. **把「上传阶段的失败」与「宿主给的结局」合到同一份逐张账上**，让界面按用户摆放的顺序
  *      一张一句地说清，而不是一部分静默丢掉。
  *
  * ## 失败不往上抛
@@ -27,13 +27,13 @@ import { problemOf } from "./problem.js";
 export interface UploadedAsset {
   /** 在 `files` 里的下标（0 起） */
   index: number;
-  /** 服务端给的素材 id（进 `conversation.send` 的就是它） */
+  /** 宿主给的素材 id（进 `conversation.send` 的就是它） */
   assetId: string;
-  /** 名字（服务端回的 ref 上有；界面说「哪一张」用它） */
+  /** 名字（宿主回的 ref 上有；界面说「哪一张」用它） */
   name: string | null;
 }
 
-/** 一张没能上传的附件（原因来自客户端库/服务端，原样上屏） */
+/** 一张没能上传的附件（原因来自客户端库/宿主，原样上屏） */
 export interface FailedAsset {
   index: number;
   name: string | null;
@@ -50,7 +50,7 @@ export interface AttachmentUpload {
 /**
  * 把一批字节传上去。
  *
- * 上限（20MB/张、4 张/条）不在这一层重写：库从握手结果里取服务端那个数，服务端说多少就是多少。
+ * 上限（20MB/张、4 张/条）不在这一层重写：库从握手结果里取宿主那个数，宿主说多少就是多少。
  * 超出的那几张按库的口径逐张进 `failures`（码 `asset_count_exceeded`），前 4 张照常上传 ——
  * 与界面「逐张说明」是同一条线。
  */
@@ -96,7 +96,7 @@ export async function uploadAttachments(
 /**
  * 一个上传失败 → 它的事实。
  *
- * `AssetFailure.error` 是客户端库/服务端那个 `ClientError`（带码、参数、已渲染的句子与 detail），
+ * `AssetFailure.error` 是客户端库/宿主那个 `ClientError`（带码、参数、已渲染的句子与 detail），
  * 原样搬就行了 —— 不在这里只取 `message`，那是把另外三样丢掉。
  */
 function failureProblem(failure: AssetFailure): ProblemFact {
@@ -104,15 +104,15 @@ function failureProblem(failure: AssetFailure): ProblemFact {
 }
 
 /**
- * 上传阶段的结果 + 服务端回的结局 → 界面要的**逐张**结局（顺序 = 用户摆放的顺序）。
+ * 上传阶段的结果 + 宿主回的结局 → 界面要的**逐张**结局（顺序 = 用户摆放的顺序）。
  *
  * 两边各说一半：
- *   · 传上去的那几张，怎么走的由服务端说（文件引用 / 内联 / 退化成文字 / 发的时候被丢）：
- *     服务端那份结局（`deliveredAs` + `section` + `problem`）整块搬，只补一个名字；
- *   · 没传上去的那几张，服务端根本没见过它们，由上传阶段的失败补上（`dropped` + 原因）——
+ *   · 传上去的那几张，怎么走的由宿主说（文件引用 / 内联 / 退化成文字 / 发的时候被丢）：
+ *     宿主那份结局（`deliveredAs` + `section` + `problem`）整块搬，只补一个名字；
+ *   · 没传上去的那几张，宿主根本没见过它们，由上传阶段的失败补上（`dropped` + 原因）——
  *     那时没有内容段（`section: null`）。
  *
- * 服务端没为某个 assetId 给结局时**不编**：那是它没说的事，编一句「已发送」就是假成功。
+ * 宿主没为某个 assetId 给结局时**不编**：那是它没说的事，编一句「已发送」就是假成功。
  */
 export function mergeAttachmentOutcomes(
   upload: AttachmentUpload,

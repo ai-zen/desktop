@@ -83,8 +83,8 @@ export const useConversationStore = defineStore("conversation", {
      *
      * ## 为什么是 async、为什么调用方**必须** await
      *
-     * `chatStore.activate()` 要跟服务端要一次快照（`attach` + `snapshot` 两个往返），它会抛
-     * —— 会话在盘上已被删、连接断了、服务端报错。以前这里是个同步函数，`activate()` 的
+     * `chatStore.activate()` 要跟宿主要一次快照（`attach` + `snapshot` 两个往返），它会抛
+     * —— 会话在盘上已被删、连接断了、宿主报错。以前这里是个同步函数，`activate()` 的
      * promise 没人接：失败既不提示、也没人知道，界面上留下的是「左边选中了、消息区空白」，
      * 而那正是**最容易**被当成「这段会话本来就没有消息」的样子（甚至会被当成「消息丢了」）。
      *

@@ -1,24 +1,24 @@
 /**
- * `createServerLayer` 用例：**组装**这件事本身。
+ * `createHostLayer` 用例：**组装**这件事本身。
  *
  * 它不验握手、也不验拉起进程（那两件事在客户端库里，有自己的用例）。这里要钉的是本文件那二十行
  * 的判断：
  *
- *   · 有显式地址 ⇒ 递给 `ensureServer` 的是 `mode: "remote"`（**只连不拉起**那条路）；
+ *   · 有显式地址 ⇒ 递给 `ensureHost` 的是 `mode: "remote"`（**只连不拉起**那条路）；
  *   · 没有 ⇒ `mode: "local"`（发现文件 + 本机凭证 + 需要时拉起随包分发的那份）；
  *   · 握手回执里的协议版本是字符串，界面要的是数字（`helloOf` 那张映射）；
  *   · `dispose()` 之后 `manager` 不能再发请求（连接已经关了，不该还发得出去）；
  *   · `invokeService` 的六个键真的是 render 的调用面（转发到契约方法名上）。
  */
 
-import type { Client, EnsureServerOptions, EnsureServerResult, ServerHelloResult } from "@ai-zen/agents-client";
+import type { Client, EnsureHostOptions, EnsureHostResult, HostHelloResult } from "@ai-zen/agents-client";
 import { describe, expect, it } from "vitest";
 import type { ChatStreamEvent } from "@ai-zen/desktop-shared";
-import { createServerLayer } from "./index.js";
+import { createHostLayer } from "./index.js";
 
-const HELLO: ServerHelloResult = {
-  language: "zh" as ServerHelloResult["language"],
-  serverVersion: "0.1.0-alpha.0",
+const HELLO: HostHelloResult = {
+  language: "zh" as HostHelloResult["language"],
+  hostVersion: "0.1.0-alpha.0",
   protocolVersion: "1",
   startedAt: "2026-01-01T00:00:00.000Z",
   capabilities: ["F-C1"],
@@ -26,14 +26,14 @@ const HELLO: ServerHelloResult = {
 };
 
 interface Harness {
-  layer: ReturnType<typeof createServerLayer>;
-  /** `ensureServer` 收到的入参 */
-  ensureCalls: EnsureServerOptions[];
+  layer: ReturnType<typeof createHostLayer>;
+  /** `ensureHost` 收到的入参 */
+  ensureCalls: EnsureHostOptions[];
   /** 这一层发出去的契约调用 */
   calls: Array<{ method: string; params: unknown }>;
   /** 上传分片的二进制帧（`sendBinary` 收到的） */
   frames: Uint8Array[];
-  /** 拉起服务端被调了几次 */
+  /** 拉起宿主被调了几次 */
   spawns: () => number;
   /** 连接被关了吗 */
   closed: () => boolean;
@@ -41,9 +41,9 @@ interface Harness {
 }
 
 function harness(
-  options: { serverUrl?: string; serverToken?: string; hello?: ServerHelloResult | null } = {},
+  options: { hostUrl?: string; hostToken?: string; hello?: HostHelloResult | null } = {},
 ): Harness {
-  const ensureCalls: EnsureServerOptions[] = [];
+  const ensureCalls: EnsureHostOptions[] = [];
   const calls: Array<{ method: string; params: unknown }> = [];
   const frames: Uint8Array[] = [];
   const state = { spawns: 0, closed: false, events: [] as ChatStreamEvent[] };
@@ -73,7 +73,7 @@ function harness(
           acceptedAt: "2026-01-01T00:00:00.000Z",
         };
       }
-      // 受理之后 `beginTurn` 要回服务端取库里那条用户消息
+      // 受理之后 `beginTurn` 要回宿主取库里那条用户消息
       if (method === "message.list") {
         return {
           conversationId: "conv-1",
@@ -98,19 +98,19 @@ function harness(
     },
   } as unknown as Client;
 
-  const layer = createServerLayer({
+  const layer = createHostLayer({
     aiZenDir: "/tmp/aiz-desktop-layer",
     clientInfo: { name: "@ai-zen/desktop", version: "0.0.0-test" },
     defaultCwd: () => "/home/user/Desktop",
     push: (event) => state.events.push(event),
-    ...(options.serverUrl ? { serverUrl: options.serverUrl } : {}),
-    ...(options.serverToken ? { serverToken: options.serverToken } : {}),
-    spawnServer: async () => {
+    ...(options.hostUrl ? { hostUrl: options.hostUrl } : {}),
+    ...(options.hostToken ? { hostToken: options.hostToken } : {}),
+    spawnHost: async () => {
       state.spawns += 1;
     },
     log: () => {},
     // 换成假的：这一个动作才是真 I/O（读发现文件 / 拉起 / 握手），组装逻辑不该被它拖住
-    ensure: async (ensureOptions: EnsureServerOptions): Promise<EnsureServerResult> => {
+    ensure: async (ensureOptions: EnsureHostOptions): Promise<EnsureHostResult> => {
       ensureCalls.push(ensureOptions);
       return {
         client,
@@ -141,14 +141,14 @@ describe("组装：本地还是远程", () => {
 
     expect(h.ensureCalls).toHaveLength(1);
     expect(h.ensureCalls[0]?.settings).toEqual({ mode: "local" });
-    // 数据根原样交下去（发现文件 <数据根>/run/server.json 就在它下面）
+    // 数据根原样交下去（发现文件 <数据根>/run/host.json 就在它下面）
     expect(h.ensureCalls[0]?.dataRoot).toBe("/tmp/aiz-desktop-layer");
-    // 服务端入口给的是随包分发的那份（不是从 node_modules 里现解析）
-    expect(h.ensureCalls[0]?.serverEntry).toMatch(/server\.mjs$/);
+    // 宿主入口给的是随包分发的那份（不是从 node_modules 里现解析）
+    expect(h.ensureCalls[0]?.hostEntry).toMatch(/host\.mjs$/);
   });
 
-  it("有显式地址 ⇒ `mode: \"remote\"`（只连不拉起，那条路库里压根不会调 spawnServer）", async () => {
-    const h = harness({ serverUrl: "wss://ai-zen.example.com/ai-zen", serverToken: "tok" });
+  it("有显式地址 ⇒ `mode: \"remote\"`（只连不拉起，那条路库里压根不会调 spawnHost）", async () => {
+    const h = harness({ hostUrl: "wss://ai-zen.example.com/ai-zen", hostToken: "tok" });
 
     await h.layer.start();
 
@@ -157,12 +157,12 @@ describe("组装：本地还是远程", () => {
       url: "wss://ai-zen.example.com/ai-zen",
       token: "tok",
     });
-    // 组装层一次都没拉：显式地址这条路由 `ensureServer` 保证
+    // 组装层一次都没拉：显式地址这条路由 `ensureHost` 保证
     expect(h.spawns()).toBe(0);
   });
 
   it("显式地址但没给凭证：不塞一个空串进去（空串在库里是「显式给了个空值」）", async () => {
-    const h = harness({ serverUrl: "wss://ai-zen.example.com/ai-zen" });
+    const h = harness({ hostUrl: "wss://ai-zen.example.com/ai-zen" });
 
     await h.layer.start();
 
@@ -203,7 +203,7 @@ describe("IPC 转发", () => {
   it("还没连上时发请求：抛一句能看懂的错（不是发到一条不存在的连接上）", async () => {
     const h = harness();
 
-    await expect(h.layer.manager.invokeService("workspace", "list")).rejects.toThrow(/还没连上服务端/);
+    await expect(h.layer.manager.invokeService("workspace", "list")).rejects.toThrow(/还没连上宿主/);
     expect(h.calls).toEqual([]);
   });
 
@@ -221,7 +221,7 @@ describe("IPC 转发", () => {
       "asset.begin",
       "asset.end",
       "conversation.send",
-      // 上屏的是服务端库里那条消息，所以要取一次
+      // 上屏的是宿主库里那条消息，所以要取一次
       "message.list",
     ]);
     expect(h.calls.find((call) => call.method === "conversation.send")).toEqual({
@@ -255,6 +255,6 @@ describe("收摊", () => {
 
     expect(h.closed()).toBe(true);
     expect(h.layer.hello()).toBeNull();
-    await expect(h.layer.manager.invokeService("workspace", "list")).rejects.toThrow(/还没连上服务端/);
+    await expect(h.layer.manager.invokeService("workspace", "list")).rejects.toThrow(/还没连上宿主/);
   });
 });

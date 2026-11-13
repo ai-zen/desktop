@@ -10,37 +10,37 @@
  * ## 为什么表本身是强类型的（而不是 `Record<string, unknown>`）
  *
  * 弱类型表会让「组装时少写一个键」「键名拼错成 `workSpace`」变成运行期才报的 500。这里
- * 把表声明成 `ServerServiceMap`，组装点（`server/index.ts`）就受编译检查：六个键一个都
+ * 把表声明成 `HostServiceMap`，组装点（`host/index.ts`）就受编译检查：六个键一个都
  * 不能少、不能多、不能拼错。**分发键（`workspace` / `conversation` / `agent` / `model` /
  * `chat` / `config`）是 render 的调用面**，不许跟着实现改名。
  *
- * ## 为什么放在 `server/` 而不是单独一个 `services/` 目录
+ * ## 为什么放在 `host/` 而不是单独一个 `services/` 目录
  *
- * 它分发的是 `ServerXxxService`（`server/services.ts`），唯一构造点也在 `server/index.ts`，
+ * 它分发的是 `HostXxxService`（`host/services.ts`），唯一构造点也在 `host/index.ts`，
  * 所以这条依赖是同目录内的。
  */
 
 import type {
-  ServerAgentService,
-  ServerChatService,
-  ServerConfigService,
-  ServerConversationService,
-  ServerModelService,
-  ServerWorkspaceService,
+  HostAgentService,
+  HostChatService,
+  HostConfigService,
+  HostConversationService,
+  HostModelService,
+  HostWorkspaceService,
 } from "./services.js";
 
 /** `service` 字符串键 → 服务实例。键即 render 的调用面，见文件头。 */
-export type ServerServiceMap = {
-  workspace: ServerWorkspaceService;
-  conversation: ServerConversationService;
-  agent: ServerAgentService;
-  model: ServerModelService;
-  chat: ServerChatService;
-  config: ServerConfigService;
+export type HostServiceMap = {
+  workspace: HostWorkspaceService;
+  conversation: HostConversationService;
+  agent: HostAgentService;
+  model: HostModelService;
+  chat: HostChatService;
+  config: HostConfigService;
 };
 
 export class ServicesManager {
-  constructor(private readonly services: ServerServiceMap) {}
+  constructor(private readonly services: HostServiceMap) {}
 
   async invokeService(
     service: string,

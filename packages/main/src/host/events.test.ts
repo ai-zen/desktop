@@ -1,15 +1,15 @@
 /**
- * `ChatEventBridge` 用例：六条服务端事件 → render 认的那几条。
+ * `ChatEventBridge` 用例：六条宿主事件 → render 认的那几条。
  *
  * ## 为什么用假连接
  *
  * 这一层的输入是**事件载荷**、输出是 `ChatStreamEvent`，中间没有一行需要真 socket。假连接把
- * 「服务端此刻推了什么」变成一句可以直接写的调用，于是每条映射规则都能单独钉住：
+ * 「宿主此刻推了什么」变成一句可以直接写的调用，于是每条映射规则都能单独钉住：
  *
  *   · `message.delta` → 先 `start` 后 `message`（整条替换、正文递增）；
  *   · `run.state` → `stream`（六态）+ `settled` 时回拉 `message.list` 推 `done`；
  *   · `usage` → 钉到那条助手消息上；
- *   · `notice` / `question` → `notice`（文案是服务端渲染好的那句话）；
+ *   · `notice` / `question` → `notice`（文案是宿主渲染好的那句话）；
  *   · `conversation.changed` → `renamed`（名字要现拉）。
  *
  * ## 「收尾只收一次」为什么要单独一条
@@ -45,7 +45,7 @@ const CONVERSATION = "conv-1";
 type AnyHandler = (payload: unknown) => void;
 
 interface FakeConnection extends ContractConnection {
-  /** 让服务端「推一条」 */
+  /** 让宿主「推一条」 */
   emit(event: string, payload: unknown): void;
   /** 连接断了 */
   emitClose(error: ClientError): void;
@@ -64,7 +64,7 @@ interface FakeConnection extends ContractConnection {
 /**
  * 一条假连接：事件随手推，请求按 `reply` 回。
  *
- * `reply` 抛错就等于服务端回了错 —— `settle` 失败那条分支只能这样造（真服务端不会配合你失败）。
+ * `reply` 抛错就等于宿主回了错 —— `settle` 失败那条分支只能这样造（真宿主不会配合你失败）。
  */
 function fakeConnection(options: {
   reply?: (method: string, params: unknown) => unknown;
@@ -327,7 +327,7 @@ describe("run.state → done（收尾）", () => {
     const done = h.events.find((event) => event.type === "done");
     if (done?.type !== "done") throw new Error("应当推一条 done");
     expect(done.messages).toEqual(messages);
-    // 收尾拿的是服务端那份，不是本地拼出来的近似
+    // 收尾拿的是宿主那份，不是本地拼出来的近似
     expect(h.connection.calls.at(-1)?.method).toBe("message.list");
   });
 
@@ -394,7 +394,7 @@ describe("run.state → done（收尾）", () => {
 
   it("拉消息失败：推一条 error（界面不许永远停在「生成中」）", async () => {
     const h = harness(() => {
-      throw new Error("服务端刚被关掉了");
+      throw new Error("宿主刚被关掉了");
     });
 
     h.connection.emit("run.state", {
@@ -406,7 +406,7 @@ describe("run.state → done（收尾）", () => {
 
     const error = h.events.at(-1);
     if (error?.type !== "error") throw new Error("应当推一条 error");
-    expect(error.problem.message).toContain("服务端刚被关掉了");
+    expect(error.problem.message).toContain("宿主刚被关掉了");
   });
 });
 
@@ -447,7 +447,7 @@ describe("usage → message（本轮用量钉在助手消息上）", () => {
 });
 
 describe("notice / question → notice", () => {
-  it("通知的三档语气照搬，文案用服务端渲染好的那句", () => {
+  it("通知的三档语气照搬，文案用宿主渲染好的那句", () => {
     const h = harness();
     const notice: NoticeView = {
       id: "n1",
@@ -465,7 +465,7 @@ describe("notice / question → notice", () => {
 
     h.connection.emit("notice", { notice, at: "a" });
 
-    // 语气用服务端那套词（`warning`），内容整份搬（码 / 键 / 参数 / 已渲染的那句），时长也带上
+    // 语气用宿主那套词（`warning`），内容整份搬（码 / 键 / 参数 / 已渲染的那句），时长也带上
     expect(h.events).toEqual([
       {
         type: "notice",
@@ -484,7 +484,7 @@ describe("notice / question → notice", () => {
         id: "n2",
         level: "error",
         duration: null,
-        text: { code: "x", messageKey: "x" as never, params: {}, message: "服务端日志写不进去" },
+        text: { code: "x", messageKey: "x" as never, params: {}, message: "宿主日志写不进去" },
         conversationId: null,
         createdAt: "a",
       },
@@ -494,7 +494,7 @@ describe("notice / question → notice", () => {
     const event = h.events[0];
     if (event?.type !== "notice") throw new Error("应当是一条 notice");
     expect(event.conversationId).toBeNull();
-    // 服务端没设「自动消失」：不替它编一个秒数
+    // 宿主没设「自动消失」：不替它编一个秒数
     expect(event.duration).toBeNull();
   });
 
@@ -515,7 +515,7 @@ describe("notice / question → notice", () => {
 
     h.connection.emit("question", { question, at: "a" });
 
-    // 题目原文就是服务端那份 `LocalizedText`（`prompt` 原样递给界面）
+    // 题目原文就是宿主那份 `LocalizedText`（`prompt` 原样递给界面）
     expect(h.events).toEqual([
       {
         type: "notice",
@@ -650,14 +650,14 @@ describe("onResume → done（补拉）", () => {
 
   it("补拉失败：说一句话，不静默", () => {
     const h = harness();
-    const error = new ClientErrorValue("connection_lost", "与服务端的连接断了");
+    const error = new ClientErrorValue("connection_lost", "与宿主的连接断了");
 
     h.connection.emitResume({ ok: false, conversationId: CONVERSATION, error });
 
     const event = h.events[0];
     if (event?.type !== "notice") throw new Error("应当是一条 notice");
     expect(event.level).toBe("warning");
-    expect(event.text.message).toContain("与服务端的连接断了");
+    expect(event.text.message).toContain("与宿主的连接断了");
   });
 });
 
@@ -681,7 +681,7 @@ describe("断线 → 重连", () => {
     bridge.dispose();
   });
 
-  it("被服务端拒（不可重试）：当场放弃并说清原因", async () => {
+  it("被宿主拒（不可重试）：当场放弃并说清原因", async () => {
     const connection = fakeConnection({
       reconnectError: new ClientErrorValue("unauthorized", "凭证不对"),
     });

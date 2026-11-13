@@ -71,7 +71,7 @@ async function confirm() {
   try {
     const conv = await conversationStore.create(wsId, agentId.value);
     emit("update:modelValue", false);
-    // 建好了，第二件事：把它打开。这一步跟服务端要一次快照（`attach` + `snapshot`），它会抛
+    // 建好了，第二件事：把它打开。这一步跟宿主要一次快照（`attach` + `snapshot`），它会抛
     // —— 会话刚建出来就撞上连接断了这类。**单独报**：说成「新建失败」会让用户再点一次「创建」，
     // 于是盘上多出一段重复的会话（而第一段其实已经建好了）。
     try {

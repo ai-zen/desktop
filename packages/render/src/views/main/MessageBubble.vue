@@ -70,8 +70,8 @@
           />
         </div>
 
-        <!-- 附件结局（服务端给的逐张账）：只列“没送达/降级”的那几句，正常送达的不出现。
-             文案是服务端按连接语言渲染好的原文，这里一字不改（详见 stores/attachmentNotes.ts）。 -->
+        <!-- 附件结局（宿主给的逐张账）：只列“没送达/降级”的那几句，正常送达的不出现。
+             文案是宿主按连接语言渲染好的原文，这里一字不改（详见 stores/attachmentNotes.ts）。 -->
         <div v-if="notes.length > 0" class="attachment-notes">
           <span v-for="(note, index) in notes" :key="index" class="attachment-note">{{ note }}</span>
         </div>
@@ -479,7 +479,7 @@ const errorText = computed(() => textContent.value || "发生错误");
   }
 }
 
-// ==================== 附件结局（逐张一句话，原文来自服务端） ====================
+// ==================== 附件结局（逐张一句话，原文来自宿主） ====================
 // 用虚线分隔而不是另起一块背景：这几行属于这条消息，不是另一个对象。
 // 颜色继承气泡自己的文字色（用户气泡是蓝底白字，助手气泡是深灰字）。
 .attachment-notes {

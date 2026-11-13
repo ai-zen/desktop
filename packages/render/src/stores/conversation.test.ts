@@ -67,9 +67,9 @@ function pending<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 }
 
 /**
- * 一份「什么都不在跑」的服务端现场状态（`chat.getState` 的返回）。
+ * 一份「什么都不在跑」的宿主现场状态（`chat.getState` 的返回）。
  *
- * 只有这是服务端真会给的形状，`activate` 才读得下去：`run.status` 是「在不在跑」唯一判据，
+ * 只有这是宿主真会给的形状，`activate` 才读得下去：`run.status` 是「在不在跑」唯一判据，
  * 上下文 / 思考 / 用量 / 问题 / 状态栏块也跟着快照一起回来。
  */
 function idleState(): ChatState {
@@ -191,7 +191,7 @@ describe("create", () => {
 });
 
 describe("load", () => {
-  it("激活的会话不在新列表里就清空，且这一步不碰服务端", async () => {
+  it("激活的会话不在新列表里就清空，且这一步不碰宿主", async () => {
     apiMocks.listConversations.mockResolvedValue([summary(CONV)]);
 
     const conversation = useConversationStore();

@@ -1,10 +1,10 @@
 /**
  * 附件上传编排（`attachments.ts`）与 `chat.send` 里那一段接线。
  *
- * ## 为什么不上真服务端
+ * ## 为什么不上真宿主
  *
- * 这一层要做的事只有三件：把字节交给库、把两边的账合起来、按顺序摆好。真服务端在这里只会把这三
- * 件事藏进一次网络往返里（而且「超 4 张」「单张超限」这类拒绝必须在本地就出现，真服务端反而验
+ * 这一层要做的事只有三件：把字节交给库、把两边的账合起来、按顺序摆好。真宿主在这里只会把这三
+ * 件事藏进一次网络往返里（而且「超 4 张」「单张超限」这类拒绝必须在本地就出现，真宿主反而验
  * 不到）。所以假连接直接扮演上传三段式的另外两头，把「传了几张、每张怎么走的」变成可以直接写的
  * 一行。
  *
@@ -25,7 +25,7 @@ import { describe, expect, it } from "vitest";
 import { mergeAttachmentOutcomes, uploadAttachments } from "./attachments.js";
 import type { ContractConnection } from "./contract.js";
 import { ChatEventBridge } from "./events.js";
-import { ServerChatService, type ServiceContext } from "./services.js";
+import { HostChatService, type ServiceContext } from "./services.js";
 
 const CONVERSATION = "conv-1";
 
@@ -46,11 +46,11 @@ interface FakeTransport extends UploadTransport {
 }
 
 /**
- * 上传三段式的服务端那一半（假件）：`asset.begin` 发句柄、`asset.end` 回引用。
+ * 上传三段式的宿主那一半（假件）：`asset.begin` 发句柄、`asset.end` 回引用。
  *
  * 别的方名返回 `null`（= 「不归我管」），调用方据此转给真正的那个回答者。
  */
-function assetServer(): (method: string, params: unknown) => unknown | null {
+function assetHost(): (method: string, params: unknown) => unknown | null {
   let uploads = 0;
   return (method, params) => {
     if (method === "asset.begin") {
@@ -78,7 +78,7 @@ function assetServer(): (method: string, params: unknown) => unknown | null {
  * 一条假的「能上传的连接」。
  *
  * `reject` 让某一次调用失败：`method` 拿到的是这一次的方法名，`params` 是那次的入参 ——
- * 「第三张图的服务端拒了」这种处方只能这样造（真服务端不会配合你按次数失败）。
+ * 「第三张图的宿主拒了」这种处方只能这样造（真宿主不会配合你按次数失败）。
  */
 function fakeTransport(
   options: {
@@ -89,7 +89,7 @@ function fakeTransport(
 ): FakeTransport {
   const calls: Recorded[] = [];
   const frames: Uint8Array[] = [];
-  const asset = assetServer();
+  const asset = assetHost();
 
   const transport: FakeTransport = {
     calls,
@@ -124,7 +124,7 @@ function attachment(name: string, data: Uint8Array = PNG): AttachmentInput {
 // 上传编排
 // ==================================================================
 
-describe("uploadAttachments：render 的字节 → 服务端的 assetId", () => {
+describe("uploadAttachments：render 的字节 → 宿主的 assetId", () => {
   it("两张图：每张各走一遍三段式，回来的 index 是它在用户那批里的位置", async () => {
     const transport = fakeTransport();
 
@@ -180,14 +180,14 @@ describe("uploadAttachments：render 的字节 → 服务端的 assetId", () => 
     expect(transport.calls.filter((call) => call.method === "asset.begin")).toHaveLength(4);
   });
 
-  it("服务端拒了其中一张：只有那张失败，剩下的继续（一句失败不连累其它）", async () => {
+  it("宿主拒了其中一张：只有那张失败，剩下的继续（一句失败不连累其它）", async () => {
     const transport = fakeTransport({
       reject: (method, params) => {
-        // 第二次 `asset.end` 被服务端拒（比如它那块盘满了）
+        // 第二次 `asset.end` 被宿主拒（比如它那块盘满了）
         const isSecondEnd =
           method === "asset.end" &&
           (params as { uploadId: string }).uploadId === "upload-2";
-        return isSecondEnd ? new ClientErrorValue("internal", "服务端内部出错了，细节写进日志里了。") : null;
+        return isSecondEnd ? new ClientErrorValue("internal", "宿主内部出错了，细节写进日志里了。") : null;
       },
     });
 
@@ -206,7 +206,7 @@ describe("uploadAttachments：render 的字节 → 服务端的 assetId", () => 
           code: "internal",
           messageKey: "",
           params: {},
-          message: "服务端内部出错了，细节写进日志里了。",
+          message: "宿主内部出错了，细节写进日志里了。",
         },
       },
     ]);
@@ -224,7 +224,7 @@ describe("uploadAttachments：render 的字节 → 服务端的 assetId", () => 
 // 两边的账合一
 // ==================================================================
 
-describe("mergeAttachmentOutcomes：上传阶段 + 服务端结局 → 逐张上屏的那一份", () => {
+describe("mergeAttachmentOutcomes：上传阶段 + 宿主结局 → 逐张上屏的那一份", () => {
   const wire = (assetId: string, deliveredAs: WireOutcome["deliveredAs"], problem: WireOutcome["problem"]): WireOutcome => ({
     assetId,
     deliveredAs,
@@ -289,7 +289,7 @@ describe("mergeAttachmentOutcomes：上传阶段 + 服务端结局 → 逐张上
     ]);
   });
 
-  it("服务端没为某个 assetId 说结局：不编（不拿一句「已发送」顶上去）", () => {
+  it("宿主没为某个 assetId 说结局：不编（不拿一句「已发送」顶上去）", () => {
     const merged = mergeAttachmentOutcomes(
       { assets: [{ index: 0, assetId: "a1", name: "一.png" }], failures: [] },
       [],
@@ -322,7 +322,7 @@ function harness(
 ): Harness {
   const upload = fakeTransport(options);
   const calls = upload.calls;
-  const asset = assetServer();
+  const asset = assetHost();
   const connection = {
     hello: upload.hello ?? null,
     language: upload.language,
@@ -369,7 +369,7 @@ function harness(
 }
 
 /**
- * 库里那条用户消息（`beginTurn` 要回服务端取它，上屏的是这一条而不是手上那句字符串）。
+ * 库里那条用户消息（`beginTurn` 要回宿主取它，上屏的是这一条而不是手上那句字符串）。
  *
  * 内容故意与发送时那句不同：用例靠这个差别钉住「回显的是库里的消息」。
  */
@@ -387,7 +387,7 @@ const accepted = (attachments: WireOutcome[] = []) => ({
 });
 
 describe("chat.send：附件从 IPC 走到 conversation.send", () => {
-  it("带一张图：先传上去，再把 assetIds 放进 input（形状与服务端契约一致）", async () => {
+  it("带一张图：先传上去，再把 assetIds 放进 input（形状与宿主契约一致）", async () => {
     const h = harness(() => accepted([
       {
         assetId: "asset-upload-1",
@@ -397,13 +397,13 @@ describe("chat.send：附件从 IPC 走到 conversation.send", () => {
       },
     ]));
 
-    await new ServerChatService(h.ctx).send("ws-1", CONVERSATION, "看看这张", [attachment("图.png")]);
+    await new HostChatService(h.ctx).send("ws-1", CONVERSATION, "看看这张", [attachment("图.png")]);
 
     expect(h.calls.map((call) => call.method)).toEqual([
       "asset.begin",
       "asset.end",
       "conversation.send",
-      // 受理之后回服务端取一次库里那条用户消息（上屏的是它，不是手上那句字符串）
+      // 受理之后回宿主取一次库里那条用户消息（上屏的是它，不是手上那句字符串）
       "message.list",
     ]);
     expect(h.calls.find((call) => call.method === "conversation.send")).toEqual({
@@ -434,7 +434,7 @@ describe("chat.send：附件从 IPC 走到 conversation.send", () => {
   it("没带附件：`input` 里连 `assetIds` 这个键都不出现（纯文本那条路一个字没变）", async () => {
     const h = harness(() => accepted());
 
-    await new ServerChatService(h.ctx).send("ws-1", CONVERSATION, "你好");
+    await new HostChatService(h.ctx).send("ws-1", CONVERSATION, "你好");
 
     expect(h.calls).toEqual([
       { method: "conversation.send", params: { conversationId: CONVERSATION, input: { content: "你好" } } },
@@ -448,11 +448,11 @@ describe("chat.send：附件从 IPC 走到 conversation.send", () => {
     const h = harness(() => accepted(), {
       reject: (method) =>
         method === "asset.end"
-          ? new ClientErrorValue("internal", "服务端内部出错了，细节写进日志里了。")
+          ? new ClientErrorValue("internal", "宿主内部出错了，细节写进日志里了。")
           : null,
     });
 
-    await new ServerChatService(h.ctx).send("ws-1", CONVERSATION, "这张图你看看", [
+    await new HostChatService(h.ctx).send("ws-1", CONVERSATION, "这张图你看看", [
       attachment("草稿里的一张.png"),
     ]);
 
@@ -471,7 +471,7 @@ describe("chat.send：附件从 IPC 走到 conversation.send", () => {
           code: "internal",
           messageKey: "",
           params: {},
-          message: "服务端内部出错了，细节写进日志里了。",
+          message: "宿主内部出错了，细节写进日志里了。",
         },
         name: "草稿里的一张.png",
       },
@@ -486,7 +486,7 @@ describe("chat.send：附件从 IPC 走到 conversation.send", () => {
           : null,
     });
 
-    await new ServerChatService(h.ctx).send("ws-1", CONVERSATION, "你好", [attachment("图.png")]);
+    await new HostChatService(h.ctx).send("ws-1", CONVERSATION, "你好", [attachment("图.png")]);
 
     expect(h.events.map((event) => event.type)).toEqual(["error"]);
   });

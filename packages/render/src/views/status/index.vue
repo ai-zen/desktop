@@ -54,7 +54,7 @@
       -->
       <template v-else>
         <p class="headline">
-          <template v-if="status === 'unset'">还没选服务端</template>
+          <template v-if="status === 'unset'">还没选宿主</template>
           <template v-else>已连接 <strong>{{ label }}</strong></template>
         </p>
       </template>
@@ -81,7 +81,7 @@ const connectionStore = useConnectionStore();
  */
 const status = computed(() => connectionStore.state?.status ?? null);
 
-/** 该显示的那一行字：main 已经抹好（本地 = "本机服务端"，远程 = 那个地址，不含凭证） */
+/** 该显示的那一行字：main 已经抹好（本地 = "本机宿主"，远程 = 那个地址，不含凭证） */
 const label = computed(() =>
   connectionStore.state && "label" in connectionStore.state ? connectionStore.state.label : "",
 );

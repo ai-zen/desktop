@@ -2,15 +2,15 @@
 // 实体 + IPC 事件 DTO。纯类型，零运行时。
 // 消息模型直接沿用 Core 的 AgentNS.Message（三层统一，不做 adapter）。
 //
-// ## 服务端定过的形状一律引用，不再抄第二份
+// ## 宿主定过的形状一律引用，不再抄第二份
 //
-// 这一层曾经把服务端的 `LocalizedText` / `ProblemFact` / `FolderFact` / `ModelState` 重述了一遍
-// （那时候 render 只被允许依赖已发布的 core）。现在 `@ai-zen/agents-server` 是一条**开发时依赖**：
-// 这里 `import type` 它、原样再导出，同一份形状因此只有一个定义 —— 服务端改了字段，这里跟着改，
+// 这一层曾经把宿主的 `LocalizedText` / `ProblemFact` / `FolderFact` / `ModelState` 重述了一遍
+// （那时候 render 只被允许依赖已发布的 core）。现在 `@ai-zen/agents-host` 是一条**开发时依赖**：
+// 这里 `import type` 它、原样再导出，同一份形状因此只有一个定义 —— 宿主改了字段，这里跟着改，
 // 而不是各自漂。
 //
 // 运行期零依赖：`import type` 在编译产物里一个字节都不留，render 的产物由
-// `packages/render/scripts/check-no-server-runtime.mjs` 在构建之后钉住这一条。
+// `packages/render/scripts/check-no-host-runtime.mjs` 在构建之后钉住这一条。
 
 import type { AgentNS } from "@ai-zen/agents-core";
 import type {
@@ -25,9 +25,9 @@ import type {
   ModelState,
   NoticeLevel,
   ProblemFact as WireProblemFact,
-} from "@ai-zen/agents-server";
+} from "@ai-zen/agents-host";
 
-// ==================== 服务端已有的形状（原样再导出）====================
+// ==================== 宿主已有的形状（原样再导出）====================
 
 export type {
   AssetVariant,
@@ -38,30 +38,30 @@ export type {
   NoticeLevel,
 };
 
-/** 生成六态的名字：服务端 `GenerationPhaseName` 逐字一致（render 只按它挑界面用词） */
+/** 生成六态的名字：宿主 `GenerationPhaseName` 逐字一致（render 只按它挑界面用词） */
 export type StreamPhase = GenerationPhaseName;
 
-// ==================== 服务端的文案与事实 ====================
+// ==================== 宿主的文案与事实 ====================
 
 /**
- * 服务端 `LocalizedText`（`packages/server/src/wire/states.ts`）原样，只有一处放宽。
+ * 宿主 `LocalizedText`（`packages/host/src/wire/states.ts`）原样，只有一处放宽。
  *
  * 四样一起搬，而不是只搬那一句：`code` 是客户端按它分支的稳定码、`messageKey` 是文案表里的键、
  * `params` 是重排这句话要用的原始参数、`message` 是**当前连接语言**下能直接摆上屏的句子。
  *
  * ## `messageKey` 为什么允许空串
  *
- * 服务端那一份的 `messageKey` 是它文案表里的键。而 main 与客户端库自己产出的句子（连不上、
- * 拉起服务端失败、重连放弃……）不在那张表里：那些句子没有翻译，只有已经说好的那一句 `message`。
- * 放宽只往「多一种取值」的方向走 —— 服务端给的每一句仍然合法，反方向不成立。`code` 空串同理
- * 表示「这句不是服务端产出的」。其余字段一字不改地来自服务端那一份。
+ * 宿主那一份的 `messageKey` 是它文案表里的键。而 main 与客户端库自己产出的句子（连不上、
+ * 拉起宿主失败、重连放弃……）不在那张表里：那些句子没有翻译，只有已经说好的那一句 `message`。
+ * 放宽只往「多一种取值」的方向走 —— 宿主给的每一句仍然合法，反方向不成立。`code` 空串同理
+ * 表示「这句不是宿主产出的」。其余字段一字不改地来自宿主那一份。
  */
 export type LocalizedText = Omit<WireLocalizedText, "messageKey"> & {
   messageKey: WireLocalizedText["messageKey"] | "";
 };
 
 /**
- * 失败/降级这类「有事发生了」的事实：服务端 `ProblemFact` 原样（`LocalizedText` 之上多一个
+ * 失败/降级这类「有事发生了」的事实：宿主 `ProblemFact` 原样（`LocalizedText` 之上多一个
  * **结构化的原因**：哪个工具、哪条错误、还差什么），只有 `messageKey` 同 {@link LocalizedText}
  * 一样允许空串。
  */
@@ -74,7 +74,7 @@ export type ProblemFact = Omit<WireProblemFact, "messageKey"> & {
 export interface Workspace {
   id: string;
   name: string;
-  /** 目录事实（服务端 `FolderFact`）：路径 + 还在不在，原样搬 */
+  /** 目录事实（宿主 `FolderFact`）：路径 + 还在不在，原样搬 */
   folder: FolderFact;
 }
 
@@ -84,7 +84,7 @@ export interface Conversation {
   id: string;
   workspaceId: string;
   agentId: string;
-  /** 这段会话的**当前模型**（服务端 `ModelState` 原样：三级解析后的生效值，含名字与能不能看图） */
+  /** 这段会话的**当前模型**（宿主 `ModelState` 原样：三级解析后的生效值，含名字与能不能看图） */
   model: ModelState;
   name: string;
   /** 直接沿用 Core 消息模型（三层统一，无 adapter） */
@@ -97,7 +97,7 @@ export interface ConversationSummary {
   id: string;
   workspaceId: string;
   agentId: string;
-  /** 同上：模型下拉框要显示的**当前模型**（桌面端填入服务端清单里的 `effectiveModelId`，解析不出来时空串） */
+  /** 同上：模型下拉框要显示的**当前模型**（桌面端填入宿主清单里的 `effectiveModelId`，解析不出来时空串） */
   modelId: string;
   name: string;
   messageCount: number;
@@ -107,18 +107,18 @@ export interface ConversationSummary {
 }
 
 /**
- * `chat.getState` 的返回：服务端的**整份现场状态** + 这段对话的整段消息。
+ * `chat.getState` 的返回：宿主的**整份现场状态** + 这段对话的整段消息。
  *
- * 前半截就是服务端 `conversation.state` 的原文 —— `run`（在不在跑、跑到哪一态、结局、子 Agent、
+ * 前半截就是宿主 `conversation.state` 的原文 —— `run`（在不在跑、跑到哪一态、结局、子 Agent、
  * 本轮用量）/ `context`（上下文占用与两条线）/ `thinking`（思考强度档位）/ `usage`（三个口径与
  * 速率）/ `questions`（挂在这段对话上的问题）/ `statusBlocks`（状态栏那几块事实）全在里面，一个
  * 字段都不在客户端侧丢掉：界面今天只画其中一部分，不等于另一部分不存在。
  *
- * 后半截是 `message.list` 给的消息本体（服务端的现场状态里没有消息，而「重开这段对话看到的那一屏」
+ * 后半截是 `message.list` 给的消息本体（宿主的现场状态里没有消息，而「重开这段对话看到的那一屏」
  * 是这两样合起来）。
  *
  * 「在不在跑」**不另给一个布尔**：它就是 `run.status === "running"`。派生值留在这里只会多一份会
- * 与服务端说法漂开的第二真相。
+ * 与宿主说法漂开的第二真相。
  */
 export interface ChatState extends ConversationState {
   /** 整段消息（含流式中那条的部分内容），core 原样 */
@@ -134,7 +134,7 @@ export interface ChatState extends ConversationState {
  *
  * render 手上只有 `File` / `Blob` / dataURL（剪贴板图片、文件选择器给的都是这些），而 main 那一头
  * 要的是能直接交给客户端库 `uploadAssets` 的东西：字节（`Uint8Array`，IPC 走结构化克隆，原样到）
- * 与这个字节**自称**的类型。名字只是给用户看的（「哪一张没发出去」），服务端落盘不用它拼路径。
+ * 与这个字节**自称**的类型。名字只是给用户看的（「哪一张没发出去」），宿主落盘不用它拼路径。
  *
  * `data` 里没有 base64：dataURL 只在 render 内部用来做缩略图预览，跨进程传的是原始字节。
  */
@@ -148,37 +148,37 @@ export interface AttachmentInput {
 }
 
 /**
- * 一张附件这一轮的结局 —— 服务端 `AttachmentOutcome` 原样，另加一个名字。
+ * 一张附件这一轮的结局 —— 宿主 `AttachmentOutcome` 原样，另加一个名字。
  *
  * `section` 是它**真正变成的那个内容段**（core 的 `MessageContentSection`：内联图片是 `image_url`、
  * Files API 是 `file`、降级成文字是 `text`）—— 界面要显示「它最后成了什么」时读的是这一份，
  * 不是从 `deliveredAs` 反推。
  *
- * `problem` 是服务端/客户端库给的**结构化原因**（码 + 参数 + 已渲染的那句 + detail），界面原文显示
+ * `problem` 是宿主/客户端库给的**结构化原因**（码 + 参数 + 已渲染的那句 + detail），界面原文显示
  * `problem.message`、一字不改（另写一份措辞就有两种说法，其中一份还不跟着语言变，D8）；
  * 需要按码分支时读 `problem.code`。没有 `problem` 就是没事（`file_reference` / `inline` /
  * `text_fallback` 正常走完），界面不打扰。
  *
  * `problem` 用的是这一层那份（`messageKey` 允许空串）：没传上去的那几张，原因是客户端库在
- * **上传阶段**说的（空文件、认不出类型），那些句子没有服务端的文案键。
+ * **上传阶段**说的（空文件、认不出类型），那些句子没有宿主的文案键。
  */
 export type AttachmentOutcome = Omit<WireAttachmentOutcome, "problem"> & {
   /** 没送达 / 降级时的原因（结构化）；没有就是 `null` */
   problem: ProblemFact | null;
-  /** 这张叫什么（服务端给了就用它给的，本地失败时是用户选的那个名字） */
+  /** 这张叫什么（宿主给了就用它给的，本地失败时是用户选的那个名字） */
   name: string | null;
 };
 
 // ==================== 素材（历史图片回显）====================
 
 /**
- * `chat.getAsset` 的返回：服务端 `asset.get` 的整份回包，只把 base64 换成字节。
+ * `chat.getAsset` 的返回：宿主 `asset.get` 的整份回包，只把 base64 换成字节。
  *
- * 服务端那一份是 `{ asset: AssetRef, variant, data }`；到这里去掉 `data`、换成 `bytes`。
+ * 宿主那一份是 `{ asset: AssetRef, variant, data }`；到这里去掉 `data`、换成 `bytes`。
  * `asset` 是**整份引用**：`assetId` / `mime` / `bytes`（字节数）/ `name` / `width` / `height`
- * 全在，调用方要哪个读哪个（只挑四个字段搬，剩下的就再也拿不到了 —— 服务端加字段时也一样）。
+ * 全在，调用方要哪个读哪个（只挑四个字段搬，剩下的就再也拿不到了 —— 宿主加字段时也一样）。
  *
- * `variant` 是**实际给出的那一档**：`thumb` 目前等同原图（服务端这一波不引入原生图像库），
+ * `variant` 是**实际给出的那一档**：`thumb` 目前等同原图（宿主这一波不引入原生图像库），
  * 它如实回报给了哪一档，客户端按 `asset.width` / `asset.height` 自己缩，不造一份假缩略图。
  *
  * `bytes` 走 IPC 的结构化克隆（与 `AttachmentInput.data` 同一种形状，只是反过来走：main → render），
@@ -222,14 +222,14 @@ export interface ConfigSettings {
   defaultModel: string;
   /** 默认 Agent（config.defaultAgent） */
   defaultAgent: string;
-  /** 数据目录（只读：服务端 `config.json` 所在目录，由服务端随配置一起回来） */
+  /** 数据目录（只读：宿主 `config.json` 所在目录，由宿主随配置一起回来） */
   dataDir: string;
 }
 
 /**
  * `config.update` 的回报：**这次真的写进去了什么**。
  *
- * main 的 `ServerConfigService.update()` 有两处「故意不写」—— 端点按 id 匹配不上、空的
+ * main 的 `HostConfigService.update()` 有两处「故意不写」—— 端点按 id 匹配不上、空的
  * 默认值没有窄方法可写。两处都不该改成别的写法（见那边的注释），但**不吭声**是另一回事：
  * 调用方拿到的 `void` 让它只能靠「保存后再读一遍」去猜自己写进去没有，而那次重读与这次
  * 写入之间还隔着一个窗口。
@@ -240,16 +240,16 @@ export interface ConfigSettings {
 export interface ConfigUpdateReport {
   /** 这次真的落到盘上的端点 id */
   writtenEndpointIds: string[];
-  /** 服务端配置里已经没有、这次没写进去的端点 id（用户在那些框里改的 apiKey 丢了） */
+  /** 宿主配置里已经没有、这次没写进去的端点 id（用户在那些框里改的 apiKey 丢了） */
   missingEndpointIds: string[];
-  /** 值是空串、因此没有写入的默认字段（服务端的窄方法只接受非空 id） */
+  /** 值是空串、因此没有写入的默认字段（宿主的窄方法只接受非空 id） */
   skippedDefaults: Array<"defaultModel" | "defaultAgent">;
 }
 
 // ==================== 连接设置（本地 / 远程） ====================
 
 /**
- * 连哪台服务端：`local` = 老路（地址读 `<AI_ZEN_DIR>/run/server.json`，凭证读 `<AI_ZEN_DIR>/run/token`）；
+ * 连哪台宿主：`local` = 老路（地址读 `<AI_ZEN_DIR>/run/host.json`，凭证读 `<AI_ZEN_DIR>/run/token`）；
  * `remote` = 用户显式填的那一台（可能在他自己机器上，也可能在隧道另一端）。
  *
  * ## 为什么只有两档，且 `local` 不叫 `loopback`
@@ -257,7 +257,7 @@ export interface ConfigUpdateReport {
  * 决策 D9 明文**不做静态的 loopback 判断**：隧道的入口恰恰是 `127.0.0.1:9999`（`ssh -L` /
  * `kubectl port-forward` / tailscale serve 都长这样），从地址上分不出「本机 daemon」与
  * 「隧道另一端」。所以 `local` 说的不是「地址在本机」，而是「按本机发现文件 + 本机凭证走」——
- * 连的到底是谁，由服务端的回答决定。
+ * 连的到底是谁，由宿主的回答决定。
  */
 export type ConnectionMode = "local" | "remote";
 
@@ -271,18 +271,18 @@ export type ConnectionMode = "local" | "remote";
  * `connection/settings.ts` 的 `connectionConfigOf()` 保证，类型这里只说明事实。
  */
 export interface ConnectionSettings {
-  /** `local` = 老路：地址读 `<AI_ZEN_DIR>/run/server.json`，凭证读 `<AI_ZEN_DIR>/run/token` */
+  /** `local` = 老路：地址读 `<AI_ZEN_DIR>/run/host.json`，凭证读 `<AI_ZEN_DIR>/run/token` */
   mode: ConnectionMode;
   /** 仅 `remote` 有意义：显式地址（`ws:` / `wss:` / `http:` / `https:`） */
-  serverUrl?: string;
+  hostUrl?: string;
   /** 仅 `remote` 有意义：显式凭证。留空 = 退回 `<AI_ZEN_DIR>/run/token`（D9 的本地兜底） */
-  serverToken?: string;
+  hostToken?: string;
 }
 
 /**
  * 「测试连接」的结果。
  *
- * 成功那一支只有三件可看的事实：服务端自报的协议版本、版本串、以及这一次试连花了多久
+ * 成功那一支只有三件可看的事实：宿主自报的协议版本、版本串、以及这一次试连花了多久
  * （用户判断「远端是不是慢得不能忍」的唯一依据）。失败那一支只有一句**人话** —— 它不是
  * 错误码的搬运工，`unauthorized` 的四种成因已经被客户端包的 `explainUnauthorized` 翻过
  * 一遍了（哪一种该去改什么，措辞只有那一份）。
@@ -305,12 +305,12 @@ export type ConnectionProbe =
  *
  *   · `unset` —— **没配过**（`connection.json` 不存在或不可用）。这不是「连不上」，而是一个
  *     该由**用户**做的选择：界面据此摆出首启引导屏（本机 / 远程），而不是去猜一个默认值。
- *     把「没配过」压进 `local` 是错的 —— 那样应用一启动就去拉起一个本地服务端，「引导」永远
+ *     把「没配过」压进 `local` 是错的 —— 那样应用一启动就去拉起一个本地宿主，「引导」永远
  *     出不来；
  *   · `connecting` —— **包含**「首次尝试中」与「重试等待中」。两者的区别是最后两个字段：
  *     `attempt: 0` = 首次尝试（`nextRetryInMs` 为 `undefined`）；`attempt: N > 0` = 正在
  *     等待第 N 次重试，`nextRetryInMs` 是还要等多久（见 D24 的 1000 / 2000 / 5000）；
- *   · `ready` —— 连上了。`protocol` / `version` 是服务端**自报**的（`hello` 回执），
+ *   · `ready` —— 连上了。`protocol` / `version` 是宿主**自报**的（`hello` 回执），
  *     拿不到时是 `0` / `""`（连上了但不知道自己连的是哪一版，比编一个数字诚实）；
  *   · `error` —— **重试也失败之后**的终态（不是「这一次失败了」）。它带一句人话 `message`；
  *     用户点「重连」（{@link ConnectionControls.reconnect}）才会离开这个状态。
@@ -318,7 +318,7 @@ export type ConnectionProbe =
  * ## `label` 为什么由 main 产出
  *
  * render 不许自己拼地址、也不许猜模式（`local` / `remote` 是 main 的事实）：`label` 就是
- * 它该显示的那一行字 —— 本地模式是 `"本机服务端"`，远程模式是那个地址。
+ * 它该显示的那一行字 —— 本地模式是 `"本机宿主"`，远程模式是那个地址。
  * **它绝不包含凭证**（地址里的 userinfo 与任何 token 都不会进这里，见 main 的
  * `connection/controller.ts`）。
  */
@@ -334,9 +334,9 @@ export type ConnectionState =
 /**
  * 子 Agent 的状态：`running` 是进行态，`done` / `failed` 是终态。
  *
- * 这三档是 render 栏目在用的词（`agentView` 的选中/标签逻辑按它分支）。服务端 `SubAgentSnapshot`
+ * 这三档是 render 栏目在用的词（`agentView` 的选中/标签逻辑按它分支）。宿主 `SubAgentSnapshot`
  * 那一组是 `running` / `done` / `error` / `aborted`，而 main 这一波不推 `agents` 事件 —— 两边没有
- * 在跑的对接点，因此没有可以合并的“同一份形状”。要对齐要么把 render 的四分支改成服务端那四档，
+ * 在跑的对接点，因此没有可以合并的“同一份形状”。要对齐要么把 render 的四分支改成宿主那四档，
  * 要么等子 Agent 推送接上时一起做，都不在“只留一份 token 类型”这一波里。
  */
 export type SubAgentStatus = "running" | "done" | "failed";
@@ -344,7 +344,7 @@ export type SubAgentStatus = "running" | "done" | "failed";
 /**
  * 一个子 Agent 自己的对话（= 栏目标签 `子AGENT{n}` 点进去看到的那一屏）。
  *
- * 三处事实**都来自服务端**，客户端一个都不自己算：
+ * 三处事实**都来自宿主**，客户端一个都不自己算：
  *   - `id`：`sub-agent-start` 的 `subAgentId`（跨轮稳定的标识，选中态与 v-for key 靠它；
  *     它不带展示含义，展示序号是 `index`）；
  *   - `index`：同一个事件里的 `index`（本轮内从 1 起，栏目标签直接印它）。客户端不数：
@@ -361,27 +361,27 @@ export interface SubAgentView {
 
 // ==================== 推送事件 DTO ====================
 
-// 生成六态的名字就是服务端那一组（见上面 `StreamPhase` 的再导出）：main 不另造一套词，
+// 生成六态的名字就是宿主那一组（见上面 `StreamPhase` 的再导出）：main 不另造一套词，
 // 只是把它搬进 render 认的形状里。
 
 /** chat:push 单通道推送（discriminated union）
- *  状态源是常驻服务端：send 只提交（快速返回），user/start/message/done 全由事件回流 */
+ *  状态源是常驻宿主：send 只提交（快速返回），user/start/message/done 全由事件回流 */
 export type ChatStreamEvent =
   | { conversationId: string; type: "start" }
   /**
    * 本轮的用户消息上屏（render 据此上屏，不本地乐观插入）。
    *
-   * 载荷是**服务端落库的那条消息本体**（core 的 `AgentNS.Message`），不是把正文拍成一句字：
+   * 载荷是**宿主落库的那条消息本体**（core 的 `AgentNS.Message`），不是把正文拍成一句字：
    * 带图的那一句在库里是 `image_url` 内容段数组，压成字符串就只能显示文字、图要等整轮跑完
-   * 的 `done` 全量替换才出现。id 是服务端受理时就分配好的那个（L6），所以 `done` 那次全量
+   * 的 `done` 全量替换才出现。id 是宿主受理时就分配好的那个（L6），所以 `done` 那次全量
    * 替换里同一条消息用的是同一个 id —— 不会画成两条。
    */
   | { conversationId: string; type: "user"; message: AgentNS.Message }
   /**
    * 这一轮的生成状态（六态 + 正在跑的工具）。
    *
-   * 服务端的 `run.state` 是一份**全量快照**、而且带的东西远多于界面今天要显示的（六态、子 Agent、
-   * 用量、结局）。这里只搬「界面上真能显示的那部分」：六态的名字（取值与服务端
+   * 宿主的 `run.state` 是一份**全量快照**、而且带的东西远多于界面今天要显示的（六态、子 Agent、
+   * 用量、结局）。这里只搬「界面上真能显示的那部分」：六态的名字（取值与宿主
    * `GenerationState.phase` 逐字一致）+ 正在跑的那几个工具（core 的 `AgentNS.ToolCall` 原样：
    * 名字、参数、id、index 都在里面，界面要哪个读哪个，不先拍成名字列表）。
    *
@@ -412,7 +412,7 @@ export type ChatStreamEvent =
    * `user` 那条事件说的是「你这句话上屏了」；附件结局是**另一件事**（谁走成了文件引用、谁退化成
    * 文字、谁根本没发出去），而且它要跟着 `userMessageId` 挂在那条气泡旁边 —— 那个 id 在
    * `done` 的全量替换里是同一个（L6），所以按 id 记住就不会丢。塞进消息内容则会把它变成
-   * 「消息正文的一部分」，而消息正文是服务端的历史事实，不是一条告警。
+   * 「消息正文的一部分」，而消息正文是宿主的历史事实，不是一条告警。
    *
    * 空数组不会发（没带附件的那一轮根本没有这条事件）。
    */
@@ -429,7 +429,7 @@ export type ChatStreamEvent =
   /**
    * 这一轮（或这条连接）失败的事实。
    *
-   * 载荷是 `ProblemFact`（码 + 参数 + 已渲染的那句 + detail），不是一句摘出来的话：服务端说的
+   * 载荷是 `ProblemFact`（码 + 参数 + 已渲染的那句 + detail），不是一句摘出来的话：宿主说的
    * 失败（`run.problem`）、客户端库里带业务码的失败、以及 main 自己捕到的异常分别带着自己那里
    * 能给出的事实，界面要显示就读 `problem.message`，要分支就读 `problem.code`。
    */
@@ -437,7 +437,7 @@ export type ChatStreamEvent =
   /** 自动生成对话标题后推送（不阻塞 done，侧栏据此更新名称） */
   | { conversationId: string; type: "renamed"; name: string }
   /**
-   * 服务端推来的一条**通知**（`notice` 事件）：给用户看的一句话，瞬时的。
+   * 宿主推来的一条**通知**（`notice` 事件）：给用户看的一句话，瞬时的。
    *
    * ## 为什么不是 `type: "error"`
    *
@@ -449,19 +449,19 @@ export type ChatStreamEvent =
    *
    * ## 为什么内容是一份 `LocalizedText`
    *
-   * 文案归服务端（PRD D8）：`text.message` 是按**这条连接的语言**渲染好的句子，main 原样搬过来，
+   * 文案归宿主（PRD D8）：`text.message` 是按**这条连接的语言**渲染好的句子，main 原样搬过来，
    * 自己不查第二份词典；而 `code` / `params` 一起搬过来，界面才能按码分支、换语言重排，
    * 而不是只能把一句写死的字摆上屏。
    *
    * ## 为什么 `conversationId` 是 `null` 而不是可选
    *
-   * 全局通知**不属于任何会话**（存档目录不可用、MCP 连不上是服务本身的事），服务端给的
-   * `NoticeView.conversationId` 那时就是 `null`。用 `null` 而不是省略：服务端的形状就是它，
+   * 全局通知**不属于任何会话**（存档目录不可用、MCP 连不上是服务本身的事），宿主给的
+   * `NoticeView.conversationId` 那时就是 `null`。用 `null` 而不是省略：宿主的形状就是它，
    * 两种「没有」的写法会让人以为它们不是一件事。
    */
   | {
       type: "notice";
-      /** 三档语气，就是服务端的 `NoticeLevel` */
+      /** 三档语气，就是宿主的 `NoticeLevel` */
       level: NoticeLevel;
       /** 秒数；`null` 表示不自动消失，留到被手动清掉 */
       duration: number | null;
@@ -484,16 +484,16 @@ export type ChatStreamEvent =
    *
    * ## 空数组 = 这一轮的子 Agent 都没了
    *
-   * 子 Agent 只活在当前一轮（`session-turn-end` 之后服务端把它们连同展示序号一起清掉，客户端同一
+   * 子 Agent 只活在当前一轮（`session-turn-end` 之后宿主把它们连同展示序号一起清掉，客户端同一
    * 口径）。所以 `agents: []` 的意思是「把栏目收回去」，不是「这段会话没有子 Agent 这个
    * 概念」。render 收到空数组就清空栏目、退回主对话 —— 不能让一个标签停在一段已经过去的
    * 对话上。换会话 id（迁移 / 另存为）同样清空。
    *
    * ## 顺序
    *
-   * 数组顺序 = `sub-agent-start` 的到达顺序 = 服务端给的 `index` 顺序（栏目标签
+   * 数组顺序 = `sub-agent-start` 的到达顺序 = 宿主给的 `index` 顺序（栏目标签
    * 从左到右）。render 直接照数组渲染，不重排 —— 重排就得知道「序号是谁给的」，而那是
-   * 服务端的展示序号，不是客户端可以推的东西。
+   * 宿主的展示序号，不是客户端可以推的东西。
    */
   | { conversationId: string; type: "agents"; agents: SubAgentView[] };
 
@@ -537,10 +537,10 @@ export interface ElectronAPI {
  * ## 为什么不走 `invokeService`
  *
  * `invokeService` 的六个分发键（workspace / conversation / agent / model / chat / config）
- * 就是**服务端的方法表** —— render 的调用面与协议一一对应。而「连哪台服务端」在服务端还不
+ * 就是**宿主的方法表** —— render 的调用面与协议一一对应。而「连哪台宿主」在宿主还不
  * 存在的时候就要回答（先有鸡先有蛋），它是**主进程自己**的事。混进那张表，第一个后果是
- * 「六个键 = 服务端调用面」这条边界失效（下一个人会以为 `connection.get` 也是协议方法），
- * 第二个是它根本没法被转发 —— 转发要一条连着的服务端，而它正是决定连哪条的那一个。
+ * 「六个键 = 宿主调用面」这条边界失效（下一个人会以为 `connection.get` 也是协议方法），
+ * 第二个是它根本没法被转发 —— 转发要一条连着的宿主，而它正是决定连哪条的那一个。
  */
 export interface ConnectionControls {
   /** 读当前配置：文件不存在 / 坏 JSON / 字段不合法都回 `{ mode: "local" }`，**绝不抛错** */
@@ -566,7 +566,7 @@ export interface ConnectionControls {
    * 地址非法 / 连不上 / 凭证被拒都**不抛错**，一律折成 `{ ok: false, message }`：这条通道的
    * 返回值就是给人看的一句话，抛错只会让界面多一条没头没尾的红字。
    */
-  test: (candidate: { serverUrl: string; serverToken?: string }) => Promise<ConnectionProbe>;
+  test: (candidate: { hostUrl: string; hostToken?: string }) => Promise<ConnectionProbe>;
   /**
    * **查询**当前连接状态（D26）。
    *

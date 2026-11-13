@@ -1,9 +1,9 @@
 /**
  * `chat store` 里**生成六态**那一条（`stream` 事件 → 正在生成那行字）。
  *
- * 六态本身是服务端的事实（`run.state.generation.phase`，PRD L8），store 只做两件事：把态存下来、
+ * 六态本身是宿主的事实（`run.state.generation.phase`，PRD L8），store 只做两件事：把态存下来、
  * 按一句界面用词说出来。所以这里验的是「存的对不对 + 说的人话对不对」，不验「现在到底算哪一态」
- * —— 那是服务端的事，在这里推一遍就等于抄了第二份判据。
+ * —— 那是宿主的事，在这里推一遍就等于抄了第二份判据。
  */
 
 import { beforeEach, describe, expect, it } from "vitest";

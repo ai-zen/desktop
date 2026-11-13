@@ -1,18 +1,18 @@
 /**
  * DesktopApp — 主进程应用根（面向对象单根），**瘦客户端**形态。
  *
- * 这个进程现在只做四件事：窗口、原生对话框、IPC 转发、把服务端事件转给 render。
- * 会话执行（Agent / 模型 / 工具 / 存档）全部在常驻的 `agents-server` 那边，本进程
- * 一条连接过去、按协议调方法（`server/` 这一层）。
+ * 这个进程现在只做四件事：窗口、原生对话框、IPC 转发、把宿主事件转给 render。
+ * 会话执行（Agent / 模型 / 工具 / 存档）全部在常驻的 `agents-host` 那边，本进程
+ * 一条连接过去、按协议调方法（`host/` 这一层）。
  *
- * 组装是显式手写 DI（无反射/扫描）：`createServerLayer()` 拿走的全是**非 electron 的
+ * 组装是显式手写 DI（无反射/扫描）：`createHostLayer()` 拿走的全是**非 electron 的
  * 事实**（配置根、握手身份、默认工作目录、事件出口），electron 的东西（`app.getPath`、
  * `dialog`、`webContents.send`）只出现在本文件里，以参数/回调的形式递进去 —— 那条边界
- * 就是「服务端门面能被 vitest + 真 daemon 直接验」的前提。
+ * 就是「宿主门面能被 vitest + 真 daemon 直接验」的前提。
  *
  * ## 「当前连着哪一层」不在本文件
  *
- * 以前这里是 `private readonly server = createServerLayer({…})`：字段初始化，永远一份，换连接
+ * 以前这里是 `private readonly host = createHostLayer({…})`：字段初始化，永远一份，换连接
  * 只能重启 App。现在换成 `ConnectionController`（`connection/controller.ts`）：它同样只拿
  * 非 electron 的事实（全部注入），于是「先落盘再换层」那套顺序能拿假层单测咬死；本文件只负责
  * 把 electron 的三个事实递进去（含状态推送与计时器），并在 IPC 里认领五条连接通道。
@@ -29,7 +29,7 @@
  * void this.connection.start()  ← 后台连，**不 await**
  * ```
  *
- * 改动前的顺序是「先 await 连接 → 再建窗口」，而那个 await 没有 try/catch：远程服务端在
+ * 改动前的顺序是「先 await 连接 → 再建窗口」，而那个 await 没有 try/catch：远程宿主在
  * 启动时不可达 ⇒ `start()` rejects ⇒ 后面两行都不执行 ⇒ **窗口根本不出现**，用户看到的是
  * 「双击没反应」，而「改回本地」的设置页就在那个不存在的窗口里 —— 只能手删 `connection.json`。
  *
@@ -45,13 +45,13 @@ import { fileURLToPath } from "url";
 import { AI_ZEN_DIR } from "./config.js";
 import { ConnectionController } from "./connection/controller.js";
 import { readSettings, writeSettings } from "./connection/settings.js";
-import { createServerLayer } from "./server/index.js";
+import { createHostLayer } from "./host/index.js";
 import type { ChatStreamEvent, ConnectionSettings, ConnectionState } from "@ai-zen/desktop-shared";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 
 export class DesktopApp {
-  // ==================== 服务端门面（唯一的业务出口） ====================
+  // ==================== 宿主门面（唯一的业务出口） ====================
   /**
    * 「此刻连着哪一层」全在这一个对象里（D21）：`local` / `remote` 的切换是**换层**（dispose 旧
    * 的 → 建新的 → start），不是改一个字段。`layer()` 给 IPC 转发，`save()` 换掉它。
@@ -62,8 +62,8 @@ export class DesktopApp {
     // 用户不填工作目录时的默认值：桌面端就是"桌面"，这是 electron 的事实，注入进去
     defaultCwd: () => app.getPath("desktop"),
     push: (event) => this.pushChatEvent(event),
-    // 建层仍是 `server/` 那一层的事，本文件只做组装
-    createLayer: (options) => createServerLayer(options),
+    // 建层仍是 `host/` 那一层的事，本文件只做组装
+    createLayer: (options) => createHostLayer(options),
     // 连接设置落在 `<AI_ZEN_DIR>/desktop/connection.json`（D17），路径拼法在 settings 里
     readSettings: () => readSettings(AI_ZEN_DIR),
     writeSettings: (settings) => writeSettings(AI_ZEN_DIR, settings),
@@ -113,7 +113,7 @@ export class DesktopApp {
         app.quit();
       }
     });
-    // 退出前断开连接（服务端是常驻的，不跟着桌面端退出）；顺手清掉挂起的重试计时器
+    // 退出前断开连接（宿主是常驻的，不跟着桌面端退出）；顺手清掉挂起的重试计时器
     app.on("will-quit", () => {
       this.connection.dispose();
     });
@@ -180,15 +180,15 @@ export class DesktopApp {
     );
 
     // 连接设置（本地 / 远程）：五条**专用**通道，**不进** `invokeService` 的 service 表（D20）。
-    // 那六个分发键 = 服务端的方法表，而「连哪台服务端」在服务端还不存在的时候就要回答
-    // （先有鸡先有蛋）—— 混进去会让「六个键 = 服务端调用面」这条边界失效。
+    // 那六个分发键 = 宿主的方法表，而「连哪台宿主」在宿主还不存在的时候就要回答
+    // （先有鸡先有蛋）—— 混进去会让「六个键 = 宿主调用面」这条边界失效。
     ipcMain.handle("connection:get", () => this.connection.get());
     ipcMain.handle("connection:save", (_event, settings: ConnectionSettings) =>
       this.connection.save(settings),
     );
     ipcMain.handle(
       "connection:test",
-      (_event, candidate: { serverUrl: string; serverToken?: string }) =>
+      (_event, candidate: { hostUrl: string; hostToken?: string }) =>
         this.connection.test(candidate),
     );
     // 状态查询：窗口可能比第一次状态变化更晚挂载（D25 之后这是常态），光靠推送会漏

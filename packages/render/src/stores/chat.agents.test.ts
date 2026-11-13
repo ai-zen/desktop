@@ -121,7 +121,7 @@ describe("chat store · send / retry 的返回值", () => {
   // 这一批锁的是「调用方能不能知道到底发出去没有」：`handleSend` 靠这个布尔决定输入框
   // 里的字留不留。返回 void 时它只能先清空，早退/失败就把用户敲的内容弄丢了。
 
-  it("① 成功 → 返回 true（内容原样交给了服务端）", async () => {
+  it("① 成功 → 返回 true（内容原样交给了宿主）", async () => {
     openSession();
     chatMocks.sendChatMessage.mockResolvedValue(undefined);
 

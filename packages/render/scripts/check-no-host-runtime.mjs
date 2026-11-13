@@ -1,10 +1,10 @@
 /**
- * 构建后自检：**render 的产物里没有服务端契约包的运行时引用**。
+ * 构建后自检：**render 的产物里没有宿主契约包的运行时引用**。
  *
  * ## 这条检查守的是什么
  *
- * `packages/shared` 与 `packages/render` 各自有一条指向 `agents/packages/server` 的 `link:` 依赖，
- * 用途只有一个：`import type` 拿到服务端 `wire/` 里那份形状，不再自己抄一遍。那条依赖是**开发时**
+ * `packages/shared` 与 `packages/render` 各自有一条指向 `agents/packages/host` 的 `link:` 依赖，
+ * 用途只有一个：`import type` 拿到宿主 `wire/` 里那份形状，不再自己抄一遍。那条依赖是**开发时**
  * 的 —— render 是浏览器产物，运行期一个字节都不该要它（也没有 node 的模块解析可依赖）。
  *
  * 能静默退化的方式只有一种，而且不会让任何用例变红：有人把 `import type` 写成 `import`。那时
@@ -31,7 +31,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const OUT_DIR = join(here, "..", "..", "main", "dist", "static");
 
 /** 只在这两条依赖上做「开发时」：类型可以来它们，运行期不许要它们 */
-const FORBIDDEN = ["@ai-zen/agents-server", "@ai-zen/agents-client"];
+const FORBIDDEN = ["@ai-zen/agents-host", "@ai-zen/agents-client"];
 
 /** 产物里必须能找到的 render 自己的代码（找不到就说明查错了地方，这条检查等于没跑） */
 const MARKERS = ["invokeService", "electronAPI"];
@@ -121,6 +121,6 @@ if (problems.length > 0) {
   process.exit(1);
 }
 
-console.log(`✓ render 产物不含服务端/客户端库的运行时引用（${files.length} 个文件，${(totalBytes / 1024).toFixed(1)} kB）`);
+console.log(`✓ render 产物不含宿主/客户端库的运行时引用（${files.length} 个文件，${(totalBytes / 1024).toFixed(1)} kB）`);
 console.log(`  · ${FORBIDDEN.join(" / ")}：一个解析路径、一处字样都没有`);
 console.log(`  · 没有 node:* 的解析路径；render 自己的代码特征串 ${MARKERS.length} 个都在`);

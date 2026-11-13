@@ -4,8 +4,8 @@
  * 这一批没有组件测试（本仓只有 store 测试，见 `agentView.test.ts` 的口径），所以「面板的行为」
  * 全部落在 store 的三条 action 上，这里逐个咬住：
  *   - `load` 把 main 的配置读上来；
- *   - `test` **只探测**：结果进 `probe`，不落盘、不动界面上的服务端数据；
- *   - `save` **换连接**：state 换成 main 返回的那份，并把来自服务端的数据全部重拉；
+ *   - `test` **只探测**：结果进 `probe`，不落盘、不动界面上的宿主数据；
+ *   - `save` **换连接**：state 换成 main 返回的那份，并把来自宿主的数据全部重拉；
  *   - `save` 失败：`saving` 放下、`settings` 一个字段都不改（不允许界面显示「已保存」）；
  *   - `resetProbe` 清空。
  *
@@ -14,7 +14,7 @@
  * 起始态 main 不推，所以必须**先查一次再订阅**。
  *
  * 换掉的东西只有两处：`apis/connection`（用 `vi.mock`，不打真 IPC）与
- * `window.electronAPI`（一份假服务端 + 一对假的 `on` / `off`）。`ui` / `workspace` /
+ * `window.electronAPI`（一份假宿主 + 一对假的 `on` / `off`）。`ui` / `workspace` /
  * `conversation` 三个 store 用的是**真件** —— 「保存后到底刷新了什么」必须是可断言的，
  * 而不是一句被 mock 掉的空话。
  */
@@ -53,7 +53,7 @@ vi.mock("../apis/connection.js", () => ({
   onConnectionState: mocks.onConnectionState,
 }));
 
-// 「新服务端」端上有什么：换连接之后界面显示的必须是这一份，而不是上一台留下的
+// 「新宿主」端上有什么：换连接之后界面显示的必须是这一份，而不是上一台留下的
 const REMOTE_AGENTS: AgentOption[] = [{ id: "agent-b", name: "远端 Agent" }];
 const REMOTE_MODELS: ModelOption[] = [{ id: "model-b", name: "远端模型" }];
 const REMOTE_WORKSPACES: Workspace[] = [
@@ -90,7 +90,7 @@ beforeEach(() => {
   setActivePinia(createPinia());
   vi.clearAllMocks();
 
-  // 假服务端：只回答「联上来的是哪台」这件事（数据随服务端变，这正是换连接要重拉的原因）
+  // 假宿主：只回答「联上来的是哪台」这件事（数据随宿主变，这正是换连接要重拉的原因）
   invokeService = vi.fn(async (service: string, method: string) => {
     if (service === "agent" && method === "list") return REMOTE_AGENTS;
     if (service === "model" && method === "list") return REMOTE_MODELS;
@@ -126,8 +126,8 @@ describe("connection store · load", () => {
   it("① 把 main 上的配置放进 state（面板打开时显示的就是盘上那一份）", async () => {
     mocks.getConnectionSettings.mockResolvedValue({
       mode: "remote",
-      serverUrl: "wss://a.example/ai-zen",
-      serverToken: "token-1",
+      hostUrl: "wss://a.example/ai-zen",
+      hostToken: "token-1",
     });
     const store = useConnectionStore();
 
@@ -136,8 +136,8 @@ describe("connection store · load", () => {
     expect(mocks.getConnectionSettings).toHaveBeenCalledTimes(1);
     expect(store.settings).toEqual({
       mode: "remote",
-      serverUrl: "wss://a.example/ai-zen",
-      serverToken: "token-1",
+      hostUrl: "wss://a.example/ai-zen",
+      hostToken: "token-1",
     });
   });
 });
@@ -152,11 +152,11 @@ describe("connection store · test", () => {
     });
     const store = useConnectionStore();
 
-    await store.test({ serverUrl: "wss://a.example/ai-zen", serverToken: "token-1" });
+    await store.test({ hostUrl: "wss://a.example/ai-zen", hostToken: "token-1" });
 
     expect(mocks.testConnection).toHaveBeenCalledWith({
-      serverUrl: "wss://a.example/ai-zen",
-      serverToken: "token-1",
+      hostUrl: "wss://a.example/ai-zen",
+      hostToken: "token-1",
     });
     expect(store.probe).toEqual({
       ok: true,
@@ -174,7 +174,7 @@ describe("connection store · test", () => {
     });
     const store = useConnectionStore();
 
-    await store.test({ serverUrl: "wss://b.example/ai-zen" });
+    await store.test({ hostUrl: "wss://b.example/ai-zen" });
 
     expect(store.probe).toEqual({
       ok: false,
@@ -193,7 +193,7 @@ describe("connection store · test", () => {
     const store = useConnectionStore();
     store.probe = { ok: true, protocol: 3, version: "0.1.0-alpha.0", elapsedMs: 12 };
 
-    const pending = store.test({ serverUrl: "wss://c.example/ai-zen" });
+    const pending = store.test({ hostUrl: "wss://c.example/ai-zen" });
     expect(store.probe).toBeNull();
     expect(store.testing).toBe(true);
 
@@ -218,7 +218,7 @@ describe("connection store · test", () => {
     const conversationStore = useConversationStore();
     conversationStore.activeConversationId = "conv-old";
 
-    await store.test({ serverUrl: "wss://a.example/ai-zen" });
+    await store.test({ hostUrl: "wss://a.example/ai-zen" });
 
     expect(mocks.saveConnectionSettings).not.toHaveBeenCalled();
     expect(loadOptions).not.toHaveBeenCalled();
@@ -229,7 +229,7 @@ describe("connection store · test", () => {
 
 describe("connection store · save", () => {
   /** 造一份「保存前」的界面：还是上一台机器的数据，且正开着它的会话 */
-  function primeWithOldServer(): void {
+  function primeWithOldHost(): void {
     const store = useConnectionStore();
     const uiStore = useUiStore();
     const workspaceStore = useWorkspaceStore();
@@ -247,10 +247,10 @@ describe("connection store · save", () => {
     conversationStore.activeConversationId = "conv-old";
   }
 
-  it("③ 成功 → state 换成 main 返回的那份，且界面上的服务端数据全部重拉", async () => {
-    const next = { mode: "remote" as const, serverUrl: "wss://a.example/ai-zen" };
+  it("③ 成功 → state 换成 main 返回的那份，且界面上的宿主数据全部重拉", async () => {
+    const next = { mode: "remote" as const, hostUrl: "wss://a.example/ai-zen" };
     mocks.saveConnectionSettings.mockResolvedValue({ settings: next });
-    primeWithOldServer();
+    primeWithOldHost();
 
     const uiStore = useUiStore();
     const workspaceStore = useWorkspaceStore();
@@ -271,7 +271,7 @@ describe("connection store · save", () => {
     expect(loadOptions).toHaveBeenCalledTimes(1);
     expect(workspaceLoad).toHaveBeenCalledTimes(1);
 
-    // Agent / 模型 / 工作区换成了新服务端的那一份
+    // Agent / 模型 / 工作区换成了新宿主的那一份
     expect(uiStore.agents).toEqual(REMOTE_AGENTS);
     expect(uiStore.models).toEqual(REMOTE_MODELS);
     expect(workspaceStore.workspaces).toEqual(REMOTE_WORKSPACES);
@@ -285,7 +285,7 @@ describe("connection store · save", () => {
   });
 
   it("③ 保存成功后清掉旧的探测结果（它说的是换之前那条链路）", async () => {
-    const next = { mode: "remote" as const, serverUrl: "wss://a.example/ai-zen" };
+    const next = { mode: "remote" as const, hostUrl: "wss://a.example/ai-zen" };
     mocks.saveConnectionSettings.mockResolvedValue({ settings: next });
     const store = useConnectionStore();
     store.probe = { ok: true, protocol: 3, version: "0.1.0-alpha.0", elapsedMs: 12 };
@@ -297,7 +297,7 @@ describe("connection store · save", () => {
 
   it("④ 失败 → 抛回给界面、saving 放下、settings 一个字段都不改、也不刷新", async () => {
     mocks.saveConnectionSettings.mockRejectedValue(new Error("落盘失败：`connection.json` 写不进去"));
-    primeWithOldServer();
+    primeWithOldHost();
 
     const uiStore = useUiStore();
     const workspaceStore = useWorkspaceStore();
@@ -308,7 +308,7 @@ describe("connection store · save", () => {
     const workspaceLoad = vi.spyOn(workspaceStore, "load");
 
     await expect(
-      store.save({ mode: "remote", serverUrl: "wss://bad.example/ai-zen" }),
+      store.save({ mode: "remote", hostUrl: "wss://bad.example/ai-zen" }),
     ).rejects.toThrow("落盘失败");
 
     // 界面不许显示「已保存」：saving 必须放下
@@ -337,7 +337,7 @@ describe("connection store · resetProbe", () => {
 // ==================== 连接状态（D23 / D26） ====================
 
 /** 三态里各取一个样本（字段就是 shared 的 `ConnectionState`，这里只挑最典型的） */
-const CONNECTING_FIRST: ConnectionState = { status: "connecting", label: "本机服务端", attempt: 0 };
+const CONNECTING_FIRST: ConnectionState = { status: "connecting", label: "本机宿主", attempt: 0 };
 const CONNECTING_RETRY: ConnectionState = {
   status: "connecting",
   label: "wss://a.example/ai-zen",
@@ -346,7 +346,7 @@ const CONNECTING_RETRY: ConnectionState = {
 };
 const READY: ConnectionState = {
   status: "ready",
-  label: "本机服务端",
+  label: "本机宿主",
   protocol: 3,
   version: "0.1.0-alpha.0",
 };

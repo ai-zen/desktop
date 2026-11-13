@@ -26,12 +26,12 @@ importers:
       '@ai-zen/agents-core':
         specifier: link:../../../agents/packages/core
         version: link:../../../agents/packages/core
+      '@ai-zen/agents-host':
+        specifier: link:../../../agents/packages/host
+        version: link:../../../agents/packages/host
       '@ai-zen/agents-sdk':
         specifier: link:../../../agents/packages/sdk
         version: link:../../../agents/packages/sdk
-      '@ai-zen/agents-server':
-        specifier: link:../../../agents/packages/server
-        version: link:../../../agents/packages/server
       '@ai-zen/desktop-shared':
         specifier: workspace:*
         version: link:../shared
@@ -78,9 +78,9 @@ importers:
         specifier: ^3.5.40
         version: 3.5.40(typescript@5.9.3)
     devDependencies:
-      '@ai-zen/agents-server':
-        specifier: link:../../../agents/packages/server
-        version: link:../../../agents/packages/server
+      '@ai-zen/agents-host':
+        specifier: link:../../../agents/packages/host
+        version: link:../../../agents/packages/host
       '@types/markdown-it':
         specifier: ^14.1.2
         version: 14.1.2
@@ -112,9 +112,9 @@ importers:
         specifier: ^4.1.0
         version: 4.1.0(ws@8.21.1)(zod@4.4.3)
     devDependencies:
-      '@ai-zen/agents-server':
-        specifier: link:../../../agents/packages/server
-        version: link:../../../agents/packages/server
+      '@ai-zen/agents-host':
+        specifier: link:../../../agents/packages/host
+        version: link:../../../agents/packages/host
 
 packages:
 

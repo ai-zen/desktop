@@ -1,11 +1,11 @@
 /**
- * 服务端推送 → render 的 `ChatStreamEvent`（`packages/shared/src/types.ts`）。
+ * 宿主推送 → render 的 `ChatStreamEvent`（`packages/shared/src/types.ts`）。
  *
  * ## 这一层只做「分发」，不改形状
  *
- * 新契约的推送只有 6 条（`packages/server/src/wire/events.ts`），而且刻意只描述「发生了什么变化」：
+ * 新契约的推送只有 6 条（`packages/host/src/wire/events.ts`），而且刻意只描述「发生了什么变化」：
  *
- * | 服务端事件 | 这里发成 | 说明 |
+ * | 宿主事件 | 这里发成 | 说明 |
  * |---|---|---|
  * | `message.delta` | `message` | 增量按 core 的 `applyChunk` 拼进那条助手消息，整条 `AgentNS.Message` 原样递下去（见 `stream.ts`） |
  * | `run.state` | `stream` + `done` / `error` | 六态名与正在跑的工具（core 的 `ToolCall`）原样搬；`settled` 时按 `message.list` 收尾 |
@@ -15,24 +15,24 @@
  * | `conversation.changed` | `renamed` | 名字要从 `conversation.get` 现拉，推送里只有「改名了」 |
  *
  * 承载消息/内容的地方一律是 core 的原始形状（`AgentNS.Message` / `MessageContentSection` /
- * `ToolCall` / `Usage`）或服务端那份结构（`LocalizedText` / `ProblemFact`）：任何「把结构揉成
+ * `ToolCall` / `Usage`）或宿主那份结构（`LocalizedText` / `ProblemFact`）：任何「把结构揉成
  * 一句字」的转换都不在这一层做（R75）。
  *
- * ## 为什么收尾一定要回服务端拉一份
+ * ## 为什么收尾一定要回宿主拉一份
  *
  * `run.state` 只说「这一轮结束了、结局是什么」，**不带消息**。而客户端拼出来的那条只是「能让屏幕
- * 滚起来的近似」：工具调用参数、消息 `status`（`completed` / `aborted` / `error`）、服务端对历史的
+ * 滚起来的近似」：工具调用参数、消息 `status`（`completed` / `aborted` / `error`）、宿主对历史的
  * 清洗都只有库里有。所以 `settled` 之后补一次 `message.list`，把整段消息推成 `done` ——
  * render 的 `done` 本来就是「全量替换」，一条不缺。
  *
- * 同理，用户消息上屏前也回服务端取一次：带图那句在库里是内容段数组，手上只有用户敲的那几个字。
+ * 同理，用户消息上屏前也回宿主取一次：带图那句在库里是内容段数组，手上只有用户敲的那几个字。
  *
  * ## 桌面端答不了问题：把它变成一句看得见的话
  *
- * `question` 是服务端的产品对象（交接线、登记目录、二次确认，PRD D22），而 render 没有提问 UI。
+ * `question` 是宿主的产品对象（交接线、登记目录、二次确认，PRD D22），而 render 没有提问 UI。
  * 自动替用户答一个选项等于替产品做决定（旧实现替用户「跳过」了一次交接，那是它自己的选择，不是
  * 用户的）。所以这里**只把题目念出来**：推一条 `notice`（info）。代价写清楚：在题目被回答之前，
- * 这段对话发消息会被服务端以 `question_pending` 拒（PRD D23），那句话会经 `error` 上屏。
+ * 这段对话发消息会被宿主以 `question_pending` 拒（PRD D23），那句话会经 `error` 上屏。
  *
  * ## 断线：重连 + 补拉都归客户端库
  *
@@ -131,11 +131,11 @@ export class ChatEventBridge {
   /**
    * 一次发送被受理（`conversation.send` 回来了）：立刻把用户消息与「开始了」推给 render。
    *
-   * `start` 当场推（这一轮已经在跑了），用户消息那条要回服务端取一次：**消息本体在库里**
+   * `start` 当场推（这一轮已经在跑了），用户消息那条要回宿主取一次：**消息本体在库里**
    * （手上那句 `content` 只是文字，带图那一句在库里是 `image_url` 内容段数组）。把手上那句
-   * 字符串当成消息上屏，就等于把「服务端拼出来的那几个内容段」换成了「用户敲的那几个字」。
+   * 字符串当成消息上屏，就等于把「宿主拼出来的那几个内容段」换成了「用户敲的那几个字」。
    *
-   * id 是服务端在受理时分配的（PRD L6 / F-I12），所以这里回显的 id 与 `done` 全量替换里
+   * id 是宿主在受理时分配的（PRD L6 / F-I12），所以这里回显的 id 与 `done` 全量替换里
    * 那一条是同一个 —— 不会画成两条。
    */
   async beginTurn(conversationId: string, userMessageId: string): Promise<void> {
@@ -163,7 +163,7 @@ export class ChatEventBridge {
   }
 
   /**
-   * 推一条「这一轮各附件的结局」（`conversation.send` 回来的逐张账，已与服务端给的合并）。
+   * 推一条「这一轮各附件的结局」（`conversation.send` 回来的逐张账，已与宿主给的合并）。
    *
    * 空数组不发：没带附件的那一轮根本没有这件事，推一个空列表只会让界面多一次无意义的写入。
    * 跟着 `userMessageId` 走，是因为气泡按消息 id 找自己的结局（那个 id 在 `done` 的全量替换里
@@ -206,7 +206,7 @@ export class ChatEventBridge {
    * 运行状态变化 → 六态 + 收尾。
    *
    * `run.state` 是**全量快照**（发的是「现在是什么样」，不是「变成第几态」），所以任何一条到手都
-   * 能直接替换本地那份，不必先对齐历史 —— 重连之后服务端回的第一份就是它。
+   * 能直接替换本地那份，不必先对齐历史 —— 重连之后宿主回的第一份就是它。
    */
   private onRunState(payload: EventPayload<"run.state">): void {
     const { conversationId, run } = payload;
@@ -219,7 +219,7 @@ export class ChatEventBridge {
     if (run.status === "settled") void this.settle(conversationId, run);
   }
 
-  /** 本轮用量 → 钉到那条助手消息上（`done` 那次替换里服务端给的是同一份） */
+  /** 本轮用量 → 钉到那条助手消息上（`done` 那次替换里宿主给的是同一份） */
   private onUsage(payload: EventPayload<"usage">): void {
     const stream = this.streams.get(payload.conversationId);
     const message = stream?.attachUsage(payload.usage.turn);
@@ -227,7 +227,7 @@ export class ChatEventBridge {
     this.push({ conversationId: payload.conversationId, type: "message", message });
   }
 
-  /** 一条通知 → `notice`（语气三档与服务端同一个词，内容四件原样搬） */
+  /** 一条通知 → `notice`（语气三档与宿主同一个词，内容四件原样搬） */
   private onNotice(payload: EventPayload<"notice">): void {
     const { notice } = payload;
     this.push({
@@ -283,18 +283,18 @@ export class ChatEventBridge {
   private onClose(error: ClientError): void {
     const connection = this.connection;
     if (!connection) return;
-    this.log(`与服务端的连接断了：${error.message}；开始重连`);
+    this.log(`与宿主的连接断了：${error.message}；开始重连`);
     void reconnectUntilConnected(connection, { policy: RECONNECT_POLICY }).catch((failure: unknown) => {
       const message = failure instanceof Error ? failure.message : String(failure);
       this.log(`重连失败，已放弃：${message}`);
-      this.pushNotice("error", `与服务端的连接断了，重连 ${RECONNECT_POLICY.maxAttempts} 次仍未成功：${message}`);
+      this.pushNotice("error", `与宿主的连接断了，重连 ${RECONNECT_POLICY.maxAttempts} 次仍未成功：${message}`);
     });
   }
 
   /**
    * 补拉回来了（重连之后客户端库自己拉的，或 `chat.getState` 那次）。
    *
-   * 「续传」与「全量」怎么拼只有一份实现（库里的 `mergeResumed`）：服务端回的 `anchor` 命中时，
+   * 「续传」与「全量」怎么拼只有一份实现（库里的 `mergeResumed`）：宿主回的 `anchor` 命中时，
    * 第一条就是那条消息的**最新内容**（流式中那条可能已经变了），所以是替换而不是再追加一条。
    */
   private onResume(outcome: ResumeOutcome): void {
@@ -321,10 +321,10 @@ export class ChatEventBridge {
   // ==================================================================
 
   /**
-   * 一轮收尾：回服务端拿整段消息，推 `done`（失败再推一句 `error`）。
+   * 一轮收尾：回宿主拿整段消息，推 `done`（失败再推一句 `error`）。
    *
    * 同一轮只收一次：`run.state` 的 `settled` 快照在重连补拉时会再给一份，收两次就会把已经
-   * 结束的一轮又画一遍。标记用 `settledAt`（同一轮同一时刻，服务端只写一次）。
+   * 结束的一轮又画一遍。标记用 `settledAt`（同一轮同一时刻，宿主只写一次）。
    */
   private async settle(conversationId: string, run: RunState): Promise<void> {
     const marker = run.settledAt ?? "";

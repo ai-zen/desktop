@@ -32,7 +32,7 @@ function bytesOf(): AssetContent {
   };
 }
 
-/** 落库形态的内容段：core 的段 + 本地扩展字段（服务端存的就是这个形状） */
+/** 落库形态的内容段：core 的段 + 本地扩展字段（宿主存的就是这个形状） */
 type StoredSection = AgentNS.MessageContentSection & { __asset_id?: string };
 
 /** 模块级状态（那份缓存）要做用例之间清零，所以每个用例重新 import 一次 */

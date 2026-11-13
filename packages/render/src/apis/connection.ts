@@ -1,21 +1,21 @@
 /**
  * connection api — 本地 / 远程连接设置（对应 main 的 ConnectionController）。
  *
- * 与其它 apis 文件的区别：**不走 `invokeService`**。`invokeService` 那张表的六个键是**服务端
- * 的方法**（协议一一对应），而「连哪台服务端」在服务端还不存在的时候就要回答 —— 它转发不了
- * （转发要一条连着的服务端，而它正是决定连哪条的那一个）。所以 main 给了五条专用通道
+ * 与其它 apis 文件的区别：**不走 `invokeService`**。`invokeService` 那张表的六个键是**宿主
+ * 的方法**（协议一一对应），而「连哪台宿主」在宿主还不存在的时候就要回答 —— 它转发不了
+ * （转发要一条连着的宿主，而它正是决定连哪条的那一个）。所以 main 给了五条专用通道
  * `connection:get` / `connection:save` / `connection:test` / `connection:state` /
  * `connection:reconnect`（D20 / D26），preload 暴露成 `window.electronAPI.connection`，这里只过一手。
  *
- * 错误照 `base.ts` 的做法收敛成 `InvokeServerError`：UI 层直接展示 `message`。
- * **日志里只许出现通道名**：前三条的入参带凭证（`serverToken`），一个字都不许进日志（D22）。
+ * 错误照 `base.ts` 的做法收敛成 `InvokeHostError`：UI 层直接展示 `message`。
+ * **日志里只许出现通道名**：前三条的入参带凭证（`hostToken`），一个字都不许进日志（D22）。
  */
 
 import type { ConnectionProbe, ConnectionSettings, ConnectionState } from "@ai-zen/desktop-shared";
-import { InvokeServerError, subscribeServiceEvent } from "./base.js";
+import { InvokeHostError, subscribeServiceEvent } from "./base.js";
 
 /**
- * 调一条连接通道并把错误翻成 `InvokeServerError`。
+ * 调一条连接通道并把错误翻成 `InvokeHostError`。
  *
  * `run` 是惰性的一层包装，好处就是这里拿不到入参：想顺手 `console.error(...args)` 也没有 args
  * 可打 —— D22 的「凭证绝不进任何日志」靠结构而不是靠自觉。
@@ -26,7 +26,7 @@ async function call<T>(channel: string, run: () => Promise<T>): Promise<T> {
   } catch (error) {
     // 只带通道名与错误本身；凭证在 `settings` / `candidate` 里，不在这个作用域里
     console.error(`[connection] ${channel}`, error);
-    throw InvokeServerError.from(error);
+    throw InvokeHostError.from(error);
   }
 }
 
@@ -49,8 +49,8 @@ export function saveConnectionSettings(
  * 这里兜的是 IPC 本身出问题（通道没注册、主进程崩了），那种才该 reject。
  */
 export function testConnection(candidate: {
-  serverUrl: string;
-  serverToken?: string;
+  hostUrl: string;
+  hostToken?: string;
 }): Promise<ConnectionProbe> {
   return call("test", () => window.electronAPI.connection.test(candidate));
 }

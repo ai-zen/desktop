@@ -30,10 +30,10 @@ const bundle = join(here, "..", "dist", "main.mjs");
 
 /** 产物里出现这些特征串，说明客户端库的代码确实在里面 */
 const CLIENT_MARKERS = [
-  // `connection.ts`：本机发现文件 + 拉起服务端
-  "run/server.json",
+  // `connection.ts`：本机发现文件 + 拉起宿主
+  "run/host.json",
   "readLocalToken",
-  "server_did_not_start",
+  "host_did_not_start",
   // `client.ts`：重连之后按 track 过的对话补拉
   "resumeTracked",
   // `frames.ts` / `address.ts`：线上那一层

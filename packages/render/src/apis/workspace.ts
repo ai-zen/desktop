@@ -1,5 +1,5 @@
 /**
- * workspace api — 工作空间（对应 main ServerWorkspaceService）。
+ * workspace api — 工作空间（对应 main HostWorkspaceService）。
  */
 
 import type { Workspace } from "@ai-zen/desktop-shared";

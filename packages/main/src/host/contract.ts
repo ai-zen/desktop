@@ -11,7 +11,7 @@
  * ## 事件与方法的形状一个都不在这里重写
  *
  * `MethodName` / `MethodParams` / `MethodResult` / `EventName` / `EventPayload` 全部从
- * `@ai-zen/agents-client` 转出（它又原样转自服务端的 `wire/`）。改契约时这一层编译不过，
+ * `@ai-zen/agents-client` 转出（它又原样转自宿主的 `wire/`）。改契约时这一层编译不过，
  * 而不是运行期才发现某个方法不存在。
  */
 
@@ -24,18 +24,18 @@ import type {
   MethodResult,
   ResumedConversation,
   ResumeOutcome,
-  ServerHelloResult,
+  HostHelloResult,
   Unsubscribe,
 } from "@ai-zen/agents-client";
 
-/** 调一次契约方法（方法名与入参/出参由服务端的方法表推出来） */
+/** 调一次契约方法（方法名与入参/出参由宿主的方法表推出来） */
 export type ContractCall = <M extends MethodName>(
   method: M,
   ...args: MethodCallArgs<M>
 ) => Promise<MethodResult<M>>;
 
 /**
- * 「一条到服务端的连接」在本层眼里的样子。
+ * 「一条到宿主的连接」在本层眼里的样子。
  *
  * 全部是**连接级**的能力：没有一个方法要求「记住哪一条 socket」—— 客户端库内部会在重连时换掉
  * 底层 socket，而上层手上的这个对象不变（订阅、`track` 的对话、锚点都跟着对象走）。
@@ -57,8 +57,8 @@ export interface ContractConnection {
   /**
    * 写一个二进制帧（上传分片走这里，不走 JSON-RPC）。
    *
-   * 上传的三段式里，中间那截字节是**同一条 WS 上的二进制帧**（服务端 `net/UploadReceiver`）：
-   * 分片是任意二进制，base64 进 JSON 会平白多出三分之一体积，服务端还得先解一层编码。
+   * 上传的三段式里，中间那截字节是**同一条 WS 上的二进制帧**（宿主 `net/UploadReceiver`）：
+   * 分片是任意二进制，base64 进 JSON 会平白多出三分之一体积，宿主还得先解一层编码。
    * 所以上传这件能力在 `call` 之外还需要这第二条出口 —— 客户端库的 `uploadAsset(s)` 就要它。
    */
   sendBinary(frame: Uint8Array<ArrayBuffer>): Promise<void>;
@@ -66,13 +66,13 @@ export interface ContractConnection {
    * 这条连接声明的语言（握手时带上的那个）。
    *
    * 上传时本地就能判的几件事（单张超限、张数超限、空文件、认不出类型）要出一句人话，而那时
-   * 服务端还没参与 —— 这两句话由客户端库按这个语言渲染，于是和界面其余部分同一口径。
+   * 宿主还没参与 —— 这两句话由客户端库按这个语言渲染，于是和界面其余部分同一口径。
    */
   readonly language: string | undefined;
   /** 换一条 socket 重新握手（连上之后自动补拉 `track` 过的对话） */
   reconnect(): Promise<void>;
   /** 关掉这条连接 */
   close(): Promise<void>;
-  /** 握手回执（语言、服务端版本、能力 id、附件上限）；没握手成功时为空 */
-  readonly hello: ServerHelloResult | null;
+  /** 握手回执（语言、宿主版本、能力 id、附件上限）；没握手成功时为空 */
+  readonly hello: HostHelloResult | null;
 }

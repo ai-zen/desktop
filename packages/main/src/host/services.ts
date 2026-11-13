@@ -10,11 +10,11 @@
  *
  * ## 四条纪律
  *
- * 1. **不自己算规则**：侧栏顺序、消息条数、`running`、生效模型都由服务端给（`conversation.list`
+ * 1. **不自己算规则**：侧栏顺序、消息条数、`running`、生效模型都由宿主给（`conversation.list`
  *    的每一项就是它算好的），客户端再推一遍就是第二份会漂的实现；
  * 2. **消息本体是 core 的 `AgentNS.Message`**，原样来回搬，不重新包装字段（`message.list` 给的
  *    就是那个类型）；内容段、工具调用、用量同理；
- * 3. **结构化的服务端事实不拍平**：`folder`（路径 + 还在不在）、`model`（id + 名字 + 能不能看图
+ * 3. **结构化的宿主事实不拍平**：`folder`（路径 + 还在不在）、`model`（id + 名字 + 能不能看图
  *    + 谁定的）这类成组的事实整块搬，不取其中一字段压成一个值（R75 的同一条原则）；
  * 4. **契约没有的东西不造**：render 要而这一波没接的（子 Agent 栏目、通知的手动清除、提问 UI），
  *    宁可留空并在 `events.ts` 里说清，也不编一个像样的假值。
@@ -63,10 +63,10 @@ export interface ServiceContext {
 // workspace
 // ==================================================================
 
-export class ServerWorkspaceService {
+export class HostWorkspaceService {
   constructor(private readonly ctx: ServiceContext) {}
 
-  /** 全部项目（服务端已按 `createdAt` 倒序 / 置顶优先排好，客户端不重排） */
+  /** 全部项目（宿主已按 `createdAt` 倒序 / 置顶优先排好，客户端不重排） */
   async list(): Promise<Workspace[]> {
     const { workspaces } = await this.ctx.call("workspace.list", {});
     return workspaces.map(toWorkspace);
@@ -75,7 +75,7 @@ export class ServerWorkspaceService {
   /**
    * 建（或复用）一个项目。
    *
-   * `cwd` 为空时用桌面端的默认目录（`app.getPath("desktop")`）—— 那是**本机**的事实，服务端
+   * `cwd` 为空时用桌面端的默认目录（`app.getPath("desktop")`）—— 那是**本机**的事实，宿主
    * 不可能知道，所以由这里补上再交出去。
    */
   async create(name: string, cwd: string): Promise<Workspace> {
@@ -94,7 +94,7 @@ export class ServerWorkspaceService {
   }
 
   /**
-   * 删项目 —— 服务端连带删它名下的对话（PRD D11），目录本身它永不碰。
+   * 删项目 —— 宿主连带删它名下的对话（PRD D11），目录本身它永不碰。
    *
    * 不带 `dryRun`：render 的删除确认框问的是「连会话一起删」这件事本身，代价明细（几条会话几条
    * 消息）这一波没有界面显示；要显示的那天把 `dryRun: true` 先跑一遍即可。
@@ -108,10 +108,10 @@ export class ServerWorkspaceService {
 // conversation
 // ==================================================================
 
-export class ServerConversationService {
+export class HostConversationService {
   constructor(private readonly ctx: ServiceContext) {}
 
-  /** 侧栏的会话清单（顺序、条数、`running` 全由服务端给） */
+  /** 侧栏的会话清单（顺序、条数、`running` 全由宿主给） */
   async list(workspaceId: string): Promise<ConversationSummary[]> {
     const { conversations } = await this.ctx.call("conversation.list", { workspaceId });
     return conversations.map(toSummary);
@@ -120,22 +120,12 @@ export class ServerConversationService {
   /**
    * 新建一段会话。
    *
-   * 助手与模型在创建时定死（PRD L7）：`agentId` 由 render 选，模型由服务端按「助手定义 > 兜底」
+   * 助手与模型在创建时定死（PRD L7）：`agentId` 由 render 选，模型由宿主按「助手定义 > 兜底」
    * 解析，客户端不指定、也不猜。
-   *
-   * 目录还没登记成项目时服务端不建对话，而是回 `requiresRegistration`（PRD D10）—— 那个分支要
-   * 用户先答一个问题，而桌面端这一波没有提问 UI（见 `events.ts` 文件头），所以这里当成失败**说
-   * 清原因**，不静默返回一个空对话。
    */
   async create(workspaceId: string, agentId: string): Promise<Conversation> {
-    const created = await this.ctx.call("conversation.create", { workspaceId, agentId });
-    if (!created.conversation) {
-      throw new Error(
-        `这个目录还没登记成项目（${created.cwd ?? workspaceId}），要先回答「是否登记为项目」才能建对话 —— 桌面端还没有提问界面`,
-      );
-    }
-    const conversation = created.conversation;
-    // 预设消息（助手定义里的 system / few-shot）由服务端写进会话，客户端只读：刚建出来的这一段
+    const { conversation } = await this.ctx.call("conversation.create", { workspaceId, agentId });
+    // 预设消息（助手定义里的 system / few-shot）由宿主写进会话，客户端只读：刚建出来的这一段
     // 可能已经有几条，所以照常规取一次
     const listed = await this.ctx.call("message.list", { conversationId: conversation.id });
     return {
@@ -171,13 +161,13 @@ export class ServerConversationService {
         updatedAt: conversation.updatedAt,
       };
     } catch (error) {
-      // 服务端用 `not_found` 表达「这段对话不在」：在这里翻回 `null`，调用方不必认识业务码
+      // 宿主用 `not_found` 表达「这段对话不在」：在这里翻回 `null`，调用方不必认识业务码
       if (isBiz(error, "not_found")) return null;
       throw error;
     }
   }
 
-  /** 硬删（PRD D17；服务端按引用清理图片） */
+  /** 硬删（PRD D17；宿主按引用清理图片） */
   async remove(workspaceId: string, id: string): Promise<void> {
     void workspaceId; // 渲染层签名如此；契约只认会话 id（会话自己知道属于哪个项目）
     await this.ctx.call("conversation.delete", { conversationId: id });
@@ -200,13 +190,13 @@ export class ServerConversationService {
 // agent / model
 // ==================================================================
 
-export class ServerAgentService {
+export class HostAgentService {
   constructor(private readonly ctx: ServiceContext) {}
 
   /**
    * 入口助手列表。
    *
-   * 子 Agent（定义里带 `function`）不进这个列表：它们不是「开一段对话」的入口（服务端用
+   * 子 Agent（定义里带 `function`）不进这个列表：它们不是「开一段对话」的入口（宿主用
    * `isSubAgent` 明说了这件事，客户端不再按字段自己判）。
    */
   async list(): Promise<AgentOption[]> {
@@ -221,14 +211,14 @@ export class ServerAgentService {
   }
 }
 
-export class ServerModelService {
+export class HostModelService {
   constructor(private readonly ctx: ServiceContext) {}
 
   /**
    * 模型下拉的候选。
    *
    * 只给**现在能用**的：下拉框里选一个不可用的模型，发出去必然失败，而失败原因（端点缺密钥之类）
-   * 在对话才显示就太晚了。不可用的那些仍然在服务端清单里（`model.list` 默认全给），设置页要列
+   * 在对话才显示就太晚了。不可用的那些仍然在宿主清单里（`model.list` 默认全给），设置页要列
    * 的时候再拉一次就是。
    */
   async list(): Promise<ModelOption[]> {
@@ -241,14 +231,14 @@ export class ServerModelService {
 // config
 // ==================================================================
 
-export class ServerConfigService {
+export class HostConfigService {
   constructor(private readonly ctx: ServiceContext) {}
 
   /**
    * 设置页要的那一小撮字段。
    *
-   * `dataDir` 是服务端给的 `configDir`：两机部署时客户端算不出对面把配置放在哪，所以这条路径
-   * 只能由服务端随配置一起回来。
+   * `dataDir` 是宿主给的 `configDir`：两机部署时客户端算不出对面把配置放在哪，所以这条路径
+   * 只能由宿主随配置一起回来。
    *
    * `apiKey` 里放的是**掩码**（`sk-…9f3a`）：新契约的明文密钥不出网（PRD F-F2）。设置页那个输入框
    * 因此显示的是掩码 —— 用户在框里改成一个新值就表示「换密钥」，原样不动就表示「不改」
@@ -274,8 +264,8 @@ export class ServerConfigService {
   /**
    * 保存设置：默认项走 `config.setDefaults`，端点走 `config.saveEndpoint`（一个端点一次）。
    *
-   * 两处「没写」照实回报（`ConfigUpdateReport` 的存在理由）：默认值是空串（服务端的窄方法只收非空
-   * id）、端点 id 在服务端已经不存在。界面据此说一句真话，而不是把「没落盘」当成「已保存」。
+   * 两处「没写」照实回报（`ConfigUpdateReport` 的存在理由）：默认值是空串（宿主的窄方法只收非空
+   * id）、端点 id 在宿主已经不存在。界面据此说一句真话，而不是把「没落盘」当成「已保存」。
    *
    * **密钥只在真的改了时才写**：框里显示的是掩码，把它原样回写会把掩码当成密钥存起来。所以
    * 「提交值 === 掩码」⇒ 省略 `apiKey`（契约里省略 = 保留原值）。
@@ -295,7 +285,7 @@ export class ServerConfigService {
     const writtenEndpointIds: string[] = [];
     const missingEndpointIds: string[] = [];
     if (input.endpoints) {
-      // 现读一次是为了拿到掩码与「服务端还有没有这个端点」—— 面板开着的时候它可能已经被别的
+      // 现读一次是为了拿到掩码与「宿主还有没有这个端点」—— 面板开着的时候它可能已经被别的
       // 客户端删掉了
       const { config } = await this.ctx.call("config.get", {});
       for (const edit of input.endpoints) {
@@ -326,7 +316,7 @@ export class ServerConfigService {
 // chat
 // ==================================================================
 
-export class ServerChatService {
+export class HostChatService {
   constructor(private readonly ctx: ServiceContext) {}
 
   /**
@@ -341,7 +331,7 @@ export class ServerChatService {
    * ```
    *
    * 上传必须发生在 `conversation.send` **之前**：`assetIds` 是「已经传上去的那几张」的 id，而素材
-   * 怎么变成内容段（文件引用 / 内联 / 退化成文字）由服务端按实发模型决定。
+   * 怎么变成内容段（文件引用 / 内联 / 退化成文字）由宿主按实发模型决定。
    *
    * ## 上传失败不阻挡发送
    *
@@ -350,7 +340,7 @@ export class ServerChatService {
    *
    * ## 三条出口
    *
-   *   · 受理了 → 立刻把 `user` + `start` 推给 render（id 是服务端给的，不必编），随后推这一轮各附件
+   *   · 受理了 → 立刻把 `user` + `start` 推给 render（id 是宿主给的，不必编），随后推这一轮各附件
    *     的结局；
    *   · `busy`（这段对话正跑着一轮，PRD D14）→ 什么都不推：那是「多点了一下发送」，不是错误；
    *   · 其余（`question_pending`、会话不在、连接断了）→ 推 `error`。不让 IPC 抛错：render 的
@@ -378,9 +368,9 @@ export class ServerChatService {
         conversationId,
         input: { content, ...(assetIds.length > 0 ? { assetIds } : {}) },
       });
-      // 上屏的是服务端落库的那条消息（`message.list` 里取回来），不是手上这句 `content`
+      // 上屏的是宿主落库的那条消息（`message.list` 里取回来），不是手上这句 `content`
       await this.ctx.events.beginTurn(conversationId, accepted.userMessageId);
-      // 上传阶段已有的失败与服务端给的结局合到一份逐张账上（顺序 = 用户摆放的顺序）
+      // 上传阶段已有的失败与宿主给的结局合到一份逐张账上（顺序 = 用户摆放的顺序）
       this.ctx.events.pushAttachments(
         conversationId,
         accepted.userMessageId,
@@ -398,16 +388,16 @@ export class ServerChatService {
    * ## 为什么这条能力长在 `chat` 上而不是另开一个键
    *
    * 分发键就是 render 的调用面，而 render 的 `apis/*.ts` 与这六个键一一对应：新增第七个键要
-   * 同步改掉六处「六个键 = 服务端调用面」的口径，换来的只是把同一屏的读写拆到两个文件里。
+   * 同步改掉六处「六个键 = 宿主调用面」的口径，换来的只是把同一屏的读写拆到两个文件里。
    * 「一条消息里的图能不能显示」与 `send` / `getState` 是同一件事的两半（发送时把图传上去、
    * 重开时把图取回来），所以它落在 `chat` 上。
    *
    * ## 整份引用下传，不挑字段
    *
-   * 服务端 `asset.get` 回的是 `{ asset, variant, data }`：`asset` 是**整份** `AssetRef`（素材 id、
+   * 宿主 `asset.get` 回的是 `{ asset, variant, data }`：`asset` 是**整份** `AssetRef`（素材 id、
    * mime、字节数、文件名、原图宽高），`variant` 是实际给出的那一档。这一层只把 `data` 的 base64
    * 解成字节（客户端库已经做了），其余原样交给 render —— 挑几个字段搬，剩下的就再也拿不到了，
-   * 服务端将来加字段也一样。
+   * 宿主将来加字段也一样。
    *
    * ## 不碰缓存
    *
@@ -427,14 +417,15 @@ export class ServerChatService {
   /**
    * 会话实时状态（render 每次点开会话都调它）。
    *
-   * 两跳、串行：先 `conversation.state`（这一段在不在跑、跑到哪一态、上下文、思考档位、用量、
-   * 挂着的问题、状态栏那几块），再 `message.list`（整段消息，含流式中那条的部分内容 —— PRD L5）。
+   * 一次调用拿齐两样：`conversation.state` 带 `includeMessages: true` —— 现场（这一段在不在跑、
+   * 跑到哪一态、上下文、思考档位、用量、挂着的问题、状态栏那几块）与整段消息。分开调两次会
+   * 在两份快照之间留一道缝：现场报的用量可能对应不到手上这批消息。
    *
-   * ## 返回的就是服务端那两份，不加工
+   * ## 返回的就是宿主那两份，不加工
    *
-   * `conversation.state` 那一份原样展开、再把 `message.list` 的 `messages` 接上去：服务端说
+   * `conversation.state` 那一份原样展开、再把 `messages` 接上去：宿主说
    * `run.status` 是 `running`，那就是在跑 —— 这一层不再把它压成一个 `streaming` 布尔（多一个
-   * 派生值就多一份会与服务端说法漂开的第二真相）。界面要什么读什么，剩下的不因为今天没人画就
+   * 派生值就多一份会与宿主说法漂开的第二真相）。界面要什么读什么，剩下的不因为今天没人画就
    * 在半路上丢掉。
    *
    * 把这条消息列表交给事件层当**基线**，并把本地锚点记成最后一条的 id：下一次断线重连，客户端库
@@ -442,16 +433,20 @@ export class ServerChatService {
    */
   async getState(workspaceId: string, conversationId: string): Promise<ChatState> {
     void workspaceId;
-    const { state } = await this.ctx.call("conversation.state", { conversationId });
-    const listed = await this.ctx.call("message.list", { conversationId });
+    const { state, messages } = await this.ctx.call("conversation.state", {
+      conversationId,
+      includeMessages: true,
+    });
+    // 要了 `includeMessages` 就一定有（`?? []` 只是让类型闭合）
+    const list = messages ?? [];
 
-    this.ctx.events.noteMessages(conversationId, listed.messages);
+    this.ctx.events.noteMessages(conversationId, list);
     this.ctx.events.noteState(state);
 
     const connection = this.ctx.connection();
-    connection.track(conversationId, lastId(listed.messages));
+    connection.track(conversationId, lastId(list));
 
-    return { ...state, messages: listed.messages };
+    return { ...state, messages: list };
   }
 }
 
@@ -497,7 +492,7 @@ function lastId(messages: readonly AgentNS.Message[]): string | undefined {
   return messages.at(-1)?.id;
 }
 
-/** 这个失败是不是服务端那个业务码（判伪看 `code`，不看句子） */
+/** 这个失败是不是宿主那个业务码（判伪看 `code`，不看句子） */
 function isBiz(error: unknown, code: string): boolean {
   return typeof error === "object" && error !== null && (error as { code?: unknown }).code === code;
 }

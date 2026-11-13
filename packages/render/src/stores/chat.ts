@@ -36,16 +36,16 @@ interface ConversationChatState {
   /** 最近一次发送失败的内容（重试用） */
   lastFailedContent: string;
   /**
-   * 服务端给的生成六态（连上 / 等首字 / 在想 / 在输出 / 拼工具调用 / 等工具）。
+   * 宿主给的生成六态（连上 / 等首字 / 在想 / 在输出 / 拼工具调用 / 等工具）。
    *
-   * `null` = 这一轮不在跑。取值一字未改来自服务端，render 不自己推（「现在算哪一态」是服务端的
+   * `null` = 这一轮不在跑。取值一字未改来自宿主，render 不自己推（「现在算哪一态」是宿主的
    * 事实，PRD L8）。
    */
   phase: StreamPhase | null;
   /** 「在等哪几个工具」：并行时只含还在跑的那几个，core 的 `ToolCall` 原样（要名字读 `function.name`） */
   toolCalls: AgentNS.ToolCall[];
   /**
-   * 当前这一轮的子 Agent 栏目（数组顺序 = 服务端给的 `index` 顺序 = 标签顺序）。
+   * 当前这一轮的子 Agent 栏目（数组顺序 = 宿主给的 `index` 顺序 = 标签顺序）。
    *
    * 只活当前一轮：`agents: []` 意味着这一轮结束（或换了会话 id），栏目收回。
    */
@@ -55,8 +55,8 @@ interface ConversationChatState {
   /**
    * 用户消息 id → 那一轮各附件的结局（`attachments` 事件给的那份）。
    *
-   * 按**消息 id** 存而不是按轮次序号：那个 id 在 `done` 的全量替换里是同一个（服务端受理时就定了，
-   * L6），所以气泡在流式转完成之后还能找回自己的那几行字。键是服务端分配的值，客户端不数轮次
+   * 按**消息 id** 存而不是按轮次序号：那个 id 在 `done` 的全量替换里是同一个（宿主受理时就定了，
+   * L6），所以气泡在流式转完成之后还能找回自己的那几行字。键是宿主分配的值，客户端不数轮次
    * （切会话、重连补拉都数不出对的那一个）。
    */
   attachments: Record<string, AttachmentOutcome[]>;
@@ -79,8 +79,8 @@ function emptyState(): ConversationChatState {
 /**
  * 六态 → 正在生成那行字。
  *
- * 这一张表是**界面用词**（怎么说），六态本身是服务端的事实（是什么）—— 两者不混：服务端改了态，
- * 这里补一行；这里改了词，服务端一行不用动。
+ * 这一张表是**界面用词**（怎么说），六态本身是宿主的事实（是什么）—— 两者不混：宿主改了态，
+ * 这里补一行；这里改了词，宿主一行不用动。
  */
 const PHASE_TEXT: Record<StreamPhase, string> = {
   connected: "正在等待响应…",
@@ -128,7 +128,7 @@ export const useChatStore = defineStore("chat", {
 
   getters: {
     /**
-     * 当前激活会话的消息 —— **服务端给的那一份原始数据**（`hidden` 的也在里面）。
+     * 当前激活会话的消息 —— **宿主给的那一份原始数据**（`hidden` 的也在里面）。
      * 要拿去显示请读 `viewMessages`（它已经把 `hidden` 滤掉了）
      */
     messages: (state): AgentNS.Message[] =>
@@ -147,9 +147,9 @@ export const useChatStore = defineStore("chat", {
      * 正在生成那行字（六态 + 在等的工具名）。
      *
      * 没在跑时是空串（视图那边 v-show 不看它，看 `streaming`）；拿到了态就按 `PHASE_TEXT` 说，
-     * 连态都没拿到时用一句中的「正在思考…」—— 服务端确实还没报态，界面不该停在一片空白上。
+     * 连态都没拿到时用一句中的「正在思考…」—— 宿主确实还没报态，界面不该停在一片空白上。
      *
-     * 工具名是**界面层**从 core 的 `ToolCall` 里取 `function.name` 拼的句子：服务端给的是那几个
+     * 工具名是**界面层**从 core 的 `ToolCall` 里取 `function.name` 拼的句子：宿主给的是那几个
      * 调用本身（名字、参数、id 都在），怎么念是这一层的事。
      */
     streamingHint: (state): string => {
@@ -178,11 +178,11 @@ export const useChatStore = defineStore("chat", {
      * 抽成 getter 而不是让视图自己 if：视图里 `useMessageWindow` / `useAutoScroll` 的每一个
      * watch 都要读它，散在模板和脚本里两处判断迟早会有一处漏改。
      *
-     * 这里同时是 `hidden` 的**唯一**过滤点：服务端建会话时写进去的那条（当前目录那类）
+     * 这里同时是 `hidden` 的**唯一**过滤点：宿主建会话时写进去的那条（当前目录那类）
      * `hidden: true`，它不进任何一份要显示的列表（主对话、子 Agent 一视同仁）。过滤放在这里
      * 而不是放在气泡组件里，是因为「显示哪些」在下面那串 watch（渲染窗口起点、滚动跟随、
      * 打字机跟随）里也要用到同一个结果 —— 各自滤一遍，窗口的 index 就会指向两份长度不同的数组。
-     * 存着的 `messages` 保持原样（服务端给什么就存什么），重连补拉与重试读的仍是那一份。
+     * 存着的 `messages` 保持原样（宿主给什么就存什么），重连补拉与重试读的仍是那一份。
      */
     viewMessages: (state): AgentNS.Message[] => {
       const st = state.byConversation[state.activeConversationId];
@@ -198,9 +198,9 @@ export const useChatStore = defineStore("chat", {
 
   actions: {
     /**
-     * 切换激活会话：同步视角 id，并**总是从服务端读取实时状态**（chat.getState → 服务端的
+     * 切换激活会话：同步视角 id，并**总是从宿主读取实时状态**（chat.getState → 宿主的
      * `conversation.state` + `message.list`）。
-     * 返回的是服务端此刻的消息（含流式进行中的回复），
+     * 返回的是宿主此刻的消息（含流式进行中的回复），
      * 使前端切回流式中的会话也能看到正确的进行中内容 —— 前端始终访问服务，
      * 不持有独立状态副本。
      */
@@ -215,7 +215,7 @@ export const useChatStore = defineStore("chat", {
       const generation = state.run.generation;
       this.byConversation[conversationId] = {
         messages: state.messages,
-        // 「在不在跑」就是服务端给的 `run.status`（回包里没有第二个布尔可读，也不该有）
+        // 「在不在跑」就是宿主给的 `run.status`（回包里没有第二个布尔可读，也不该有）
         streaming: state.run.status === "running",
         error: "",
         lastFailedContent,
@@ -231,7 +231,7 @@ export const useChatStore = defineStore("chat", {
         // / 上一次会话的标签挂回来 —— 点进去是永远不再更新的残影，还可能顶着一批早已失效的消息。
         agents: [],
         activeAgentId: MAIN_AGENT_VIEW_ID,
-        // 附件结局也不随重载保留：`chat.getState` 只说「现在有哪些消息」，服务端不重发某一轮的
+        // 附件结局也不随重载保留：`chat.getState` 只说「现在有哪些消息」，宿主不重发某一轮的
         // 附件结局（那是一次性的受理回执）。留着旧的那份会跟上一批气泡错位。
         attachments: {},
       };
@@ -264,7 +264,7 @@ export const useChatStore = defineStore("chat", {
     /**
      * 发送一条消息（可带图片附件）。
      *
-     * 返回 `true` = 这一条**确实提交给了服务端**；`false` = 没发出去（没有活动工作区/会话
+     * 返回 `true` = 这一条**确实提交给了宿主**；`false` = 没发出去（没有活动工作区/会话
      * 而早退，或 invoke 层抛错）。
      *
      * 为什么要这个布尔：调用方（`ChatPanel.vue` 的 `handleSend`）要用它决定**输入框里的字
@@ -278,7 +278,7 @@ export const useChatStore = defineStore("chat", {
      * ## 附件怎么走
      *
      * 这里只把字节交出去（`api.sendChatMessage` → main），**不本地乐观插入缩略图**：附件最后是
-     * 文件引用、内联、还是退化成文字，只有服务端知道（F-H7），结局走 `attachments` 事件。重试（
+     * 文件引用、内联、还是退化成文字，只有宿主知道（F-H7），结局走 `attachments` 事件。重试（
      * `retry`）只重发文字：上传已经在 main 做过一次，带着同一批字节再传一遍会多出一份素材。
      */
     async send(content: string, attachments?: AttachmentInput[]): Promise<boolean> {
@@ -293,7 +293,7 @@ export const useChatStore = defineStore("chat", {
       st.error = "";
       st.lastFailedContent = content;
       // 只提交：user 消息上屏 / streaming 均由事件驱动（user / start），
-      // render 不本地乐观插入也不自行置位 —— 状态源是常驻服务端
+      // render 不本地乐观插入也不自行置位 —— 状态源是常驻宿主
       try {
         await api.sendChatMessage(workspaceId, conversationId, content, attachments);
       } catch (err) {
@@ -365,7 +365,7 @@ export const useChatStore = defineStore("chat", {
       // toast 不占位置、不改布局，设置页已经在用它。将来真做了通知栏，这里换成「写状态」即可
       // —— 调用点只有一个，换的时候不用碰别处。
       //
-      // 显示的是服务端已渲染好的那一句（`text.message`，按这条连接的语言）；三档语气与服务端的
+      // 显示的是宿主已渲染好的那一句（`text.message`，按这条连接的语言）；三档语气与宿主的
       // `level` 逐字对应，不在这里另译一套词。
       if (evt.type === "notice") {
         showNotice(evt.level, evt.text.message);
@@ -382,20 +382,20 @@ export const useChatStore = defineStore("chat", {
           convStore.setRunning(evt.conversationId, true);
           break;
 
-        // 生成六态（服务端 `run.state` 翻过来的那一条）：只影响「正在生成」那行字，
+        // 生成六态（宿主 `run.state` 翻过来的那一条）：只影响「正在生成」那行字，
         // 不动消息与流式态 —— 六态变化不是「一轮开始 / 结束」
         case "stream":
           st.phase = evt.phase;
           st.toolCalls = evt.toolCalls;
           break;
 
-        // 这一轮各附件的结局：按用户消息 id 存着，气泡自己去取（文案是服务端/客户端库
+        // 这一轮各附件的结局：按用户消息 id 存着，气泡自己去取（文案是宿主/客户端库
         // 渲染好的原文，这里一个字都不改 —— 怎么摆是 `attachmentNotes` 的事）
         case "attachments":
           st.attachments[evt.userMessageId] = evt.attachments;
           break;
 
-        // 本轮用户消息上屏（载荷是服务端落库的那条消息本体：带图那句在库里是内容段数组）
+        // 本轮用户消息上屏（载荷是宿主落库的那条消息本体：带图那句在库里是内容段数组）
         case "user":
           upsert(st.messages, evt.message);
           break;
@@ -403,7 +403,7 @@ export const useChatStore = defineStore("chat", {
         case "message":
           // 完整消息按 id 就地 upsert：有则替换、无则追加末尾。
           // 事件到达顺序即消息顺序（流式同步 → 工具结果补推 → 下一轮），
-          // v-for key 从流式开始即稳定（收尾那次 done 用服务端的全量数组换掉）。
+          // v-for key 从流式开始即稳定（收尾那次 done 用宿主的全量数组换掉）。
           upsert(st.messages, evt.message);
           break;
 

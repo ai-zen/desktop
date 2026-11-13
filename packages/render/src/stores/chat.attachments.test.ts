@@ -1,8 +1,8 @@
 /**
  * 附件结局上屏那一条：`attachments` 事件 → 气泡上那几行字。
  *
- * 这里要钉住的是**文案的来源**：句子的每一个字都来自服务端（它按这条连接的语言渲染过），
- * 渲染层只决定「说不说、按什么顺序说」。所以下面三条用例的断言都是「等于服务端给的那句
+ * 这里要钉住的是**文案的来源**：句子的每一个字都来自宿主（它按这条连接的语言渲染过），
+ * 渲染层只决定「说不说、按什么顺序说」。所以下面三条用例的断言都是「等于宿主给的那句
  * 原文」，而不是「包含某个关键词」—— 后者放过一次悄悄改写。
  *
  * 另外两条是 F-H7 的两端：正常送达的**不打扰**、说了 dropped 却没给原因的**不能装没事**。
@@ -19,8 +19,8 @@ const CONV = "conv-1";
 const USER_MESSAGE = "m-user";
 
 /**
- * 服务端给的原因就是这一整份（码 + 参数 + 已渲染的那句），不是一句摘出来的话。
- * `messageKey` 用服务端文案表里真有的那个键（"图看不了，改成文字"就是 `message.imageAsText`）。
+ * 宿主给的原因就是这一整份（码 + 参数 + 已渲染的那句），不是一句摘出来的话。
+ * `messageKey` 用宿主文案表里真有的那个键（"图看不了，改成文字"就是 `message.imageAsText`）。
  */
 function problem(message: string): ProblemFact {
   return { code: "message.imageAsText", messageKey: "message.imageAsText", params: {}, message };
@@ -45,23 +45,23 @@ describe("附件结局上屏（attachments 事件）", () => {
     setActivePinia(createPinia());
   });
 
-  it("服务端那句原文照搬进气泡（措辞、标点、文件名都是它给的）", () => {
+  it("宿主那句原文照搬进气泡（措辞、标点、文件名都是它给的）", () => {
     const store = useChatStore();
     store.ensure(CONV);
     store.activeConversationId = CONV;
-    const serverText = "假模型 看不了图片，图.png 改成用文字描述发过去。";
+    const hostText = "假模型 看不了图片，图.png 改成用文字描述发过去。";
 
     store.applyEvent({
       conversationId: CONV,
       type: "attachments",
       userMessageId: USER_MESSAGE,
-      attachments: [outcome({ deliveredAs: "text_fallback", problemText: serverText })],
+      attachments: [outcome({ deliveredAs: "text_fallback", problemText: hostText })],
     });
 
     const stored = store.attachmentOutcomes[USER_MESSAGE];
-    expect(attachmentNotes(stored)).toEqual([serverText]);
+    expect(attachmentNotes(stored)).toEqual([hostText]);
     // 原文：一个字都没有被加工过
-    expect(attachmentNotes(stored)[0]).toBe(serverText);
+    expect(attachmentNotes(stored)[0]).toBe(hostText);
   });
 
   it("正常送达的附件不打扰（`file_reference` / `inline` 且无原因 → 一个字都不出现）", () => {
@@ -82,7 +82,7 @@ describe("附件结局上屏（attachments 事件）", () => {
     expect(notes[0]).toContain("没能发出去");
   });
 
-  it("逐张说明：几张图各有各的结局时按服务端给的顺序一句一行", () => {
+  it("逐张说明：几张图各有各的结局时按宿主给的顺序一句一行", () => {
     const notes = attachmentNotes([
       outcome({ assetId: "a1", deliveredAs: "dropped", problemText: "图.png 没能发出去，这条消息里没有它。" }),
       outcome({ assetId: "a2", deliveredAs: "file_reference" }),

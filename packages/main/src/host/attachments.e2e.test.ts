@@ -1,19 +1,19 @@
 /**
  * **附件竖切（e2e）**：一张图从「render 递过来的字节」走到 `assets/` 里的文件，再走到气泡上那句
- * 服务端渲染的结局文案。
+ * 宿主渲染的结局文案。
  *
- * 与 `slice.e2e.test.ts` 同口径、同样不跑就跳过（`AI_ZEN_SLICE=1 pnpm test`）：要 `dist/server.mjs`
- * （随包分发的那份服务端）、一个假的 OpenAI 兼容端点、一个临时数据根。走的是**生产路径**：
- * `createServerLayer` → `ensureService…`（本机发现文件 / 拉起 / 握手）→ 六个 Service → 上传三段式
+ * 与 `slice.e2e.test.ts` 同口径、同样不跑就跳过（`AI_ZEN_SLICE=1 pnpm test`）：要 `dist/host.mjs`
+ * （随包分发的那份宿主）、一个假的 OpenAI 兼容端点、一个临时数据根。走的是**生产路径**：
+ * `createHostLayer` → `ensureService…`（本机发现文件 / 拉起 / 握手）→ 六个 Service → 上传三段式
  * → 事件桥。
  *
  * ## 它钉住的三件事
  *
  *   1. **新对话的第一条就带图能传上去**：`conversation.create` 只发一个 id（草稿，R56），落库发生
- *      在 `asset.begin`（服务端拿这条连接的语言把隐藏的 cwd 消息一起写进去）—— 所以这里用的就是
+ *      在 `asset.begin`（宿主拿这条连接的语言把隐藏的 cwd 消息一起写进去）—— 所以这里用的就是
  *      刚建出来的那段对话，不先发一句纯文本做绕路；
  *   2. **`assets/` 下真的出现文件**：字节数与输入一致，超 4 张的那一张逐张给一句话（不静默丢）；
- *   3. **结局文案来自服务端**：假模型没有视觉能力，服务端把图退化成文字（`text_fallback`），那句话
+ *   3. **结局文案来自宿主**：假模型没有视觉能力，宿主把图退化成文字（`text_fallback`），那句话
  *      按连接语言（中文）渲染好推出 —— 界面上显示的就是它，客户端不另写一份。
  */
 
@@ -26,14 +26,14 @@ import { fileURLToPath } from "node:url";
 import type { AddressInfo } from "node:net";
 import type { ChatStreamEvent } from "@ai-zen/desktop-shared";
 import { afterAll, describe, expect, it } from "vitest";
-import { createServerLayer, type ServerLayer } from "./index.js";
+import { createHostLayer, type HostLayer } from "./index.js";
 
-/** 随包分发的服务端（与本文件同包：`packages/main/dist/server.mjs`） */
-const SERVER_ENTRY = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "dist", "server.mjs");
+/** 随包分发的宿主（与本文件同包：`packages/main/dist/host.mjs`） */
+const HOST_ENTRY = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "dist", "host.mjs");
 
 const ENABLED = process.env.AI_ZEN_SLICE === "1";
 
-/** 一张真的 1×1 PNG（70 字节）：字节数能对上，服务端才能按 `image/png` 落盘 */
+/** 一张真的 1×1 PNG（70 字节）：字节数能对上，宿主才能按 `image/png` 落盘 */
 const PNG_BYTES = Uint8Array.from(
   Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==",
@@ -48,12 +48,12 @@ describe.runIf(ENABLED)("附件竖切：字节 → assets/ → 气泡上那句�
     for (const step of cleanup.reverse()) await step();
   });
 
-  it("新对话的第一条就带图：传进 assets/、结局文案由服务端给", { timeout: 180_000 }, async () => {
-    expect(existsSync(SERVER_ENTRY), `先 pnpm build 出 ${SERVER_ENTRY}`).toBe(true);
+  it("新对话的第一条就带图：传进 assets/、结局文案由宿主给", { timeout: 180_000 }, async () => {
+    expect(existsSync(HOST_ENTRY), `先 pnpm build 出 ${HOST_ENTRY}`).toBe(true);
 
     const llm = await startMockModel();
     cleanup.push(() => llm.stop());
-    log(`假模型端点：http://127.0.0.1:${llm.port}/v1（这个模型没有视觉能力，图片会被服务端退化成文字）`);
+    log(`假模型端点：http://127.0.0.1:${llm.port}/v1（这个模型没有视觉能力，图片会被宿主退化成文字）`);
 
     const dataRoot = await mkdtemp(join(tmpdir(), "aiz-assets-"));
     cleanup.push(() => rm(dataRoot, { recursive: true, force: true }));
@@ -61,19 +61,19 @@ describe.runIf(ENABLED)("附件竖切：字节 → assets/ → 气泡上那句�
     log(`数据根：${dataRoot}`);
 
     const events = collect();
-    const layer: ServerLayer = createServerLayer({
+    const layer: HostLayer = createHostLayer({
       aiZenDir: dataRoot,
       clientInfo: { name: "@ai-zen/desktop", version: "0.0.0-assets" },
       defaultCwd: () => dataRoot,
       push: events.push,
-      serverEntry: SERVER_ENTRY,
+      hostEntry: HOST_ENTRY,
       log: log,
     });
     cleanup.push(() => layer.dispose());
 
     await layer.start();
     log(`✓ 已连上（握手：${JSON.stringify(layer.hello())}）`);
-    const facts = JSON.parse(await readFile(join(dataRoot, "run", "server.json"), "utf8")) as { pid: number };
+    const facts = JSON.parse(await readFile(join(dataRoot, "run", "host.json"), "utf8")) as { pid: number };
     cleanup.push(() => {
       try {
         process.kill(facts.pid);
@@ -111,11 +111,11 @@ describe.runIf(ENABLED)("附件竖切：字节 → assets/ → 气泡上那句�
     log(`✓ 这一轮的附件结局：${JSON.stringify(draftOutcomes)}`);
     expect(draftOutcomes).toHaveLength(1);
     expect(draftOutcomes[0]?.deliveredAs).toBe("text_fallback");
-    // `problem` 是服务端那份结构化原因（码 + 参数 + 已渲染的那句）：界面读 `message` 上屏
+    // `problem` 是宿主那份结构化原因（码 + 参数 + 已渲染的那句）：界面读 `message` 上屏
     expect(draftOutcomes[0]?.problem?.message ?? "").toContain("看不了图片");
     expect(draftOutcomes[0]?.problem?.message ?? "").toContain("剪贴板图.png");
     expect(draftOutcomes[0]?.problem?.code).toBeTruthy();
-    log(`✓ 气泡上要显示的那句话（服务端渲染好的原文）：${JSON.stringify(draftOutcomes[0]?.problem)}`);
+    log(`✓ 气泡上要显示的那句话（宿主渲染好的原文）：${JSON.stringify(draftOutcomes[0]?.problem)}`);
 
     const firstFiles = await listAssets(dataRoot);
     log(`✓ assets/ → ${JSON.stringify(firstFiles)}`);
@@ -238,7 +238,7 @@ function collect(): {
 
 /** 一个假的 OpenAI 兼容端点：回一片正文就收尾（附件用例只关心这一轮能跑完） */
 async function startMockModel(): Promise<{ port: number; stop: () => Promise<void> }> {
-  const server: HttpServer = createHttpServer((request, response) => {
+  const host: HttpServer = createHttpServer((request, response) => {
     if (!request.url?.endsWith("/chat/completions")) {
       response.writeHead(404).end();
       return;
@@ -292,11 +292,11 @@ async function startMockModel(): Promise<{ port: number; stop: () => Promise<voi
     });
   });
 
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const port = (server.address() as AddressInfo).port;
+  await new Promise<void>((resolve) => host.listen(0, "127.0.0.1", resolve));
+  const port = (host.address() as AddressInfo).port;
   return {
     port,
-    stop: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    stop: () => new Promise<void>((resolve) => host.close(() => resolve())),
   };
 }
 
@@ -321,7 +321,7 @@ async function writeConfig(dataRoot: string, port: number): Promise<void> {
             endpointId: "mock-endpoint",
             modelName: "mock-model",
             tokenThresholds: { handoff: 100_000, guard: 200_000 },
-            // 没有视觉能力：服务端会把图片退化成文字，于是气泡上有一句它渲染好的原因
+            // 没有视觉能力：宿主会把图片退化成文字，于是气泡上有一句它渲染好的原因
             custom: true,
           },
         ],

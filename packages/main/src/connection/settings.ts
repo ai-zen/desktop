@@ -11,16 +11,16 @@
  * ## 为什么要映射一次字段名
  *
  * 客户端的 `ConnectionSettings` 里那两个字段叫 `url` / `token`（它也要服务通用场景），而桌面端对
- * 外的 IPC 形状（render 的设置面板、`ConnectionControls`）一直叫 `serverUrl` / `serverToken`。
+ * 外的 IPC 形状（render 的设置面板、`ConnectionControls`）一直叫 `hostUrl` / `hostToken`。
  * 那一份 IPC 形状不许改（render 一行不动），所以映射落在**这一处**：两个方向各一个函数，别的地方
  * 不许再拼一次。
  *
  * ## 落点
  *
  * `<AI_ZEN_DIR>/desktop/connection.json`（`cli/` 那份归 CLI）。两个客户端可能在两台机器上，也可能
- * 同机连着不同的服务端 —— 「我这个终端连哪台」与「我的桌面端连哪台」是两件事。
+ * 同机连着不同的宿主 —— 「我这个终端连哪台」与「我的桌面端连哪台」是两件事。
  * 放 `desktop/` 子目录下而不是根下：根下（`config.json` / `agents/` / `run/` / 库 / `assets/`）全是
- * **服务端的事实**，客户端往里写东西会模糊那条边界。
+ * **宿主的事实**，客户端往里写东西会模糊那条边界。
  */
 
 import {
@@ -63,7 +63,7 @@ export function parseConnectionSettings(raw: unknown): ConnectionSettings {
   return fromClient(parseSettings(looseToClient(raw)));
 }
 
-/** 界面上那一行字（`本机服务端` / 那个地址）。**绝不包含凭证**（地址里的 userinfo 会被抹掉） */
+/** 界面上那一行字（`本机宿主` / 那个地址）。**绝不包含凭证**（地址里的 userinfo 会被抹掉） */
 export function labelOf(settings: ConnectionSettings): string {
   return settingsLabel(toClient(settings));
 }
@@ -74,17 +74,17 @@ export function describe(settings: ConnectionSettings): string {
 }
 
 /**
- * 一份设置 → 递给连接层的两个值（`serverUrl` / `serverToken`）。
+ * 一份设置 → 递给连接层的两个值（`hostUrl` / `hostToken`）。
  *
  * **这是「`local` 传 `undefined` 而不是空串」的唯一实现处**：空串会被连接层理解成「显式给了一个
  * 空值」，于是它不走发现文件、也不读本机凭证 —— 那条路上没有人会让它成功。
  */
 export function connectionConfigOf(settings: ConnectionSettings): {
-  serverUrl?: string;
-  serverToken?: string;
+  hostUrl?: string;
+  hostToken?: string;
 } {
   const target = settingsToTarget(toClient(settings));
-  return { serverUrl: target.url, serverToken: target.token };
+  return { hostUrl: target.url, hostToken: target.token };
 }
 
 // ---------------------------------------------------------------------------
@@ -94,8 +94,8 @@ export function connectionConfigOf(settings: ConnectionSettings): {
 function toClient(settings: ConnectionSettings): ClientConnectionSettings {
   return {
     mode: settings.mode,
-    ...(settings.serverUrl ? { url: settings.serverUrl } : {}),
-    ...(settings.serverToken ? { token: settings.serverToken } : {}),
+    ...(settings.hostUrl ? { url: settings.hostUrl } : {}),
+    ...(settings.hostToken ? { token: settings.hostToken } : {}),
   };
 }
 
@@ -106,8 +106,8 @@ function fromClient(settings: ClientConnectionSettings): ConnectionSettings {
   if (settings.mode !== "remote") return { mode: "local" };
   return {
     mode: "remote",
-    ...(settings.url ? { serverUrl: settings.url } : {}),
-    ...(settings.token ? { serverToken: settings.token } : {}),
+    ...(settings.url ? { hostUrl: settings.url } : {}),
+    ...(settings.token ? { hostToken: settings.token } : {}),
   };
 }
 
@@ -119,10 +119,10 @@ function fromClient(settings: ClientConnectionSettings): ConnectionSettings {
  */
 function looseToClient(raw: unknown): unknown {
   if (typeof raw !== "object" || raw === null) return raw;
-  const input = raw as { mode?: unknown; serverUrl?: unknown; serverToken?: unknown };
+  const input = raw as { mode?: unknown; hostUrl?: unknown; hostToken?: unknown };
   return {
     mode: input.mode,
-    url: input.serverUrl,
-    token: input.serverToken,
+    url: input.hostUrl,
+    token: input.hostToken,
   };
 }

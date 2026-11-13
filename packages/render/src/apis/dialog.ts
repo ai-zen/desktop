@@ -3,7 +3,7 @@
  *
  * 与同目录其它文件不一样的地方只有**通道**：它们每个对应 main 的一个 service，走
  * `invokeService(service, method)`；这一个走 preload 单独暴露的 `dialog:selectDirectory`
- * （不是服务端协议，是 Electron 自己的事）。放在 `apis/` 是因为它俩是同一件事的另一半：
+ * （不是宿主协议，是 Electron 自己的事）。放在 `apis/` 是因为它俩是同一件事的另一半：
  * **把一次 IPC 调用送出去，并把失败翻成一句人话**。
  *
  * 以前这段是「新建工作空间的对话框」里各写一份（侧栏一处、引导页一处），两处都是

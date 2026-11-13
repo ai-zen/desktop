@@ -4,14 +4,14 @@
  * ## 这一层只做三件事
  *
  *   1. **认出哪一段是图**：`type === "image_url"` 且带素材引用（{@link assetIdOf}）；
- *   2. **取字节**：`chat.getAsset` → `Blob` → `URL.createObjectURL`（字节与服务端那一趟都在
- *      main：render 没有到服务端的连接，也没有 Node 的 `Buffer`）；
+ *   2. **取字节**：`chat.getAsset` → `Blob` → `URL.createObjectURL`（字节与宿主那一趟都在
+ *      main：render 没有到宿主的连接，也没有 Node 的 `Buffer`）；
  *   3. **一份素材一屏只取一次**：按 `variant + assetId` 在内存里存那个 `blob:` URL 与它的像素
  *      尺寸，谁要谁领一份使用权；最后一个使用者走的时候 `URL.revokeObjectURL`。
  *
  * ## 宽高一起交给视图（R76）
  *
- * `asset.get` 回包里的 `asset` 带着服务端从文件头解出来的 `width` / `height`，所以视图在拿到字节
+ * `asset.get` 回包里的 `asset` 带着宿主从文件头解出来的 `width` / `height`，所以视图在拿到字节
  * 的同一刻就知道这张图该占多大：`AssetImage.vue` 按这两个数把外层框先撑成原比例，解码完成前后
  * 同一个尺寸，气泡不会因为「图来了」而跳一下。解不出来（`null`）就不撑框 —— 不做兜底分支，界面
  * 按图片自己的尺寸出现。
@@ -39,7 +39,7 @@ import { getChatAsset } from "../apis/chat.js";
 /**
  * 一个内容段引用的素材 id（没有这个字段就是 `null`）。
  *
- * 空串 / 空白按「没写」处理，与服务端 `localAssetIdOf` 同口径。
+ * 空串 / 空白按「没写」处理，与宿主 `localAssetIdOf` 同口径。
  */
 export function assetIdOf(section: AgentNS.MessageContentSection): string | null {
   const value = (section as { __asset_id?: unknown }).__asset_id;
@@ -68,7 +68,7 @@ export function imageAssetIds(content: AgentNS.MessageContent | undefined): stri
 /**
  * 一份取回来的素材在界面上的样子：`blob:` URL + 它的像素尺寸（供气泡先摆占位框）。
  *
- * `width` / `height` 是原图的像素尺寸（服务端从文件头解出来的）；解不出来时是 `null`，那时不设
+ * `width` / `height` 是原图的像素尺寸（宿主从文件头解出来的）；解不出来时是 `null`，那时不设
  * 占位比例 —— 图片按自己的尺寸出现。
  */
 export interface LoadedAsset {

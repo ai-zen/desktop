@@ -363,8 +363,8 @@ async function activateWorkspace(id: string): Promise<boolean> {
  *
  * 跨工作空间时先把激活的那个切过去：侧栏高亮、会话列表、树三处必须落在同一处。
  *
- * `select()` 会跟服务端要一次快照（`attach` + `snapshot`），**它会抛**：会话在盘上已被删、
- * 连接断了、服务端报错。以前这里是个同步调用、promise 没人接，于是界面上只剩「左边选中了、
+ * `select()` 会跟宿主要一次快照（`attach` + `snapshot`），**它会抛**：会话在盘上已被删、
+ * 连接断了、宿主报错。以前这里是个同步调用、promise 没人接，于是界面上只剩「左边选中了、
  * 右边空白」—— 那和「这段会话本来就没消息」长得一模一样。失败必须当场说出来。
  */
 async function openConversation(workspaceId: string, id: string): Promise<void> {
@@ -510,8 +510,8 @@ async function confirmRename() {
     // 只有成功才关：失败时对话框留着、用户输入留着，改完名直接再点一次确定
     showRename.value = false;
   } catch (err) {
-    // store 是「先调 api、成功了才改本地状态」（apis 把错误收敛成 InvokeServerError，
-    // message 就是服务端那句话）。所以这里只需把「哪件事失败 + 原因」说给用户听。
+    // store 是「先调 api、成功了才改本地状态」（apis 把错误收敛成 InvokeHostError，
+    // message 就是宿主那句话）。所以这里只需把「哪件事失败 + 原因」说给用户听。
     ElMessage.error(`重命名${kind}失败：${err instanceof Error ? err.message : String(err)}`);
   } finally {
     renaming.value = false;

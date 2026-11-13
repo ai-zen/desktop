@@ -1,12 +1,12 @@
 /**
- * `hidden` 的消息整条不显示（服务端建会话时写进去的那条「当前目录」）。
+ * `hidden` 的消息整条不显示（宿主建会话时写进去的那条「当前目录」）。
  *
  * 口径：`hidden` 是 core 的原意 —— **不给人看**。所以界面侧只做一件事：把它从「要显示的那一份」
  * 里滤掉，不看它内容写了什么。
  *
  * 这里锁三件：
  *   1. 过滤点只有 `viewMessages` 一处（气泡 / 渲染窗口 / 滚动跟随读的都是它）；
- *   2. store 里存着的 `messages` 不动（重连补拉与重试用的还是服务端给的那一份）；
+ *   2. store 里存着的 `messages` 不动（重连补拉与重试用的还是宿主给的那一份）；
  *   3. `hidden: false` 是正常消息（判据严格比 `true`）。
  */
 import { beforeEach, describe, expect, it } from "vitest";
@@ -18,7 +18,7 @@ import { isHidden, visibleMessages } from "./messageVisibility.js";
 
 const CONV = "conv-1";
 
-/** 服务端建会话时写进去的那条：`hidden: true` 的 user 消息，内容里写着当前目录 */
+/** 宿主建会话时写进去的那条：`hidden: true` 的 user 消息，内容里写着当前目录 */
 const injected = (): AgentNS.Message => ({
   id: "inj",
   role: AgentNS.Role.User,
@@ -62,7 +62,7 @@ describe("chat store · viewMessages 滤掉 hidden", () => {
     expect(store.viewMessages.map((m) => m.id)).toEqual(["u1"]);
   });
 
-  it("store 里存着的仍是服务端给的全量（hidden 的没被删掉）", () => {
+  it("store 里存着的仍是宿主给的全量（hidden 的没被删掉）", () => {
     store.applyEvent({ conversationId: CONV, type: "done", messages: [injected(), said("u1", "你好")] });
 
     expect(store.messages.map((m) => m.id)).toEqual(["inj", "u1"]);
@@ -89,7 +89,7 @@ describe("chat store · viewMessages 滤掉 hidden", () => {
     expect(store.viewMessages).toEqual([]);
   });
 
-  it("流式期间那条 user 回显照常上屏（hidden 只针对服务端注入的消息）", () => {
+  it("流式期间那条 user 回显照常上屏（hidden 只针对宿主注入的消息）", () => {
     store.applyEvent({ conversationId: CONV, type: "start" });
     store.applyEvent({ conversationId: CONV, type: "user", message: { id: "u1", role: AgentNS.Role.User, content: "你好" } });
 

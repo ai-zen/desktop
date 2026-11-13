@@ -24,7 +24,7 @@ export interface MessageWindowOptions {
   maxLoaded?: number;
 }
 
-/** 渲染链路中的消息：id 恒存在 —— 服务端的流式与快照事件都带着它 */
+/** 渲染链路中的消息：id 恒存在 —— 宿主的流式与快照事件都带着它 */
 export type MessageWithId = AgentNS.Message & { id: string };
 
 export function useMessageWindow(
