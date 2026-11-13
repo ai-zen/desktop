@@ -172,7 +172,10 @@ export function createHostLayer(options: HostLayerOptions): HostLayer {
           : { mode: "local" },
         spawnHost: (context) => {
           log(`本机没有活着的宿主，拉起随包分发的那份（数据根 ${context.dataRoot}）`);
-          return spawned(context);
+          // 客户端库的拉起上下文里 `entry` 是可选的（没给就让它去 npx 现下现起），而桌面端**只走
+          // 随包分发**这一条路：客户机不保证有 npm。这里把那一格固定成我们自己的那份，
+          // 于是 `spawnBundledHost` 的契约（给它一个入口就起它）不必改。
+          return spawned({ dataRoot: context.dataRoot, entry: context.entry ?? HOST_ENTRY });
         },
         hostEntry: options.hostEntry ?? HOST_ENTRY,
       });
