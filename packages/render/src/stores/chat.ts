@@ -1,5 +1,5 @@
 /**
- * chat store — 按会话隔离的聊天状态（消息/流式/错误/重试 + 子 Agent 栏目）。
+ * chat store — 按会话隔离的聊天状态（消息/流式/错误/重试 + 子 Agent 栏目 + 问题对象）。
  *
  * 每个 conversation 拥有独立的 byConversation[id] 槽位，切换会话只是切换视角，
  * 各会话的流式状态互不干扰（全局单 messages/streaming 会在切换时互相覆盖，
@@ -8,6 +8,11 @@
  * 槽位里除了主对话，还存了**当前这一轮**的子 Agent 栏目（`agents` + `activeAgentId`）：
  * 主对话那条 `message` / `done` 事件的语义一字未动，栏目是并行的另一份数据，只影响
  * 「消息列表读哪一份」（见 getter `viewMessages`）。
+ *
+ * 另一个并行的东西是**问题对象**（`questions`）：宿主在交接线、不可撤销的动作前会停下来问一道题
+ * （PRD D22），而题没被回答之前这段对话发什么都被 `question_pending` 拒（PRD D23）。它有自己的
+ * 到达路径（推送 + 快照 + 现拉三条，见 `ConversationChatState.questions`），也有自己的出口
+ * （`pendingQuestions` / `inputBlocked` / `answerQuestion`）。
  *
  * 订阅 chat:push 事件，由 App.vue 在初始化时绑定到 applyEvent。
  */
@@ -20,6 +25,7 @@ import type {
   AttachmentInput,
   AttachmentOutcome,
   ChatStreamEvent,
+  QuestionView,
   StreamPhase,
   SubAgentView,
 } from "@ai-zen/desktop-shared";
@@ -53,6 +59,18 @@ interface ConversationChatState {
   /** 现在看的是谁：`""`（`MAIN_AGENT_VIEW_ID`）= 主对话，否则是某个子 Agent 的 id */
   activeAgentId: string;
   /**
+   * 挂在这段对话上的**问题对象**（宿主 `QuestionView` 原样，含已回答 / 已过期的那些）。
+   *
+   * 三个来源并进同一份：`question` 推送（本端连上之后发生的事）、`chat.getState` 的现场快照
+   * （打开对话时的起点）、`question.list`（打开与答完之后各现拉一次，多端时别处挂上的只有这条路
+   * 看得见）。并的时候按 `id` 取 `updatedAt` 更晚的那份（见 `mergeQuestions`），所以「推送比快照
+   * 早到 / 晚到」都不会把一道题弄丢或错留成挂起态。
+   *
+   * 显示哪些不在存的时候判：界面读 `pendingQuestions`（`state === "pending"`），存着的那份保持
+   * 宿主给的全部事实。
+   */
+  questions: QuestionView[];
+  /**
    * 用户消息 id → 那一轮各附件的结局（`attachments` 事件给的那份）。
    *
    * 按**消息 id** 存而不是按轮次序号：那个 id 在 `done` 的全量替换里是同一个（宿主受理时就定了，
@@ -72,6 +90,7 @@ function emptyState(): ConversationChatState {
     toolCalls: [],
     agents: [],
     activeAgentId: MAIN_AGENT_VIEW_ID,
+    questions: [],
     attachments: {},
   };
 }
@@ -103,6 +122,39 @@ function showNotice(level: "info" | "warning" | "error", text: string): void {
   if (level === "warning") ElMessage.warning(text);
   else if (level === "error") ElMessage.error(text);
   else ElMessage.info(text);
+}
+
+/**
+ * 一份异常的「一句话」（toast 用）：`Error` 取 `message`，其余原样转字串。
+ */
+function failureText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * 两份问题清单并成一份：同 `id` 取 `updatedAt` 更晚的那一份，新 id 追加在后面。
+ *
+ * 为什么是「并」而不是「换」：三个来源到达的先后不由客户端决定 —— `question` 推送可能在快照
+ * 落地之前就到（换掉就丢了），也可能在 `question.list` 的回包之后到（换回旧的就错留成挂起态）。
+ * `updatedAt` 是宿主写的（同一道题每次变化都会更新），拿它判「谁更新」不需要客户端记任何账。
+ *
+ * 顺序保持「先出现的在前」：宿主给的候选顺序不能重排，题目之间的先后同理（界面直接照数组渲染）。
+ */
+function mergeQuestions(
+  current: readonly QuestionView[],
+  incoming: readonly QuestionView[],
+): QuestionView[] {
+  const merged = [...current];
+  for (const question of incoming) {
+    const index = merged.findIndex((item) => item.id === question.id);
+    if (index < 0) {
+      merged.push(question);
+      continue;
+    }
+    // `updatedAt` 是宿主给的 ISO 8601 字符串：同一时区同口径，字符串比较即时间先后
+    if (question.updatedAt >= merged[index]!.updatedAt) merged[index] = question;
+  }
+  return merged;
 }
 
 /**
@@ -173,6 +225,27 @@ export const useChatStore = defineStore("chat", {
     attachmentOutcomes: (state): Record<string, AttachmentOutcome[]> =>
       state.byConversation[state.activeConversationId]?.attachments ?? {},
     /**
+     * 当前会话**还在等人答**的问题（宿主给的顺序，不重排）。
+     *
+     * 只给 `state === "pending"` 的那些：已回答 / 已过期 / 已取消的都是宿主那份事实里的另一半，
+     * 存在但不该再占着作答面板（已答的那份留着是因为下一次推送/现拉会带着更晚的 `updatedAt`
+     * 去替换它，丢掉反而会把它当作「没存在过」）。
+     */
+    pendingQuestions: (state): QuestionView[] =>
+      (state.byConversation[state.activeConversationId]?.questions ?? []).filter(
+        (question) => question.state === "pending",
+      ),
+    /**
+     * 有没有一道题**挡着**这段对话（`blocking: true`）：有就挡住输入区，并说「答完才能继续」。
+     *
+     * 这是宿主的事实（PRD D23：在它被回答之前发消息会被 `question_pending` 拒），不是界面的判断 ——
+     * 界面只是把「发了也发不出去」提前说到。
+     */
+    inputBlocked: (state): boolean =>
+      (state.byConversation[state.activeConversationId]?.questions ?? []).some(
+        (question) => question.state === "pending" && question.blocking,
+      ),
+    /**
      * 消息列表**当前该显示的那一份**：选中主对话 = 主对话消息，选中子 Agent = 它自己的消息。
      *
      * 抽成 getter 而不是让视图自己 if：视图里 `useMessageWindow` / `useAutoScroll` 的每一个
@@ -231,10 +304,18 @@ export const useChatStore = defineStore("chat", {
         // / 上一次会话的标签挂回来 —— 点进去是永远不再更新的残影，还可能顶着一批早已失效的消息。
         agents: [],
         activeAgentId: MAIN_AGENT_VIEW_ID,
+        // 问题对象取快照那份（`conversation.state.questions` 是宿主那一刻的完整清单），
+        // 再并上等待期间已经推过来的那几条 —— 推送可能比这份快照早到，换掉就等于把它弄丢。
+        // 真正的新鲜度由 `refreshQuestions()` 那次现拉补上（见下面）。
+        questions: mergeQuestions(state.questions, st.questions),
         // 附件结局也不随重载保留：`chat.getState` 只说「现在有哪些消息」，宿主不重发某一轮的
         // 附件结局（那是一次性的受理回执）。留着旧的那份会跟上一批气泡错位。
         attachments: {},
       };
+
+      // 打开对话时现拉一次问题（PRD F-I9：多端看到同一个）。推送不重放，所以「别的一端挂上的 /
+      // 本端还没连上时就有的」那些题只有这条路看得见。
+      await this.refreshQuestions(conversationId);
     },
 
     /** 取消激活（不清空缓存：切回可秒开，保留各会话流式状态） */
@@ -259,6 +340,75 @@ export const useChatStore = defineStore("chat", {
         this.byConversation[conversationId] = emptyState();
       }
       return this.byConversation[conversationId];
+    },
+
+    /**
+     * 现拉一次挂在这段对话上的问题（`chat.questions` → 宿主 `question.list`）。
+     *
+     * 两处调用：打开对话时（`activate`）、答完一道题之后。两次都不是「保险」：推送不重放，
+     * 别的一端挂上 / 答掉的题，本端只能靠现拉才看得见（PRD F-I9 多端共享）。
+     *
+     * 拉不到不抛：题会由下一次推送 / 下一次打开补上，而「问题拉不下来」不该变成「这段对话打不开」
+     * （这一屏还有消息要看）。错误不在这里说话 —— 没有丢失任何用户动作，只是状态旧了一点。
+     */
+    async refreshQuestions(conversationId: string): Promise<void> {
+      let pulled: QuestionView[];
+      try {
+        pulled = await api.listQuestions(conversationId);
+      } catch {
+        return;
+      }
+      // 等待期间可能已经切走 / 删掉这段对话：拉回来的清单没有落脚处（不凭空开一个槽位）
+      const st = this.byConversation[conversationId];
+      if (!st) return;
+      st.questions = mergeQuestions(st.questions, pulled);
+    },
+
+    /**
+     * 回答一道题（`question.answer`）。
+     *
+     * ## 谁调它
+     *
+     * 只有作答面板上的一次点击（`QuestionPanel` 的候选按钮）。这里**不设默认值、不做超时**：
+     * 替用户选一个候选等于替他决定「要不要交接、交接去哪」，而题会一直挂着直到有人回答
+     * （PRD D23），所以正确做法是把它摆出来等人点，而不是先替他答了。
+     *
+     * ## 答完按 `effects` 走
+     *
+     * `newConversationId` 非空 = 交接把任务搬到了新对话（PRD D18）：先重拉侧栏（新对话得先在
+     * 列表里）再切过去，并说清两件事（迁移完成 / 新助手会先读交接文档）。没换对话就在原地：
+     * 题已经不 pending 了（面板自己消失），顺手再拉一次问题清单 —— 多端时别处可能又挂上了新的题。
+     */
+    async answerQuestion(questionId: string, value: string): Promise<void> {
+      const result = await api.answerQuestion(questionId, value);
+      const conversationId = result.question.conversationId;
+      const st = this.byConversation[conversationId] ?? this.ensure(conversationId);
+      // 宿主给的答完那份（`state: "answered"`）并回去：面板据此消失，不必等下一次推送
+      st.questions = mergeQuestions(st.questions, [result.question]);
+
+      const newConversationId = result.effects.newConversationId;
+      if (!newConversationId) {
+        // 没交接（选了「不交接」，或交接在这段对话里继续）：留在原对话，题已经不在 pending 上
+        await this.refreshQuestions(conversationId);
+        return;
+      }
+
+      const convStore = useConversationStore();
+      const workspaceId = convStore.currentWorkspaceId;
+      if (!workspaceId) return; // 没有工作区就没有「侧栏」可切（理论上走不到：打开对话时它已就位）
+      try {
+        // 新对话是宿主刚开出来的：先重拉列表，`select` 之后侧栏那一行才在（否则看起来像切到了不存在的一段）
+        await convStore.load(workspaceId);
+        await convStore.select(workspaceId, newConversationId);
+      } catch (err) {
+        // 作答本身**已经成功**（宿主那边题已答、交接也开了）：这里失败的只是「切过去」这一步。
+        // 所以说「没切过去」而不说「没提交」—— 侧栏里那段新对话还在，点一下就能进。
+        showNotice("error", `作答已提交，但没能切到新会话：${failureText(err)}`);
+        return;
+      }
+      // 两句说明（宿主不提供这两句，它们是「刚刚发生了什么」的界面话，不是数据）
+      showNotice("info", "任务迁移完成，已开启新会话");
+      showNotice("info", "新助手会先读取交接文档");
     },
 
     /**
@@ -435,6 +585,12 @@ export const useChatStore = defineStore("chat", {
           st.toolCalls = [];
           convStore.setRunning(evt.conversationId, false);
           this.refreshList(evt.conversationId);
+          break;
+
+        // 问题对象：按 id 并入本地那份（不是整份替换）—— 同一道题会因为「被回答」「过期」被
+        // 重复推送，而推送与快照的到达先后不由客户端决定（见 `mergeQuestions`）
+        case "question":
+          st.questions = mergeQuestions(st.questions, [evt.question]);
           break;
 
         // 子 Agent 栏目：**整份替换**（每次变化推全量，render 不做 diff/upsert）。

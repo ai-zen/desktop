@@ -233,6 +233,30 @@ describe("IPC 转发", () => {
     expect(h.events.map((event) => event.type)).toEqual(["start", "user"]);
   });
 
+  it("`invokeService('chat','answerQuestion', …)` 打到契约的 `question.answer` 上（render 的作答入口）", async () => {
+    const h = harness();
+    await h.layer.start();
+
+    const result = await h.layer.manager.invokeService("chat", "answerQuestion", "q1", "no_handoff");
+
+    expect(h.calls).toEqual([
+      { method: "question.answer", params: { questionId: "q1", value: "no_handoff" } },
+    ]);
+    // 回包原样过（假的 client 回 `{}`：这一条验的是分发与参数，不是宿主那份内容）
+    expect(result).toEqual({});
+  });
+
+  it("`invokeService('chat','questions', …)` 打到契约的 `question.list` 上", async () => {
+    const h = harness();
+    await h.layer.start();
+
+    await h.layer.manager.invokeService("chat", "questions", "conv-1");
+
+    expect(h.calls).toEqual([
+      { method: "question.list", params: { conversationId: "conv-1" } },
+    ]);
+  });
+
   it("未知服务 / 未知方法：报出具体的键名（静默返回 undefined 只会更难查）", async () => {
     const h = harness();
     await h.layer.start();

@@ -29,6 +29,8 @@ const apiMocks = vi.hoisted(() => ({
   renameConversation: vi.fn(),
   setConversationModel: vi.fn(),
   getChatState: vi.fn(),
+  // `activate` 会现拉一次问题（多端看到同一个问题，PRD F-I9）：不打真 IPC，回一份空清单
+  listQuestions: vi.fn(),
 }));
 
 // 只给本文件用得到的那几个键：模块是按命名空间用的（`api.xxx`），用不到的键留着 undefined
@@ -40,6 +42,7 @@ vi.mock("../apis/index.js", () => ({
   renameConversation: apiMocks.renameConversation,
   setConversationModel: apiMocks.setConversationModel,
   getChatState: apiMocks.getChatState,
+  listQuestions: apiMocks.listQuestions,
 }));
 
 const WS = "ws-1";
@@ -108,6 +111,7 @@ function idleState(): ChatState {
 beforeEach(() => {
   setActivePinia(createPinia());
   vi.clearAllMocks();
+  apiMocks.listQuestions.mockResolvedValue([]);
 });
 
 describe("select", () => {

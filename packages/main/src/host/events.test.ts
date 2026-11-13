@@ -9,7 +9,8 @@
  *   · `message.delta` → 先 `start` 后 `message`（整条替换、正文递增）；
  *   · `run.state` → `stream`（六态）+ `settled` 时回拉 `message.list` 推 `done`；
  *   · `usage` → 钉到那条助手消息上；
- *   · `notice` / `question` → `notice`（文案是宿主渲染好的那句话）；
+ *   · `notice` → `notice`（文案是宿主渲染好的那句话）；
+ *   · `question` → `question`（整份 `QuestionView`，不拍平）；
  *   · `conversation.changed` → `renamed`（名字要现拉）。
  *
  * ## 「收尾只收一次」为什么要单独一条
@@ -207,6 +208,68 @@ function conversationState(run: RunState): WireConversationState {
 
 function message(id: string, role: AgentNS.Role, content: string): AgentNS.Message {
   return { id, role, content };
+}
+
+/**
+ * 一道交接题（宿主 `QuestionView` 的形状：标题 + 三个候选，每个候选带 `label` 与 `detail`）。
+ *
+ * 字段一个不少地填，是因为这里要验的恰好是「整份搬」—— 只填一个 `prompt` 就验不出拍平。
+ */
+function handoffQuestion(overrides: Partial<QuestionView> = {}): QuestionView {
+  return {
+    id: "q1",
+    conversationId: CONVERSATION,
+    kind: "handoff",
+    state: "pending",
+    prompt: {
+      code: "ask.handoff",
+      messageKey: "ask.handoff" as never,
+      params: { name: "上下文快满了" },
+      message: "上下文快满了，要交接吗？",
+    },
+    options: [
+      {
+        value: "handoff_self",
+        label: {
+          code: "ask.handoffSelf",
+          messageKey: "ask.handoffSelf" as never,
+          params: {},
+          message: "自交接（接着这段继续）",
+        },
+        detail: null,
+      },
+      {
+        value: "handoff_summary",
+        label: {
+          code: "ask.handoffSummary",
+          messageKey: "ask.handoffSummary" as never,
+          params: {},
+          message: "独立摘要",
+        },
+        detail: {
+          code: "ask.handoffSummaryDetail",
+          messageKey: "ask.handoffSummaryDetail" as never,
+          params: {},
+          message: "把结论写成一份摘要，开一段新对话",
+        },
+      },
+      {
+        value: "no_handoff",
+        label: {
+          code: "ask.noHandoff",
+          messageKey: "ask.noHandoff" as never,
+          params: {},
+          message: "不交接",
+        },
+        detail: null,
+      },
+    ],
+    answer: null,
+    blocking: true,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    ...overrides,
+  };
 }
 
 // ==================================================================
@@ -446,7 +509,7 @@ describe("usage → message（本轮用量钉在助手消息上）", () => {
   });
 });
 
-describe("notice / question → notice", () => {
+describe("notice → notice", () => {
   it("通知的三档语气照搬，文案用宿主渲染好的那句", () => {
     const h = harness();
     const notice: NoticeView = {
@@ -498,33 +561,35 @@ describe("notice / question → notice", () => {
     expect(event.duration).toBeNull();
   });
 
-  it("问题对象念成一条 info 提示（桌面端没有提问 UI，但不许「什么都没发生」）", () => {
+  it("问题对象整份推下去（不拍平、不挑字段）", () => {
     const h = harness();
-    const question: QuestionView = {
-      id: "q1",
-      conversationId: CONVERSATION,
-      kind: "handoff",
-      state: "pending",
-      prompt: { code: "ask.handoff", messageKey: "ask.handoff" as never, params: {}, message: "上下文快满了，要交接吗？" },
-      options: [],
-      answer: null,
-      blocking: true,
-      createdAt: "a",
-      updatedAt: "a",
-    };
+    const question = handoffQuestion();
 
     h.connection.emit("question", { question, at: "a" });
 
-    // 题目原文就是宿主那份 `LocalizedText`（`prompt` 原样递给界面）
+    // 一个字段都不少：`prompt` / `options[]`（含 `label` 与 `detail` 两句 `LocalizedText`）/
+    // `blocking` / `kind` / `state` / `id` —— 压成一句提示的话，候选就没了（用户没得选）、
+    // `blocking` 也没了（输入区不知道该挡）
     expect(h.events).toEqual([
-      {
-        type: "notice",
-        level: "info",
-        duration: null,
-        text: question.prompt,
-        conversationId: CONVERSATION,
-      },
+      { conversationId: CONVERSATION, type: "question", question },
     ]);
+    const event = h.events[0];
+    if (event?.type !== "question") throw new Error("应当是一条 question");
+    // 宿主给的候选顺序原样（界面不重排）
+    expect(event.question.options.map((option) => option.value)).toEqual([
+      "handoff_self",
+      "handoff_summary",
+      "no_handoff",
+    ]);
+    expect(event.question.options[1]?.detail?.message).toBe("把结论写成一份摘要，开一段新对话");
+  });
+
+  it("问题不是通知：不往 `notice` 频道上凑一句", () => {
+    const h = harness();
+
+    h.connection.emit("question", { question: handoffQuestion(), at: "a" });
+
+    expect(h.events.filter((event) => event.type === "notice")).toEqual([]);
   });
 });
 
@@ -646,6 +711,38 @@ describe("onResume → done（补拉）", () => {
     });
 
     expect(h.events.map((event) => event.type)).toEqual(["done", "start", "stream"]);
+  });
+
+  it("断线期间挂上的题：补拉那份快照里的问题逐条推下去（推送不重放，这是唯一的路）", () => {
+    const h = harness();
+    const pending = handoffQuestion();
+    const answered = handoffQuestion({
+      id: "q0",
+      state: "answered",
+      blocking: false,
+      answer: { value: "no_handoff", answeredAt: "t", answeredBy: "别的窗口" },
+      updatedAt: "2026-01-01T00:00:09.000Z",
+    });
+
+    h.connection.emitResume({
+      ok: true,
+      resumed: {
+        conversationId: CONVERSATION,
+        state: { ...conversationState(runState({ status: "idle", generation: null })), questions: [answered, pending] },
+        anchor: null,
+        messages: [],
+        mode: "full",
+      },
+    });
+
+    // 已答的那道也推：本端手上可能是它的 peding 旧版，只有这一条能把它换成 answered
+    const pushed = h.events.flatMap((event) => (event.type === "question" ? [event.question] : []));
+    expect(pushed.map((question) => [question.id, question.state])).toEqual([
+      ["q0", "answered"],
+      ["q1", "pending"],
+    ]);
+    // 顺序：先全量消息（done），再逐条问题；两者不互相覆盖
+    expect(h.events.map((event) => event.type)).toEqual(["done", "stream", "question", "question"]);
   });
 
   it("补拉失败：说一句话，不静默", () => {

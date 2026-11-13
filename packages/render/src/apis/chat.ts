@@ -1,6 +1,6 @@
 /**
  * chat api — 聊天（对应 main HostChatService）。
- * 发送消息 + 订阅流式推送（chat:push 单通道）。
+ * 发送消息 + 订阅流式推送（chat:push 单通道）+ 问题对象（`question.list` / `question.answer`）。
  */
 
 import type {
@@ -9,6 +9,8 @@ import type {
   AttachmentInput,
   ChatState,
   ChatStreamEvent,
+  QuestionAnswerResult,
+  QuestionView,
 } from "@ai-zen/desktop-shared";
 import { invokeService, subscribeServiceEvent } from "./base.js";
 
@@ -60,6 +62,38 @@ export function getChatState(
   conversationId: string,
 ): Promise<ChatState> {
   return invokeService("chat", "getState", workspaceId, conversationId);
+}
+
+/**
+ * 拉一段对话挂着的问题（`chat.questions` → 宿主 `question.list`）。
+ *
+ * ## 为什么不能只等推送
+ *
+ * 推送不重放：另开一个窗口、断线重连之后、或者这道题在本端连上之前就挂上了 —— 那几种情况下
+ * 一条 `question` 事件都收不到，界面上就是「打开这段对话看着正常，一发消息却被
+ * `question_pending` 拒」。所以打开对话时（`chat store` 的 `activate`）与答完之后各拉一次。
+ *
+ * 回的是**整份 `QuestionView` 列表**（含已答 / 已过期的）：界面按 `state` 决定显不显示，
+ * 不在这一层过滤。
+ */
+export function listQuestions(conversationId: string): Promise<QuestionView[]> {
+  return invokeService("chat", "questions", conversationId);
+}
+
+/**
+ * 回答一道题（`chat.answerQuestion` → 宿主 `question.answer`）。
+ *
+ * 回包就是宿主那两个字段：`question`（答完之后的那份问题对象，`state` 已变成 `answered`）与
+ * `effects`（`handoffStarted` / `newConversationId`）。**答完接着做什么由宿主说**：交接顺带开出来
+ * 的新对话 id 就在 `effects` 里，界面照着切过去，自己不去推「该不该开新会话」。
+ *
+ * 这个函数**没有任何默认值**：`value` 必须是用户点中的那个候选（`options[].value`）。
+ */
+export function answerQuestion(
+  questionId: string,
+  value: string,
+): Promise<QuestionAnswerResult> {
+  return invokeService("chat", "answerQuestion", questionId, value);
 }
 
 /** 订阅流式推送，返回取消订阅函数 */

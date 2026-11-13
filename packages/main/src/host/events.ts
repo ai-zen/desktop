@@ -11,7 +11,7 @@
  * | `run.state` | `stream` + `done` / `error` | 六态名与正在跑的工具（core 的 `ToolCall`）原样搬；`settled` 时按 `message.list` 收尾 |
  * | `usage` | `message` | 本轮用量（core 的 `Usage`）钉到那条助手消息上（render 按 id 整条替换） |
  * | `notice` | `notice` | 语气、时长、`LocalizedText`、归属会话全原样搬（PRD D8） |
- * | `question` | `notice`（info） | 桌面端还没有提问 UI（见下） |
+ * | `question` | `question` | 整份 `QuestionView` 原样搬（见下） |
  * | `conversation.changed` | `renamed` | 名字要从 `conversation.get` 现拉，推送里只有「改名了」 |
  *
  * 承载消息/内容的地方一律是 core 的原始形状（`AgentNS.Message` / `MessageContentSection` /
@@ -27,12 +27,24 @@
  *
  * 同理，用户消息上屏前也回宿主取一次：带图那句在库里是内容段数组，手上只有用户敲的那几个字。
  *
- * ## 桌面端答不了问题：把它变成一句看得见的话
+ * ## 问题对象原样递下去（不压成一句话）
  *
- * `question` 是宿主的产品对象（交接线、登记目录、二次确认，PRD D22），而 render 没有提问 UI。
- * 自动替用户答一个选项等于替产品做决定（旧实现替用户「跳过」了一次交接，那是它自己的选择，不是
- * 用户的）。所以这里**只把题目念出来**：推一条 `notice`（info）。代价写清楚：在题目被回答之前，
- * 这段对话发消息会被宿主以 `question_pending` 拒（PRD D23），那句话会经 `error` 上屏。
+ * `question` 是宿主的产品对象（交接线、不可撤销的动作前确认，PRD D22）：`prompt` / `options[]`
+ * / `blocking` / `state` / `kind` 每一样都是界面要用的事实。压成一句 `prompt.message` 之后，
+ * 用户没法作答（候选没了）、输入区不知道要挡（`blocking` 没了）、也答不回去（`id` 没了）——
+ * 而**没人答的题宿主不会超时**，于是那道题会把这段对话永久锁死（PRD D23：后续每次
+ * `conversation.send` 都被 `question_pending` 拒）。
+ *
+ * 所以这里只搬运、不改形状：`QuestionView` 整份推给 render，怎么摆是 render 的事。
+ *
+ * ## 重连之后为什么还要再推一遍
+ *
+ * 推送不重放（PRD L5）。断了再连上时，render 不会重新打开对话（它只等补拉的结果），于是
+ * **断线期间挂上的题**只能靠这条路回来：`onResume` 拿到的 `state.questions` 是宿主那一刻的
+ * 完整清单（含已经被别的一端答掉的那些），逐条推成 `question`。render 按 id 并入本地那份，
+ * 所以这里不必去重、也不必判「本端有没有见过」—— 同一份事实推两次的结果是一样的。
+ *
+ * 反方向（推送比快照早到）同样是安全的：快照只补它自己那些，render 那份是**并**不是**换**。
  *
  * ## 断线：重连 + 补拉都归客户端库
  *
@@ -151,7 +163,13 @@ export class ChatEventBridge {
     this.messages.set(conversationId, [...messages]);
   }
 
-  /** `chat.getState` 拿到的现场状态（六态跟着它走，界面切回来就不再是「什么都没在跑」） */
+  /**
+   * `chat.getState` 拿到的现场状态（六态跟着它走，界面切回来就不再是「什么都没在跑」）。
+   *
+   * 这一份里的 `questions` **不在这里推**：`chat.getState` 的返回值本来就带着它（render 打开
+   * 对话时拿到的就是那份），再推一遍等于同一份事实说两次。补拉那条路不一样 —— 那里没有返回值，
+   * 所以 `onResume` 会把问题逐条推出去。
+   */
   noteState(state: WireConversationState): void {
     this.runs.set(state.conversationId, state.run);
     this.pushPhase(state.conversationId, state.run);
@@ -239,16 +257,10 @@ export class ChatEventBridge {
     });
   }
 
-  /** 一个问题对象 → 一句看得见的提示（桌面端没有提问 UI，见文件头） */
+  /** 一个问题对象 → 结构化的 `question` 推送（整份 `QuestionView`，不拍平、不挑字段） */
   private onQuestion(payload: EventPayload<"question">): void {
     const { question } = payload;
-    this.push({
-      type: "notice",
-      level: "info",
-      duration: null,
-      text: question.prompt,
-      conversationId: question.conversationId,
-    });
+    this.push({ conversationId: question.conversationId, type: "question", question });
   }
 
   /** 结构变化 → 该拉什么就拉什么（推送里只有「变了」，没有变之后的对象） */
@@ -296,6 +308,9 @@ export class ChatEventBridge {
    *
    * 「续传」与「全量」怎么拼只有一份实现（库里的 `mergeResumed`）：宿主回的 `anchor` 命中时，
    * 第一条就是那条消息的**最新内容**（流式中那条可能已经变了），所以是替换而不是再追加一条。
+   *
+   * 问题清单也跟着这一份回来：`state.questions` 是宿主此刻的完整清单，逐条推成 `question`
+   * （断线期间挂上的题没有别的路能到 render，见文件头）。
    */
   private onResume(outcome: ResumeOutcome): void {
     if (!outcome.ok) {
@@ -314,6 +329,11 @@ export class ChatEventBridge {
     // 补拉的时刻这一轮可能还在跑：把六态与「进入流式态」一起补回去，接着收后面的增量
     if (resumed.state.run.status === "running") this.markStarted(resumed.conversationId);
     this.pushPhase(resumed.conversationId, resumed.state.run);
+    // 断线期间挂上的题只能这样回来（推送不重放）：快照里那份是完整清单，逐条推成 `question`，
+    // render 按 id 并入本地那份（见文件头）
+    for (const question of resumed.state.questions) {
+      this.push({ conversationId: resumed.conversationId, type: "question", question });
+    }
   }
 
   // ==================================================================

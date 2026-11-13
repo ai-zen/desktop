@@ -25,6 +25,13 @@ import type {
   ModelState,
   NoticeLevel,
   ProblemFact as WireProblemFact,
+  QuestionAnswer,
+  QuestionAnswerResult,
+  QuestionEffects,
+  QuestionKind,
+  QuestionOption,
+  QuestionState,
+  QuestionView,
 } from "@ai-zen/agents-host";
 
 // ==================== 宿主已有的形状（原样再导出）====================
@@ -36,6 +43,16 @@ export type {
   FolderFact,
   ModelState,
   NoticeLevel,
+  // 问题对象这一组（`question` 推送与 `chat.questions` / `chat.answerQuestion` 的里外都是它们）：
+  // `QuestionView` 里装的就是 `QuestionOption` / `QuestionAnswer`，答完的后续动作是
+  // `QuestionEffects`。render 直接按宿主那份读 `prompt.message` 之类，不另造一份 ViewModel。
+  QuestionAnswer,
+  QuestionAnswerResult,
+  QuestionEffects,
+  QuestionKind,
+  QuestionOption,
+  QuestionState,
+  QuestionView,
 };
 
 /** 生成六态的名字：宿主 `GenerationPhaseName` 逐字一致（render 只按它挑界面用词） */
@@ -468,6 +485,31 @@ export type ChatStreamEvent =
       text: LocalizedText;
       conversationId: string | null;
     }
+  /**
+   * 宿主推来的一个**问题对象**（`question` 事件）：到交接线时问「自交接 / 独立摘要 / 不交接」、
+   * 或不可撤销的动作前确认（PRD D22 / F-D2 / F-I9）。
+   *
+   * ## 为什么载荷是整份 `QuestionView`，而不是一句话
+   *
+   * 问题是一等对象：`prompt`（问什么）/ `options[]`（候选，每个带 `label` 与 `detail` 两句
+   * `LocalizedText`）/ `answer`（有没有人答过）/ `blocking`（挡不挡着对话）/ `state`（挂起 /
+   * 已答 / 过期 / 取消）/ `kind`（交接还是确认）都是界面要用的**事实**。压成一句
+   * `prompt.message` 之后，界面就只剩一行字：候选没了（用户没法答）、`blocking` 没了
+   * （输入区不知道要挡）、`id` 没了（答回去不知道答哪一道）。
+   *
+   * ## 为什么与 `notice` 分开
+   *
+   * 通知是「顺带说一句」，说完就没用了；问题是**要用户口头回答**的东西，答完之前一直挂着，
+   * 而且宿主会用 `question_pending` 拒掉这段对话的后续发送（PRD D23）。两件事混在一条通道上，
+   * 界面就只能二选一：要么当提示（用户的回答无处可去），要么当状态（提示反而占住了位置）。
+   *
+   * ## 同一道题会被推多次
+   *
+   * 宿主在「创建」「被回答」「过期」时都推同一个 `question`，`state` 与 `updatedAt` 随之变。
+   * 所以 render 按 `id` **并入**本地那份（同 id 取 `updatedAt` 更晚的），而不是把整份列表换掉
+   * —— 换掉就会在「推送比快照晚到」或「别的一端刚把它答了」时丢掉/错留一道题。
+   */
+  | { conversationId: string; type: "question"; question: QuestionView }
   /**
    * 这段会话**当前这一轮**的子 Agent 栏目，一有变化就推**整份**。
    *

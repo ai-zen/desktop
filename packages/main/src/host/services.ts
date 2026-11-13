@@ -16,7 +16,7 @@
  *    就是那个类型）；内容段、工具调用、用量同理；
  * 3. **结构化的宿主事实不拍平**：`folder`（路径 + 还在不在）、`model`（id + 名字 + 能不能看图
  *    + 谁定的）这类成组的事实整块搬，不取其中一字段压成一个值（R75 的同一条原则）；
- * 4. **契约没有的东西不造**：render 要而这一波没接的（子 Agent 栏目、通知的手动清除、提问 UI），
+ * 4. **契约没有的东西不造**：render 要而这一波没接的（子 Agent 栏目、通知的手动清除），
  *    宁可留空并在 `events.ts` 里说清，也不编一个像样的假值。
  */
 
@@ -35,6 +35,8 @@ import type {
   EndpointSettings,
   FolderFact,
   ModelOption,
+  QuestionAnswerResult,
+  QuestionView,
   Workspace,
 } from "@ai-zen/desktop-shared";
 import { mergeAttachmentOutcomes, uploadAttachments } from "./attachments.js";
@@ -407,6 +409,49 @@ export class HostChatService {
    */
   async getAsset(assetId: string, variant: AssetVariant = "thumb"): Promise<AssetContent> {
     return await fetchAssetContent(this.ctx.connection(), { assetId, variant });
+  }
+
+  /**
+   * 挂在这段对话上的问题（`question.list`，PRD D22 / F-I9：**多端看到同一个问题**）。
+   *
+   * ## 为什么打开对话不能只靠推送
+   *
+   * 推送只说「此刻起了什么变化」，不重放。于是另开一个窗口时、断线重连之后、或者这道题在
+   * 本端还没连上时就已经挂上了 —— 那几种情况下本端一条 `question` 事件都收不到，界面上就是
+   * 「对话没坏，但一发消息就被 `question_pending` 拒」（PRD D23）。所以打开一段对话时现拉一次，
+   * 答完之后再拉一次（多端同时挂着两道题的时候，答掉一道还有另一道）。
+   *
+   * ## 整份 `QuestionView` 原样回
+   *
+   * `prompt` / `options[]` / `answer` / `blocking` / `kind` / `state` 全在宿主那一份里，
+   * 界面要哪个读哪个。这一层只拆掉出参的壳（`{ questions }` → 数组），不挑字段、不改形状 ——
+   * 挑掉的字段在这里就永久消失了（宿主将来加一个候选说明也一样）。
+   *
+   * 不传 `state` 过滤：已答 / 已过期的那些也一起回来，界面按 `state` 决定显不显示
+   * （宿主那份 `ConversationState.questions` 就是这么给的，两处口径一致）。
+   */
+  async questions(conversationId: string): Promise<QuestionView[]> {
+    const { questions } = await this.ctx.call("question.list", { conversationId });
+    return questions;
+  }
+
+  /**
+   * 回答一道题（`question.answer`，PRD D22 / F-I9）：`question` 与 `effects` 原样交回 render。
+   *
+   * ## 答完之后接着做什么是宿主的结论
+   *
+   * `effects.handoffStarted` 说「开始交接了没有」，`effects.newConversationId` 说「交接顺带开出来
+   * 的是哪一段新对话」（PRD D18：同 Workspace、同助手）。客户端据此换到那段新对话，自己不去猜
+   * 「该不该开新会话」—— 那不是界面的事实。
+   *
+   * ## 这一层不作答、也不兜底
+   *
+   * 没有「默认选项」、没有超时自动答：答哪个值来自用户的点击（`options[].value`），这里只转发。
+   * 替用户选一个等于替他决定「要不要交接、交接去哪」，而宿主不会超时取消这道题（PRD D23）——
+   * 那道题会一直挂着，界面要做的正是把它摆出来等人答。
+   */
+  async answerQuestion(questionId: string, value: string): Promise<QuestionAnswerResult> {
+    return await this.ctx.call("question.answer", { questionId, value });
   }
 
   /** 中止本轮（PRD D14：用户的显式动作，不排队）；收尾照常走 `run.state` 的 `settled` */

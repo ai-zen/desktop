@@ -65,6 +65,15 @@
         </div>
       </div>
 
+      <!-- 作答面板：宿主在交接线 / 不可撤销的动作前停下来问一道题（PRD D22）。
+           位置紧贴输入区上方 —— 它管的就是「这句能不能发出去」（`blocking` 的题没答之前发消息
+           会被宿主以 `question_pending` 拒，PRD D23）。没有候选可选时整块不存在。 -->
+      <QuestionPanel
+        :questions="chatStore.pendingQuestions"
+        :answering-id="answeringQuestionId"
+        @answer="handleAnswer"
+      />
+
       <!-- 输入区域（模型切换与选图在输入框上方工具栏） -->
       <div class="input-area">
         <div class="input-toolbar">
@@ -86,7 +95,7 @@
             size="small"
             text
             :icon="Picture"
-            :disabled="chatStore.streaming"
+            :disabled="inputDisabled"
             @click="pickFiles"
           >
             图片
@@ -116,15 +125,15 @@
           v-model="inputText"
           type="textarea"
           :rows="3"
-          placeholder="输入消息... (Enter 发送, Shift+Enter 换行, 可直接粘贴图片)"
-          :disabled="chatStore.streaming"
+          :placeholder="inputPlaceholder"
+          :disabled="inputDisabled"
           @keydown="onInputKeydown"
           @paste="onPaste"
           resize="none"
           class="chat-input"
         />
         <div class="input-footer">
-          <span class="hint">Enter 发送 · Shift+Enter 换行</span>
+          <span class="hint">{{ inputBlocked ? "答完上面的问题才能继续" : "Enter 发送 · Shift+Enter 换行" }}</span>
           <el-button
             v-if="chatStore.streaming"
             type="danger"
@@ -138,7 +147,7 @@
             v-else
             type="primary"
             :icon="Promotion"
-            :disabled="!inputText.trim()"
+            :disabled="!inputText.trim() || inputBlocked"
             @click="handleSend"
           >
             发送
@@ -155,6 +164,7 @@ import { ElMessage } from "element-plus";
 import { ChatDotRound, Picture, Promotion, VideoPause } from "@element-plus/icons-vue";
 import type { AttachmentInput, SubAgentView } from "@ai-zen/desktop-shared";
 import MessageBubble from "./MessageBubble.vue";
+import QuestionPanel from "./QuestionPanel.vue";
 import { useUiStore } from "../../stores/ui.js";
 import { useWorkspaceStore } from "../../stores/workspace.js";
 import { useConversationStore } from "../../stores/conversation.js";
@@ -277,6 +287,44 @@ function onPaste(event: ClipboardEvent): void {
 }
 
 const activeConversationId = computed(() => conversationStore.activeConversationId);
+
+// ==================== 问题对象（作答面板） ====================
+
+/** 有一道 `blocking` 的题在挡着：输入区整个禁掉（宿主那边真会拒，PRD D23） */
+const inputBlocked = computed(() => chatStore.inputBlocked);
+/**
+ * 输入区能不能用：正在生成时不能用（旧行为），挡着的问题没答完也不能用。
+ *
+ * 两件事分开算、只在这里合并：各自的原因不同，提示语也不同（`inputPlaceholder` / `inputFooter`）。
+ */
+const inputDisabled = computed(() => chatStore.streaming || inputBlocked.value);
+
+/** 输入框的占位文（挡着的时候直说「为什么不能输入」，而不是留一个看上去能打字的框） */
+const inputPlaceholder = computed(() =>
+  inputBlocked.value
+    ? "先回答上面的问题才能继续…"
+    : "输入消息... (Enter 发送, Shift+Enter 换行, 可直接粘贴图片)",
+);
+
+/** 正在提交的那道题（提交期间把它的候选按钮禁掉，防连点答两次） */
+const answeringQuestionId = ref("");
+
+/**
+ * 面板上的一次点击 → `question.answer`（唯一的作答入口）。
+ *
+ * 答完之后做什么全由宿主的 `effects` 决定（store 里的 `answerQuestion` 按它切会话）。失败只在
+ * 这里说一句话：题还在（`state` 依旧是 `pending`），重试就是再点一下。
+ */
+async function handleAnswer(questionId: string, value: string): Promise<void> {
+  answeringQuestionId.value = questionId;
+  try {
+    await chatStore.answerQuestion(questionId, value);
+  } catch (err) {
+    ElMessage.error(`作答没有提交成功：${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    answeringQuestionId.value = "";
+  }
+}
 
 const currentModelId = computed(() => {
   // 当前会话的 modelId（summary 上有）。取不到就空着 —— 模型解析是宿主的三级链

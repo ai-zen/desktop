@@ -12,7 +12,7 @@
  */
 
 import { AgentNS } from "@ai-zen/agents-core";
-import type { ConversationState as WireConversationState, RunState } from "@ai-zen/agents-client";
+import type { ConversationState as WireConversationState, QuestionView, RunState } from "@ai-zen/agents-client";
 import { ClientError as ClientErrorValue } from "@ai-zen/agents-client";
 import type { ChatStreamEvent } from "@ai-zen/desktop-shared";
 import { describe, expect, it } from "vitest";
@@ -130,6 +130,69 @@ function wireConversationState(run: Partial<RunState> = {}): WireConversationSta
     questions: [],
     statusBlocks: [],
     updatedAt: "a",
+  };
+}
+
+/**
+ * 一道交接题（宿主 `QuestionView` 的形状）。
+ *
+ * 字段一个不少地填：`questions` / `answerQuestion` 两条要验的恰好是「整份原样搬」，只填一个
+ * `prompt` 就验不出拍平与挑字段。
+ */
+function handoffQuestion(overrides: Partial<QuestionView> = {}): QuestionView {
+  return {
+    id: "q1",
+    conversationId: CONVERSATION,
+    kind: "handoff",
+    state: "pending",
+    prompt: {
+      code: "ask.handoff",
+      messageKey: "ask.handoff" as never,
+      params: { name: "上下文快满了" },
+      message: "上下文快满了，要交接吗？",
+    },
+    options: [
+      {
+        value: "handoff_self",
+        label: {
+          code: "ask.handoffSelf",
+          messageKey: "ask.handoffSelf" as never,
+          params: {},
+          message: "自交接（接着这段继续）",
+        },
+        detail: null,
+      },
+      {
+        value: "handoff_summary",
+        label: {
+          code: "ask.handoffSummary",
+          messageKey: "ask.handoffSummary" as never,
+          params: {},
+          message: "独立摘要",
+        },
+        detail: {
+          code: "ask.handoffSummaryDetail",
+          messageKey: "ask.handoffSummaryDetail" as never,
+          params: {},
+          message: "把结论写成一份摘要，开一段新对话",
+        },
+      },
+      {
+        value: "no_handoff",
+        label: {
+          code: "ask.noHandoff",
+          messageKey: "ask.noHandoff" as never,
+          params: {},
+          message: "不交接",
+        },
+        detail: null,
+      },
+    ],
+    answer: null,
+    blocking: true,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    ...overrides,
   };
 }
 
@@ -546,6 +609,54 @@ describe("chat", () => {
     });
 
     await expect(new HostChatService(h.ctx).getAsset("gone")).rejects.toThrow("已经不在了");
+  });
+
+  it("questions：发 `question.list { conversationId }`，整份候选原样交回去", async () => {
+    const h = harness(() => ({ questions: [handoffQuestion()] }));
+
+    const questions = await new HostChatService(h.ctx).questions(CONVERSATION);
+
+    // 入参只带会话 id（不限状态：已答 / 已过期的也一起回来，显示不显示是界面按 `state` 判）
+    expect(h.calls).toEqual([
+      { method: "question.list", params: { conversationId: CONVERSATION } },
+    ]);
+    // 标题 / 候选（含 `detail`）/ `blocking` / `state` 全在：这一层只拆壳，不挑字段
+    expect(questions).toEqual([handoffQuestion()]);
+    expect(questions[0]?.options[1]?.detail?.message).toBe("把结论写成一份摘要，开一段新对话");
+  });
+
+  it("answerQuestion：发 `question.answer { questionId, value }`，`question` 与 `effects` 原样交回", async () => {
+    const answered = handoffQuestion({
+      state: "answered",
+      blocking: false,
+      answer: { value: "handoff_summary", answeredAt: "2026-01-01T00:00:10.000Z", answeredBy: "conn-1" },
+      updatedAt: "2026-01-01T00:00:10.000Z",
+    });
+    const h = harness(() => ({
+      question: answered,
+      effects: { handoffStarted: true, newConversationId: "conv-new" },
+    }));
+
+    const result = await new HostChatService(h.ctx).answerQuestion("q1", "handoff_summary");
+
+    // 答的值就是候选里的 `value`（这一层没有默认值、也不猜）
+    expect(h.calls).toEqual([
+      { method: "question.answer", params: { questionId: "q1", value: "handoff_summary" } },
+    ]);
+    expect(result.question).toEqual(answered);
+    // 答完之后接着做什么是宿主的结论：新对话 id 原样给界面（切不切是界面的事）
+    expect(result.effects).toEqual({ handoffStarted: true, newConversationId: "conv-new" });
+  });
+
+  it("answerQuestion：选了「不交接」时 `effects` 照实说（没有新对话）", async () => {
+    const h = harness(() => ({
+      question: handoffQuestion({ state: "answered", blocking: false }),
+      effects: { handoffStarted: false, newConversationId: null },
+    }));
+
+    const result = await new HostChatService(h.ctx).answerQuestion("q1", "no_handoff");
+
+    expect(result.effects).toEqual({ handoffStarted: false, newConversationId: null });
   });
 
   it("getState：一次调用拿齐现场与消息，锚点记成最后一条的 id（重连补拉的 after）", async () => {
