@@ -146,7 +146,7 @@ void connection.start()       ← 后台连，**不 await**
 1. **`user` 的正文**。协议不推用户消息（`chunk-parsed` 只有模型增量），正文由 `chat.send` 那一侧登记（`noteSend`），派发 `start` 时消费掉。占位 id 用 `${会话}:user:${turnId}`，为的是给 render 一个稳定的 `v-for` key。
 2. **占位 assistant 消息的 id**。状态机里那条正在流式的临时消息刻意不带 id（收尾快照会给真 id，编一个假的反而在收尾时打架），所以 key 在这一层编：一轮一个（`${会话}:assistant:${turnId}`），正文与工具调用都落在同一条上，谁先到都一样。
 3. **收尾与迁移以宿主快照为准**。`session-turn-end` 只带 `ok` / `error`，补一次 `session.snapshot` 交给 `stream.settle()`，再把合并结果推成 `done`（消息 status 与宿主对历史的清洗都只有快照里有）。`session-id-changed` 要做**别名收敛**（新 id → render 认识的旧 key）并补推 `migrated`，否则一段正在跑的会话会在旧 id 上等一个永远不来的收尾。
-4. **`session-question` 自动答「跳过」**。桌面端没有提问 UI，不答就等于让宿主干等到超时（`ASK_TIMEOUT_MS`，5 分钟），用户看到的是「界面像死了」。`choice: null` 与宿主这条退路的兜底取值是同一个答案，所以这不是替用户做决定，只是把超时提前表达出来。
+4. **`question` 整份搬，不自动作答**。宿主的产品对象（`prompt` / `options[]` / `blocking` / `state` / `kind`）原样推给 render（`events.ts` 的 `onQuestion`），界面怎么摆是 render 的事。**没有**「自动答跳过」这回事：没有默认选项、没有超时自动答 —— 替用户选一个等于替他决定「要不要交接、交接去哪」，而宿主不会超时取消这道题（PRD D23），题会一直挂着等人答。契约里那条 `session-question` 早已不存在；桌面端的完整问答视图已经在了：候选与「挡住输入」由 `views/main/QuestionPanel.vue` 画（数据来自 `stores/chat.ts` 的 `pendingQuestions` / `inputBlocked`），作答走 `apis/chat.ts` 的 `answerQuestion` → main 的 `chat.answerQuestion` → 宿主 `question.answer`（`host/services.ts` 的 `answerQuestion`）。
 
 ## 7. render 的分层
 

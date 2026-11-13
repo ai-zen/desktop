@@ -81,7 +81,9 @@ export async function uploadAttachments(
 
   return {
     assets: assets.map((asset, position) => ({
-      index: succeededIndexes[position] ?? -1,
+      // 两个下标集合互补（`succeededIndexes` 的长度就等于 `assets` 的长度），所以这里一定
+      // 取得到。以前写的是 `?? -1`：它不会把错变得更清楚，只会把一张图惄无声息地摆到第 -1 位。
+      index: succeededIndexes[position],
       assetId: asset.assetId,
       name: asset.name,
     })),

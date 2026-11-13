@@ -166,8 +166,7 @@ export interface ConnectionControllerOptions {
   /** 建一层（生产 = `createHostLayer`，用例 = 假层 + 计数器） */
   createLayer: (options: HostLayerOptions) => ConnectionLayer;
   /** 读配置（生产 = `settings.ts` 的 `readSettings`，用例 = 一个内存变量）。`null` = 没配过 */
-  readSettings: () => Promise<ConnectionSettings | null>;
-  /** 写配置（生产 = `settings.ts` 的 `writeSettings`，用例 = 计数 + 可控失败） */
+  readSettings: () => Promise<ConnectionSettings | null>;  /** 写配置（生产 = `settings.ts` 的 `writeSettings`，用例 = 计数 + 可控失败） */
   writeSettings: (settings: ConnectionSettings) => Promise<void>;
   /** 日志出口（缺省 `console.info`）。**只许说模式与地址，凭证一个字都不许进**（D22） */
   log?: (message: string) => void;
@@ -238,7 +237,7 @@ export class ConnectionController {
    * 现在「没配过」是一个独立的状态，界面据此摆出首启的引导屏。
    */
   async start(): Promise<void> {
-    const settings = await this.readSettings();
+    const settings = await this.options.readSettings();
     const generation = this.nextGeneration();
     if (!settings) {
       // 起始态**不推**（见 `seed`）：它与 `state()` 在 `start()` 之前给出的那一份逐字相同
@@ -272,7 +271,7 @@ export class ConnectionController {
    */
   async state(): Promise<ConnectionState> {
     if (this.currentState) return this.currentState;
-    const settings = await this.readSettings();
+    const settings = await this.options.readSettings();
     // 没配过就答「没配过」：窗口比连接先出来，导引屏靠这一个答案决定该不该摆出来
     if (!settings) return { status: "unset" };
     return { status: "connecting", label: labelOf(settings), attempt: 0 };
@@ -285,7 +284,7 @@ export class ConnectionController {
    * 住只会让界面在那 8 秒里既没有回执也没有反馈。之后的变化全走推送。
    */
   async reconnect(): Promise<ConnectionState> {
-    const settings = await this.readSettings();
+    const settings = await this.options.readSettings();
     // 没配过就没有「重试」这回事：回到 `unset`，界面据此摆首启屏
     if (!settings) {
       this.setState({ status: "unset" });
@@ -528,8 +527,9 @@ export class ConnectionController {
     attemptNo: number,
     generation: number,
   ): void {
-    // 一次只排一个：理论上这时一定是空的，清一下是为了让「不许有两个」是结构上的事
-    this.cancelRetry();
+    // 到这里一定没有挂起的计时器：`scheduleRetry` 只从 `attempt` 的失败分支进来，而重试计时器
+    // 到点时会先把自己置空（见它的回调），换代 / `dispose` 又都先 `cancelRetry`。以前这里还有
+    // 一句「清一下更安心」，它永远是一个空操作（`cancelRetry` 第一句就是 `null` 就返回）。
     this.retryTimer = this.scheduler.set(() => {
       this.retryTimer = null;
       void this.launch(settings, attemptNo, generation);
@@ -570,22 +570,6 @@ export class ConnectionController {
     const changed = !sameState(this.currentState, next);
     this.currentState = next;
     if (changed) this.options.onStateChange?.(next);
-  }
-
-  /**
-   * 读配置（`readSettings` 的契约是不抛：注入实现真抛了也按「没配过」处理，别让启动挂住）。
-   *
-   * 这里**不再**回退成 `{ mode: "local" }`：那种兜底会把一次读盘失败变成「用户选过本地」，
-   * 于是应用默默去拉起一个本地宿主，而真相是磁盘上那份读不出来。`null` 让界面把选择权交回
-   * 用户（首启屏）。
-   */
-  private async readSettings(): Promise<ConnectionSettings | null> {
-    try {
-      return await this.options.readSettings();
-    } catch (error) {
-      this.log(`读连接配置失败，按「没配过」处理：${messageOf(error)}`);
-      return null;
-    }
   }
 
   // ==================================================================
