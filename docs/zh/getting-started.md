@@ -47,7 +47,7 @@ pnpm build
 # render 类型检查（改 apis/stores/views 后）
 cd packages/render && pnpm exec vue-tsc --noEmit
 
-# main 构建（改 server/main 后）
+# main 构建（改 host/main 后）
 cd packages/main && pnpm build
 ```
 
@@ -60,15 +60,15 @@ cd packages/main && pnpm build
 1. **创建工作空间**：侧栏「创建」→ 填名称 + 选目录（`dialog:selectDirectory` 原生目录选择器，默认桌面、记住上次位置）
 2. **新建对话**：按钮 + 下拉选 Agent（默认预选）→ 进入对话
 3. **发送消息**：用户消息上屏 → AI 流式回复（思考/工具调用可折叠）
-4. **中止生成**：流式中发送按钮切换「停止」→ 服务端取消本轮，中断保留已生成部分
-5. **切换会话**：随时切换，`getState` 每次都向服务端要实时快照，不丢状态
+4. **中止生成**：流式中发送按钮切换「停止」→ 宿主取消本轮，中断保留已生成部分
+5. **切换会话**：随时切换，`getState` 每次都向宿主要实时快照，不丢状态
 
 ## 核心概念
 
-- **Workspace**：`{ id, name, cwd }`；`cwd` 是会话在服务端运行时的工作目录，默认桌面兜底；删除 workspace 级联删除会话。
-- **Conversation**：`{ id, workspaceId, agentId, modelId, name, messages, createdAt, updatedAt }`；`modelId` 是这段会话**生效**的模型（服务端三级解析的结果）。
+- **Workspace**：`{ id, name, cwd }`；`cwd` 是会话在宿主运行时的工作目录，默认桌面兜底；删除 workspace 级联删除会话。
+- **Conversation**：`{ id, workspaceId, agentId, modelId, name, messages, createdAt, updatedAt }`；`modelId` 是这段会话**生效**的模型（宿主三级解析的结果）。
 - **模型优先级**：对话 `modelId` > Agent 定义 > 全局默认。
-- **agent 归服务端**：每个会话在服务端有一个 agent，会话活着它就活着（流式中可读），服务端按空闲宽限期回收；不运行时状态由服务端的存档接管。
+- **agent 归宿主**：每个会话在宿主有一个 agent，会话活着它就活着（流式中可读），宿主按空闲宽限期回收；不运行时状态由宿主的存档接管。
 - **`chat:push` 事件**：`start → user → message… → done / error`（+ 独立的 `migrated` / `renamed` / `notice` / `agents`）。
 
 ## 参考

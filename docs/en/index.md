@@ -17,8 +17,8 @@ AI-Zen Desktop is the **desktop workbench** of AI-Zen: built with Electron + Vue
 | Main process | Electron 43 (Node 24) + TypeScript + rolldown bundling |
 | Renderer process | Vue 3 + Vite + Pinia + Element Plus |
 | Streaming Markdown | markdown-it + highlight.js (languages registered on demand, synchronous rendering) |
-| Agent runtime | `@ai-zen/agents-sdk` (Provider / Agent / MCP capabilities) — running on the **resident server** side |
-| Data storage | the resident `agents-server` (workspaces and conversation archives live on its disk; Desktop's own persistence is just the one connection-settings file, `desktop/connection.json`) |
+| Agent runtime | `@ai-zen/agents-sdk` (Provider / Agent / MCP capabilities) — running on the **resident host** side |
+| Data storage | the resident `agents-host` (workspaces and conversation archives live on its disk; Desktop's own persistence is just the one connection-settings file, `desktop/connection.json`) |
 
 ## Project Structure
 
@@ -38,16 +38,16 @@ desktop/
 
 - **Call**: `invokeService(service, method, ...args)` dynamically dispatches to the corresponding service in the main process (exposed via preload, very thin, zero business definitions)
 - **Push**: `chat:push` single-channel event stream `start → user → message… → done / error` (+ independent `migrated` / `renamed` / `notice` / `agents`)
-- **Exception: the connection**: `connection:get` / `save` / `test` / `state` / `reconnect` (`state` doubles as the push channel) do not belong to those six services — "which server" has to be answered while no server exists yet. The window comes up first and the connection after, so when it cannot connect the window shows a status screen (retry / go to settings)
+- **Exception: the connection**: `connection:get` / `save` / `test` / `state` / `reconnect` (`state` doubles as the push channel) do not belong to those six services — "which host" has to be answered while no host exists yet. The window comes up first and the connection after, so when it cannot connect the window shows a status screen (retry / go to settings)
 
 See [Architecture Design](./desktop-design.md) for details.
 
 ## Core Concepts
 
-- **Workspace**: `{ id, name, cwd }`; `cwd` is the working directory conversations run in on the server, one workspace per local directory.
+- **Workspace**: `{ id, name, cwd }`; `cwd` is the working directory conversations run in on the host, one workspace per local directory.
 - **Conversation**: `{ id, workspaceId, agentId, modelId, name, messages, createdAt, updatedAt }`, multiple conversations per workspace.
-- **Model priority**: conversation-level `modelId` > Agent definition > global default (resolved on the server; the client only reads the effective value).
-- **The agent belongs to the server**: each conversation has an agent on the server, and it lives as long as the conversation does; when idle, the server's archive (`workspaces/<id>/sessions/`) takes over.
+- **Model priority**: conversation-level `modelId` > Agent definition > global default (resolved on the host; the client only reads the effective value).
+- **The agent belongs to the host**: each conversation has an agent on the host, and it lives as long as the conversation does; when idle, the host's archive (`workspaces/<id>/sessions/`) takes over.
 
 ## Documentation Navigation
 

@@ -6,11 +6,11 @@ outline: deep
 
 # 架构设计
 
-## 1. 定位：桌面壳 + 常驻服务端
+## 1. 定位：桌面壳 + 常驻宿主
 
-Desktop 是 AI-Zen 的**桌面壳**：窗口、原生对话框、IPC 三项归它；会话执行（Agent 循环、模型请求、工具、存档）全部归**常驻的 `agents-server`**。桌面端因此是瘦客户端 —— 它不跑 Agent、不落任何本地库，只持有一条到服务端的连接，把每个动作翻译成一次协议调用，把服务端推来的事件翻译成 render 认识的形状。
+Desktop 是 AI-Zen 的**桌面壳**：窗口、原生对话框、IPC 三项归它；会话执行（Agent 循环、模型请求、工具、存档）全部归**常驻的 `agents-host`**。桌面端因此是瘦客户端 —— 它不跑 Agent、不落任何本地库，只持有一条到宿主的连接，把每个动作翻译成一次协议调用，把宿主推来的事件翻译成 render 认识的形状。
 
-这条边界的收益是具体的：进程崩了不丢会话（服务端还在），服务端重启桌面端能自己长回来（见第 4 节），而「这段会话现在是什么状态」永远只有服务端一个答案。
+这条边界的收益是具体的：进程崩了不丢会话（宿主还在），宿主重启桌面端能自己长回来（见第 4 节），而「这段会话现在是什么状态」永远只有宿主一个答案。
 
 ## 2. 三个包
 
@@ -34,22 +34,22 @@ packages/main/src/
 ├── connection/ 连本地还是远程（桌面端唯一一处自己的持久化）
 │   ├── settings.ts    连接配置的**落点绑定**（读写/校验/措辞全在 `@ai-zen/agents-client` 的 `connection-settings.ts`；本文件只把路径钉成 `<AI_ZEN_DIR>/desktop/connection.json`）
 │   └── controller.ts  ConnectionController：当前连着哪一层 / 保存即重连 / 测试连接 / 四态 + 有限重试
-└── server/     服务端门面（可直接被 vitest + 真 daemon 验收）
-    ├── index.ts            组装根：createServerLayer
+└── host/     宿主门面（可直接被 vitest + 真 daemon 验收）
+    ├── index.ts            组装根：createHostLayer
     ├── call.ts             一次协议调用（每次取一条活着的连接，不缓存 client）
     ├── services.ts         六个 Service：render 的形状 ↔ 协议调用
     ├── ServicesManager.ts  invokeService 动态分发
-    ├── events.ts           服务端事件 → ChatStreamEvent
-    ├── launch.ts           拉起随包分发的服务端（Electron 自带的 Node）
+    ├── events.ts           宿主事件 → ChatStreamEvent
+    ├── launch.ts           拉起随包分发的宿主（Electron 自带的 Node）
     └── notices.ts          通知 code → 中文文案
 ```
 
 两条硬边界：
 
-- **`server/` 不碰 electron**。`createServerLayer` 只收四样非 electron 的事实（配置根、握手身份、默认工作目录、事件出口），所以它能被用例直接起起来；`app.getPath` / `dialog` / `webContents.send` 只出现在 `packages/main/src/app.ts` 里，以参数或回调递进去。
-- **`server/` 不碰数据文件**。会话清单、消息、工作区、配置全部经协议向服务端要。例外只有「连接本身」那两件，且都只读：地址（`run/server.json`，默认路径）与凭证（`run/token`），由 `ServerConnection` 在每次取用时现读；以及 `launch.ts` 把一个**进程**拉起来 —— 它自己不读不写任何数据文件。
+- **`host/` 不碰 electron**。`createHostLayer` 只收四样非 electron 的事实（配置根、握手身份、默认工作目录、事件出口），所以它能被用例直接起起来；`app.getPath` / `dialog` / `webContents.send` 只出现在 `packages/main/src/app.ts` 里，以参数或回调递进去。
+- **`host/` 不碰数据文件**。会话清单、消息、工作区、配置全部经协议向宿主要。例外只有「连接本身」那两件，且都只读：地址（`run/host.json`，默认路径）与凭证（`run/token`），由 `HostConnection` 在每次取用时现读；以及 `launch.ts` 把一个**进程**拉起来 —— 它自己不读不写任何数据文件。
 
-「不碰数据文件」说的是**数据**：会话、工作区、Agent 定义、模型配置仍然只由服务端拥有。桌面端自己确实写一个文件 —— `<AI_ZEN_DIR>/desktop/connection.json`（`connection/settings.ts` 只钉路径，规则在包里：`0600`、原子写、内含凭证；读不到 / 坏 JSON / 字段不合法一律返回 `null` = **没配过**）。它必须落在本机而不是服务端，理由是**先有鸡先有蛋**：服务端手上有「该连哪儿」的全部业务配置，可要问它，得先知道**连哪台**；把「连哪台」也存到服务端，就等于要求用户先连上服务端才能选服务端。所以这是**唯一**一处本地写，除这一处不新增任何往本地写数据的入口 —— 有意的例外，不是松绑。
+「不碰数据文件」说的是**数据**：会话、工作区、Agent 定义、模型配置仍然只由宿主拥有。桌面端自己确实写一个文件 —— `<AI_ZEN_DIR>/desktop/connection.json`（`connection/settings.ts` 只钉路径，规则在包里：`0600`、原子写、内含凭证；读不到 / 坏 JSON / 字段不合法一律返回 `null` = **没配过**）。它必须落在本机而不是宿主，理由是**先有鸡先有蛋**：宿主手上有「该连哪儿」的全部业务配置，可要问它，得先知道**连哪台**；把「连哪台」也存到宿主，就等于要求用户先连上宿主才能选宿主。所以这是**唯一**一处本地写，除这一处不新增任何往本地写数据的入口 —— 有意的例外，不是松绑。
 
 ### 启动顺序：窗口先出来，连接在后面
 
@@ -64,49 +64,49 @@ void connection.start()       ← 后台连，**不 await**
 这个顺序是本文件里唯一必须按字面读的东西，三条理由各挡住一种失败：
 
 - **IPC 必须早于窗口**：render 一挂载就会 `invokeService`，`registerIpc()` 晚一步，界面上就什么都没有。
-- **窗口不依赖连接**：远程服务端不可达时，窗口照样出现 —— 「连不上」于是是**窗口里的一件事**（状态屏上的 `connecting` / `error` 加「重试」），而不是「应用没起来」。
+- **窗口不依赖连接**：远程宿主不可达时，窗口照样出现 —— 「连不上」于是是**窗口里的一件事**（状态屏上的 `connecting` / `error` 加「重试」），而不是「应用没起来」。
 - **`connection.start()` 不 await**：它是后台的一轮尝试，失败只记一行日志 + 交给状态机（第 4 节的重试），启动路径不等它。`main.ts` 的入口另带 `.catch` —— 启动路径上任何漏网的失败只变成一行日志，而不是「双击没反应」。
 
-## 4. 一条连接（`ServerConnection`）
+## 4. 一条连接（`HostConnection`）
 
-「连哪台、拿什么进门、断了怎么办」收在 `@ai-zen/agents-client` 的 `agents/packages/client/src/transport/connection.ts` 一份实现里，`packages/main/src/server/index.ts` 只组装它一次：
+「连哪台、拿什么进门、断了怎么办」收在 `@ai-zen/agents-client` 的 `agents/packages/client/src/transport/connection.ts` 一份实现里，`packages/main/src/host/index.ts` 只组装它一次：
 
-- **连哪台**默认由服务发现文件回答（`<AI_ZEN_DIR>/run/server.json`）。服务端重启后换端口，文件跟着换，本层不缓存端口也不记 pid。用户在设置页选了**远程**时，地址就来自连接设置里的 `serverUrl`（落盘见 `connection/settings.ts`），这条默认路让位 —— 本层同样不缓存、也不解释它（地址的形状只在客户端包的 `wire/server-url.ts` 里定义一次）。
-- **拿什么进门**：凭证默认读 `<AI_ZEN_DIR>/run/token`（服务端启动时读或生成，`0600`），连接设置里的显式 `serverToken` 优先。这两份值桌面端只**透传**，解析、优先级、`unauthorized` 时那句人话全在客户端包的 `resolve-target.ts` 一处。
-- **没有服务端时怎么拉起来**：`startServerProcess` 注入成 `server/launch.ts` —— 拉起**随包分发**的那份（`dist/server.mjs`，由 `rolldown.config.mjs` 的 `server` 入口打成一个自包含文件），用 Electron 自带的 Node 跑（`ELECTRON_RUN_AS_NODE=1`）。客户机上可能连 Node.js / npm 都没有，所以这里不走 `npx`（那是 CLI 的做法 —— 它假设机器上有 npm）。
+- **连哪台**默认由服务发现文件回答（`<AI_ZEN_DIR>/run/host.json`）。宿主重启后换端口，文件跟着换，本层不缓存端口也不记 pid。用户在设置页选了**远程**时，地址就来自连接设置里的 `hostUrl`（落盘见 `connection/settings.ts`），这条默认路让位 —— 本层同样不缓存、也不解释它（地址的形状只在客户端包的 `wire/host-url.ts` 里定义一次）。
+- **拿什么进门**：凭证默认读 `<AI_ZEN_DIR>/run/token`（宿主启动时读或生成，`0600`），连接设置里的显式 `hostToken` 优先。这两份值桌面端只**透传**，解析、优先级、`unauthorized` 时那句人话全在客户端包的 `resolve-target.ts` 一处。
+- **没有宿主时怎么拉起来**：`startHostProcess` 注入成 `host/launch.ts` —— 拉起**随包分发**的那份（`dist/host.mjs`，由 `rolldown.config.mjs` 的 `host` 入口打成一个自包含文件），用 Electron 自带的 Node 跑（`ELECTRON_RUN_AS_NODE=1`）。客户机上可能连 Node.js / npm 都没有，所以这里不走 `npx`（那是 CLI 的做法 —— 它假设机器上有 npm）。
 
-注意「优先用已经在跑的」不是本层的能力，而是 `ensureServer` 的顺序：先读发现文件、`ping` 一次，通了就直接连，拉进程只发生在没有活着的服务端时。给了显式地址则**一次都不拉**：本机拉起来的那一份一定不在那个地址上，`launch.ts` 只留一条只说地址、不含凭证的 log。
+注意「优先用已经在跑的」不是本层的能力，而是 `ensureHost` 的顺序：先读发现文件、`ping` 一次，通了就直接连，拉进程只发生在没有活着的宿主时。给了显式地址则**一次都不拉**：本机拉起来的那一份一定不在那个地址上，`launch.ts` 只留一条只说地址、不含凭证的 log。
 - **断了怎么办**：`client()` 每次取用都判 `closed`，关了就地重建；`watch()` 让这条连接开始收事件；`onOpen()` 在换了一条连接时通知上层重挂监听。
 
-这几件事缺一不可，其中断线重连那一条最容易漏：监听挂在**具体那条** `ServerClient` 上，而客户端在断开那一刻会清空监听表。少了重挂，新连接能发请求却一个事件也收不到，症状是界面安静地不动（不报错、不重连、也没有提示）。
+这几件事缺一不可，其中断线重连那一条最容易漏：监听挂在**具体那条** `HostClient` 上，而客户端在断开那一刻会清空监听表。少了重挂，新连接能发请求却一个事件也收不到，症状是界面安静地不动（不报错、不重连、也没有提示）。
 
-`packages/main/src/server/call.ts` 是这一层与连接之间的唯一接缝：`protocolCall(connection)` 每次 `await connection.client()` 再 `call(method, params)`，本身不持有任何状态 —— 没有第二个地方能偷偷存下一份会过期的 client。
+`packages/main/src/host/call.ts` 是这一层与连接之间的唯一接缝：`protocolCall(connection)` 每次 `await connection.client()` 再 `call(method, params)`，本身不持有任何状态 —— 没有第二个地方能偷偷存下一份会过期的 client。
 
 ### 切本地 / 远程：设置页那一节
 
-「连哪台」不是构造时一锤定音的入参，用户能在**设置页**里改：那一页开头是一节「**服务端连接**」，单选**本地** / **远程**；远程时填**地址**（`ws://` / `wss://` / `http://` / `https://`，支持 path，如 `wss://example.com/ai-zen`）与**凭证**（留空 = 用本机 `<AI_ZEN_DIR>/run/token`）。
+「连哪台」不是构造时一锤定音的入参，用户能在**设置页**里改：那一页开头是一节「**宿主连接**」，单选**本地** / **远程**；远程时填**地址**（`ws://` / `wss://` / `http://` / `https://`，支持 path，如 `wss://example.com/ai-zen`）与**凭证**（留空 = 用本机 `<AI_ZEN_DIR>/run/token`）。
 
-- **这一节自带按钮，与页面底部那个「保存」是两件事**。「测试连接」与「保存并重连」属于连接；底部那个「保存」把「默认模型 / 默认 Agent / API Key」写给**服务端**（连的还是同一台）。混成一个按钮的后果很具体：用户只想改默认模型，点一下却连到另一台机器上去了。
-- **「测试连接」只探测候选值**：不落盘、不影响当前连接。成功显示服务端自报的 `protocol` / `version` / 耗时；失败显示客户端翻好的人话（`explainUnauthorized` 的措辞，例如引导去核对凭证）。地址合法性只问客户端包的 `parseServerUrl`，桌面端不写第二份校验。
+- **这一节自带按钮，与页面底部那个「保存」是两件事**。「测试连接」与「保存并重连」属于连接；底部那个「保存」把「默认模型 / 默认 Agent / API Key」写给**宿主**（连的还是同一台）。混成一个按钮的后果很具体：用户只想改默认模型，点一下却连到另一台机器上去了。
+- **「测试连接」只探测候选值**：不落盘、不影响当前连接。成功显示宿主自报的 `protocol` / `version` / 耗时；失败显示客户端翻好的人话（`explainUnauthorized` 的措辞，例如引导去核对凭证）。地址合法性只问客户端包的 `parseHostUrl`，桌面端不写第二份校验。
 - **「保存并重连」立刻换连接**：`ConnectionController.save()` 的顺序是 **先落盘 → `dispose()` 旧层 → 建新 → `start()`**，不需要重启 App。落盘失败就一个字段都不动连接（否则界面写着远程、实际还连着本地）；进行中的回答会中断，所以保存前有确认框。
-- **保存成功后回到主界面，并重拉一切来自服务端的数据**（会话 / 工作区 / Agent / 模型列表）：换了服务端就是换了一整个世界，上一台的会话缓存留着只会让人点进一次永远失败的拉取。
-- **远程模式不在本机拉起服务端**：本机拉起来的一定不在那个地址上；本地模式才是「发现文件 + 按需拉起」。
+- **保存成功后回到主界面，并重拉一切来自宿主的数据**（会话 / 工作区 / Agent / 模型列表）：换了宿主就是换了一整个世界，上一台的会话缓存留着只会让人点进一次永远失败的拉取。
+- **远程模式不在本机拉起宿主**：本机拉起来的一定不在那个地址上；本地模式才是「发现文件 + 按需拉起」。
 
 配置落在 `<AI_ZEN_DIR>/desktop/connection.json`（`0600`、原子写），五条**专用** IPC `connection:get` / `connection:save` / `connection:test` / `connection:state` / `connection:reconnect` 承载这条路径（不进下面那张 service 表）。
 
 ### 没配过时：`unset`（首启引导屏）
 
-「没配过」不是一种「连不上」，而是一个**该由用户做的选择**。它必须有独立的状态：用 `{ mode: "local" }` 兜底会把「第一次启动」压成「用户选过本地」，于是应用一启动就去拉起一个本地服务端，引导屏永远出不来（同 `resolve-target.ts` 里「两格布尔装不下三种凭证来源」那一型病）。所以 `ConnectionState` 的第一支是 `{ status: "unset" }`：`start()` 在这种情形下**一层都不建**，界面据此摆出 `views/setup`（本机 / 远程 + 地址凭证 + 测试连接）。
+「没配过」不是一种「连不上」，而是一个**该由用户做的选择**。它必须有独立的状态：用 `{ mode: "local" }` 兜底会把「第一次启动」压成「用户选过本地」，于是应用一启动就去拉起一个本地宿主，引导屏永远出不来（同 `resolve-target.ts` 里「两格布尔装不下三种凭证来源」那一型病）。所以 `ConnectionState` 的第一支是 `{ status: "unset" }`：`start()` 在这种情形下**一层都不建**，界面据此摆出 `views/setup`（本机 / 远程 + 地址凭证 + 测试连接）。
 
 ### 连不上时：四态 + 有限重试
 
 窗口先出来（第 3 节），于是「这条连接此刻是什么状态」必须是一个**能被问、也能被推**的值 —— 否则 render 挂载时那几句 `invokeService` 撞在一条还没连上的连接上，屏幕上就是一片空白且没有提示。三态由 `ConnectionController` 一处维护，render 只按它放行界面：
 
 - `connecting` —— **包含**「首次尝试中」与「重试等待中」。两者靠 `attempt`（`0` = 首次尝试）与 `nextRetryInMs`（还要等多久）分开；
-- `ready` —— 连上了，带服务端**自报**的 `protocol` / `version`（握手回执；拿不到时是 `0` / `""` —— 连上了但不知道自己连的是哪一版，比编一个数字诚实）；
+- `ready` —— 连上了，带宿主**自报**的 `protocol` / `version`（握手回执；拿不到时是 `0` / `""` —— 连上了但不知道自己连的是哪一版，比编一个数字诚实）；
 - `error` —— **重试也失败之后**的终态（不是「这一次失败了」），带一句人话 `message`。
 
-除 `unset` 外每一态都带一个 `label`：本地是「本机服务端」，远程是那个地址。它由 main 产出（render 不许自己拼地址、也不许猜模式），并且**不含凭证** —— 地址里的 userinfo 会先被抹掉。
+除 `unset` 外每一态都带一个 `label`：本地是「本机宿主」，远程是那个地址。它由 main 产出（render 不许自己拼地址、也不许猜模式），并且**不含凭证** —— 地址里的 userinfo 会先被抹掉。
 
 **有限重试**：首次失败后最多再试 **3 次**，退避 **1s / 2s / 5s**；三次仍失败 → `error`，此后只剩用户手动「重试」（`connection:reconnect`）。自动重试只跑一批，不跑一辈子：一个连不上的远端不该让主进程永远每 5 秒敲一次门，而那种「安静地一直在试」在界面上和「停住了」长得一模一样。
 
@@ -116,37 +116,37 @@ void connection.start()       ← 后台连，**不 await**
 
 ## 5. 协议面
 
-业务面的入口只有一个：`electronAPI.invokeService(service, method, ...args)`，由 `ServicesManager` 查表分发到六个 Service。另有几条**不属这张表**的通道：连接设置与连接状态 `connection:get` / `save` / `test` / `state` / `reconnect`（第 4 节）、窗口控制 `window:xxx`、原生目录选择 `dialog:selectDirectory` —— 它们回答的不是服务端的方法，而是主进程自己的事。
+业务面的入口只有一个：`electronAPI.invokeService(service, method, ...args)`，由 `ServicesManager` 查表分发到六个 Service。另有几条**不属这张表**的通道：连接设置与连接状态 `connection:get` / `save` / `test` / `state` / `reconnect`（第 4 节）、窗口控制 `window:xxx`、原生目录选择 `dialog:selectDirectory` —— 它们回答的不是宿主的方法，而是主进程自己的事。
 
-连接那五条里的后两条是**查询**与**手动重试**：`connection:state` 问「此刻什么状态」，`connection:reconnect` 让用户自己再点一轮（清掉挂起的计时器、`attempt` 归零，立刻返回进入 `connecting` 的那一瞬，整轮在后台跑）。同名的 `connection:state` 还是一条**推送**通道（main → render），于是「查一次」与「听变化」对调用方是同一个名字。这两条同样**不进** service 表 —— 那六个键是服务端的方法面。
+连接那五条里的后两条是**查询**与**手动重试**：`connection:state` 问「此刻什么状态」，`connection:reconnect` 让用户自己再点一轮（清掉挂起的计时器、`attempt` 归零，立刻返回进入 `connecting` 的那一瞬，整轮在后台跑）。同名的 `connection:state` 还是一条**推送**通道（main → render），于是「查一次」与「听变化」对调用方是同一个名字。这两条同样**不进** service 表 —— 那六个键是宿主的方法面。
 
 **起始态不推送**：`connecting / attempt 0` 与 `start()` 之前 `state()` 给出的那一份逐字相同，推一遍只是噪声。所以 render 挂载时必须**先查询一次、再听推送** —— 只靠推送会漏掉挂载之前的那次变化，只靠查询又拿不到之后的变化。`preload` 把这几条暴露成 `electronAPI.connection = { get, save, test, state, reconnect }`。
 
 | 分发键 | 实现 | 主要动作 |
 |--------|------|----------|
-| `workspace` | `ServerWorkspaceService` | `workspace.list` / `create`（= `workspace.resolve`，填了名字再补一次 `workspace.rename`）/ `rename` / `remove` |
-| `conversation` | `ServerConversationService` | `session.list` / `create` / `attach` + `snapshot` / `rename` / `remove` / `model.set` |
-| `agent` | `ServerAgentService` | `agent.list`（只列入口 Agent） |
-| `model` | `ServerModelService` | `config.get` 里取 `models` |
-| `chat` | `ServerChatService` | `session.send` / `cancel` / `close` / `attach` + `snapshot` |
-| `config` | `ServerConfigService` | `config.get` / 窄方法写默认值 / `config.save` |
+| `workspace` | `HostWorkspaceService` | `workspace.list` / `create`（= `workspace.resolve`，填了名字再补一次 `workspace.rename`）/ `rename` / `remove` |
+| `conversation` | `HostConversationService` | `session.list` / `create` / `attach` + `snapshot` / `rename` / `remove` / `model.set` |
+| `agent` | `HostAgentService` | `agent.list`（只列入口 Agent） |
+| `model` | `HostModelService` | `config.get` 里取 `models` |
+| `chat` | `HostChatService` | `session.send` / `cancel` / `close` / `attach` + `snapshot` |
+| `config` | `HostConfigService` | `config.get` / 窄方法写默认值 / `config.save` |
 
-事件面是契约里的三个联合（`agents/packages/server/src/protocol/sessions.ts`）：`AgentEventName` 8 条（core `Agent.events` 的原名）、`SessionEventName` 6 条（服务端派生或自己决定的事）、`ServerEventName` 1 条（不绑会话的服务端通知）。事件名一律 kebab-case —— `session-turn-end`、`session-title-changed`、`server-notice`。
+事件面是契约里的三个联合（`agents/packages/host/src/protocol/sessions.ts`）：`AgentEventName` 8 条（core `Agent.events` 的原名）、`SessionEventName` 6 条（宿主派生或自己决定的事）、`HostEventName` 1 条（不绑会话的宿主通知）。事件名一律 kebab-case —— `session-turn-end`、`session-title-changed`、`host-notice`。
 
-方法名与事件名都是 `@ai-zen/agents-server/protocol` 里的**字面量联合类型**，不写字面量：改契约时这里编译不过，而不是运行期 500。
+方法名与事件名都是 `@ai-zen/agents-host/protocol` 里的**字面量联合类型**，不写字面量：改契约时这里编译不过，而不是运行期 500。
 
-## 6. 事件翻译（`packages/main/src/server/events.ts`）
+## 6. 事件翻译（`packages/main/src/host/events.ts`）
 
 `ChatEventBridge` 订阅其中 12 条，翻成 render 认的 9 种 `ChatStreamEvent`：`start` / `user` / `message` / `done` / `migrated` / `error` / `renamed` / `notice` / `agents`。
 
-「一轮之内该记住什么」不在这里 —— 正文增量往哪条消息上拼、子 Agent 的增量与服务端快照怎么合并、失败算不算终态，归 `@ai-zen/agents-client` 的 `SessionStream`（纯状态机，零 I/O）。桌面端一条连接、多段会话并发，所以这里是**一段会话一台状态机**（`Map<conversationId, SessionStream>`），后台会话继续收事件。
+「一轮之内该记住什么」不在这里 —— 正文增量往哪条消息上拼、子 Agent 的增量与宿主快照怎么合并、失败算不算终态，归 `@ai-zen/agents-client` 的 `SessionStream`（纯状态机，零 I/O）。桌面端一条连接、多段会话并发，所以这里是**一段会话一台状态机**（`Map<conversationId, SessionStream>`），后台会话继续收事件。
 
 翻译层只做四件事：
 
 1. **`user` 的正文**。协议不推用户消息（`chunk-parsed` 只有模型增量），正文由 `chat.send` 那一侧登记（`noteSend`），派发 `start` 时消费掉。占位 id 用 `${会话}:user:${turnId}`，为的是给 render 一个稳定的 `v-for` key。
 2. **占位 assistant 消息的 id**。状态机里那条正在流式的临时消息刻意不带 id（收尾快照会给真 id，编一个假的反而在收尾时打架），所以 key 在这一层编：一轮一个（`${会话}:assistant:${turnId}`），正文与工具调用都落在同一条上，谁先到都一样。
-3. **收尾与迁移以服务端快照为准**。`session-turn-end` 只带 `ok` / `error`，补一次 `session.snapshot` 交给 `stream.settle()`，再把合并结果推成 `done`（消息 status 与服务端对历史的清洗都只有快照里有）。`session-id-changed` 要做**别名收敛**（新 id → render 认识的旧 key）并补推 `migrated`，否则一段正在跑的会话会在旧 id 上等一个永远不来的收尾。
-4. **`session-question` 自动答「跳过」**。桌面端没有提问 UI，不答就等于让服务端干等到超时（`ASK_TIMEOUT_MS`，5 分钟），用户看到的是「界面像死了」。`choice: null` 与服务端这条退路的兜底取值是同一个答案，所以这不是替用户做决定，只是把超时提前表达出来。
+3. **收尾与迁移以宿主快照为准**。`session-turn-end` 只带 `ok` / `error`，补一次 `session.snapshot` 交给 `stream.settle()`，再把合并结果推成 `done`（消息 status 与宿主对历史的清洗都只有快照里有）。`session-id-changed` 要做**别名收敛**（新 id → render 认识的旧 key）并补推 `migrated`，否则一段正在跑的会话会在旧 id 上等一个永远不来的收尾。
+4. **`session-question` 自动答「跳过」**。桌面端没有提问 UI，不答就等于让宿主干等到超时（`ASK_TIMEOUT_MS`，5 分钟），用户看到的是「界面像死了」。`choice: null` 与宿主这条退路的兜底取值是同一个答案，所以这不是替用户做决定，只是把超时提前表达出来。
 
 ## 7. render 的分层
 
@@ -162,17 +162,17 @@ packages/render/src/
 ```
 
 - **界面按状态放行**（这是 `App.vue` 的一层，不是各视图各自判断）：优先级 `设置页 → 首启引导屏（unset）→ 未就绪时的状态屏 → guide / main`。**设置页在未连接时也进得去** —— 那是用户唯一的自救路径（改回本地 / 换一个地址）；主界面（含侧栏、会话列表）只在 `ready` 之后才挂载，避免「窗口出来了但一片空白、也没有提示」。状态屏按状态说话：`connecting` 是「正在连接 …」（重试等待中多一句「第 N 次重试，约 X 秒后」），`error` 是那句 `message` 加「重试」与「去设置」。
-- **未连接时设置页只让出一半**：「默认模型 / 默认 Agent / API Key / 数据目录」全是服务端的事实，读不到就留空并挂一条说明（不弹红条、不打日志 —— 那不是故障）；「服务端连接」那一节读的是 main 本地的 `connection:get`，照常可用。
+- **未连接时设置页只让出一半**：「默认模型 / 默认 Agent / API Key / 数据目录」全是宿主的事实，读不到就留空并挂一条说明（不弹红条、不打日志 —— 那不是故障）；「宿主连接」那一节读的是 main 本地的 `connection:get`，照常可用。
 - **进入 `ready` 才拉数据**：`init()`（Agent / 模型 / 工作区，再按有没有 workspace 落到 guide 或 main）只在 `false → true` 那一刻跑一次。「保存并重连」成功（已连上）后回到主界面；而如果用户此刻正停在设置页，后台自动重试成功**不会**把他从设置页拽走 —— 数据照常加载，只是不切视图。
-- **apis 只做转发**：`invokeService` 收敛成方法，错误统一成 `InvokeServerError`；`subscribeServiceEvent("chat:push", …)` 是唯一的事件入口。`apis/connection.ts` 是五条连接通道的同一套转发（它不经过 `invokeService`），`connection:state` 那条推送走同一对 `on` / `off`。`apis/dialog.ts` 是同一件事的另一半，只是走 main 的 `dialog:selectDirectory`（原生目录选择）—— 失败在那个函数里就收口（用户取消与选择框打不开都回 `null`，但后一种说一句），两个调用点（侧栏与引导页）因此不再各写一份无 `try/catch` 的同形代码。
-- **`config.update` 回报 `ConfigUpdateReport`**：main 有两处**故意不写**（服务端配置里已经不存在的端点、空的默认值），它自己把「写了哪些 / 哪些没写 / 为什么」报回来。设置页据此说真话 —— 「发出去了」不等于「写进去了」。
-- **store 是唯一数据入口**：视图不调 `invokeService` 字符串。`chat` 按 `byConversation[id]` 分槽，切换会话只换视角，各会话的流式状态互不干扰。`conversation.select()` 是**可等**的：它内部要向服务端要一次快照（`attach` + `snapshot`），失败会抛给调用方，由视图当场说清 —— 同步发射的后果是界面上留下「左边选中了、右边空白」，那和「这段会话本来就没消息」长得一模一样。
-- **子 Agent 栏目与主对话并行**：`agents` 是 `SubAgentView[]` 的整份替换（服务端一变化就推全量），render 不做 diff；选中态修正与 Tab 循环抽在 `packages/render/src/stores/agentView.ts`，纯函数、可测。
+- **apis 只做转发**：`invokeService` 收敛成方法，错误统一成 `InvokeHostError`；`subscribeServiceEvent("chat:push", …)` 是唯一的事件入口。`apis/connection.ts` 是五条连接通道的同一套转发（它不经过 `invokeService`），`connection:state` 那条推送走同一对 `on` / `off`。`apis/dialog.ts` 是同一件事的另一半，只是走 main 的 `dialog:selectDirectory`（原生目录选择）—— 失败在那个函数里就收口（用户取消与选择框打不开都回 `null`，但后一种说一句），两个调用点（侧栏与引导页）因此不再各写一份无 `try/catch` 的同形代码。
+- **`config.update` 回报 `ConfigUpdateReport`**：main 有两处**故意不写**（宿主配置里已经不存在的端点、空的默认值），它自己把「写了哪些 / 哪些没写 / 为什么」报回来。设置页据此说真话 —— 「发出去了」不等于「写进去了」。
+- **store 是唯一数据入口**：视图不调 `invokeService` 字符串。`chat` 按 `byConversation[id]` 分槽，切换会话只换视角，各会话的流式状态互不干扰。`conversation.select()` 是**可等**的：它内部要向宿主要一次快照（`attach` + `snapshot`），失败会抛给调用方，由视图当场说清 —— 同步发射的后果是界面上留下「左边选中了、右边空白」，那和「这段会话本来就没消息」长得一模一样。
+- **子 Agent 栏目与主对话并行**：`agents` 是 `SubAgentView[]` 的整份替换（宿主一变化就推全量），render 不做 diff；选中态修正与 Tab 循环抽在 `packages/render/src/stores/agentView.ts`，纯函数、可测。
 - **通知是 toast，不是状态**：`type: "notice"` 直接弹 element-plus，不进 `ConversationChatState` —— 尤其不碰 `error`（那是「本轮失败」的错误条，`done` 会把它清空）。
 
 ## 8. 数据归属
 
-盘上的**数据**都归服务端（它的 `AI_ZEN_DIR`）；唯一的例外是桌面端自己那个连接配置文件（下面 `desktop/` 那一行）：
+盘上的**数据**都归宿主（它的 `AI_ZEN_DIR`）；唯一的例外是桌面端自己那个连接配置文件（下面 `desktop/` 那一行）：
 
 ```
 <AI_ZEN_DIR>/
@@ -182,18 +182,18 @@ packages/render/src/
 ├── workspaces/<workspaceId>/    workspace.json + sessions/<id>.json（含 .meta.json 清单）
 ├── desktop/                     桌面端自己写（就这一个文件）
 │   └── connection.json          连接设置（本地 / 远程 + 地址 + 凭证，0600；**删掉即回到首启引导屏**）
-└── run/                         服务端自己写：怎么找到它
-    ├── server.json              服务发现：常驻服务端此刻在哪个端口
-    └── token                    凭证（服务端启动时读或生成，0600）
+└── run/                         宿主自己写：怎么找到它
+    ├── host.json              服务发现：常驻宿主此刻在哪个端口
+    └── token                    凭证（宿主启动时读或生成，0600）
 ```
 
-桌面端在盘上只读 `<AI_ZEN_DIR>/run/` 下的两件事：`server.json`（**默认**的地址来源）与 `token`（凭证）；远程模式下地址来自连接设置，连 `server.json` 都不读。它**只写一处**：`<AI_ZEN_DIR>/desktop/connection.json`（连接设置，理由见第 3 节的「先有鸡先有蛋」；删掉这个文件就回到首启引导屏 —— 不是「回到本地」，那会把一次删除解释成一次选择）。会话存活由服务端按空闲宽限期（`DEFAULT_SESSION_IDLE_TIMEOUT_MS`）回收，`session.close` 是「我不看这段了」的当场释放，两者都不删存档。
+桌面端在盘上只读 `<AI_ZEN_DIR>/run/` 下的两件事：`host.json`（**默认**的地址来源）与 `token`（凭证）；远程模式下地址来自连接设置，连 `host.json` 都不读。它**只写一处**：`<AI_ZEN_DIR>/desktop/connection.json`（连接设置，理由见第 3 节的「先有鸡先有蛋」；删掉这个文件就回到首启引导屏 —— 不是「回到本地」，那会把一次删除解释成一次选择）。会话存活由宿主按空闲宽限期（`DEFAULT_SESSION_IDLE_TIMEOUT_MS`）回收，`session.close` 是「我不看这段了」的当场释放，两者都不删存档。
 
-「连哪台」与「拿什么进门」就存在这个文件里（`{ mode, serverUrl?, serverToken? }`）：`local` 时两个值对连接层一律是 `undefined`（= 老路），`remote` 时才是用户填的那两个。改它的入口只有设置页那一节（第 4 节），不需要手改文件。
+「连哪台」与「拿什么进门」就存在这个文件里（`{ mode, hostUrl?, hostToken? }`）：`local` 时两个值对连接层一律是 `undefined`（= 老路），`remote` 时才是用户填的那两个。改它的入口只有设置页那一节（第 4 节），不需要手改文件。
 
 ## 9. 模型解析只有一份实现
 
-「会话级覆盖 > Agent 定义 > 全局默认」的三级解析在服务端（SDK 的 `resolveModel`）。桌面端既不缓存也不重算，只读两个字段：
+「会话级覆盖 > Agent 定义 > 全局默认」的三级解析在宿主（SDK 的 `resolveModel`）。桌面端既不缓存也不重算，只读两个字段：
 
 - `SessionListEntry.modelId` —— 这段会话**有没有**自己的覆盖；
 - `SessionListEntry.effectiveModelId` —— 它**实际在用**哪个模型（解析不出来时省略）。
@@ -202,7 +202,7 @@ packages/render/src/
 
 ## 10. 测试形态
 
-`server/` 那一层可以被 vitest 直接验收：`packages/main/src/server/test-harness.ts` 起一个**真 daemon**（真端口、真帧、真 `SessionManager`）+ 一个**假 Agent**（用例自己决定什么时候推哪一片增量）。验的是协议映射本身，所以 Agent 的流式循环该是假件，socket 与发现文件必须是真的。用例读的是门面推出去的 `ChatStreamEvent` 序列 —— 翻译层唯一的验收口径就是这条通道。
+`host/` 那一层可以被 vitest 直接验收：`packages/main/src/host/test-harness.ts` 起一个**真 daemon**（真端口、真帧、真 `SessionManager`）+ 一个**假 Agent**（用例自己决定什么时候推哪一片增量）。验的是协议映射本身，所以 Agent 的流式循环该是假件，socket 与发现文件必须是真的。用例读的是门面推出去的 `ChatStreamEvent` 序列 —— 翻译层唯一的验收口径就是这条通道。
 
 `connection/` 那一层走另一条路：`ConnectionController` 的依赖全部注入（建层工厂、配置读写、日志出口），用例拿**假层 + 计数器**就能把「先落盘 → dispose → 建新 → start」这条顺序咬死（落盘失败时 `dispose` 一次都不许被调），不必起真 daemon、也不必开窗口；`settings.ts` 的用例碰真磁盘（临时 `AI_ZEN_DIR`），验的是 `0600`、原子写与「读不炸」。当前两侧的规模：`packages/main` 9 个用例文件 / 128 条用例（含状态机的推送序列、退避重试、`reconnect` 换掉挂起的计时器、`unset` 不建层），`packages/render` 3 个文件 / 38 条（含 connection store 的「测试不刷数据、保存才刷」与「先查一次再订阅」）。
 
@@ -210,7 +210,7 @@ packages/render/src/
 
 | 取舍 | 理由 |
 |------|------|
-| 连接与「怎么发请求」分成两个东西（`ServerConnection` / `packages/main/src/server/call.ts`） | 缓存在对象里的 client 会在服务端重启后永久失效，而症状只是「没反应」 |
+| 连接与「怎么发请求」分成两个东西（`HostConnection` / `packages/main/src/host/call.ts`） | 缓存在对象里的 client 会在宿主重启后永久失效，而症状只是「没反应」 |
 | 状态机在包里，不在 main | 同一套「一轮之内怎么拼」的规则在本仓与 CLI 之间只能有一份，两份的边界情形迟早分叉 |
 | 事件整份替换（`message` / `agents`） | 消费方不需要任何合并逻辑；增量事件把复杂度摊给每一个消费方 |
 | 未知通知码也要出文案 | 版本偏斜是常态，静默丢弃让用户看到「什么都没发生」 |
@@ -218,7 +218,7 @@ packages/render/src/
 
 ## 12. 打包与分发
 
-「随包分发的服务端」得要真的随包走：应用装好就能用，客户机上不需要 Node.js / npm。
+「随包分发的宿主」得要真的随包走：应用装好就能用，客户机上不需要 Node.js / npm。
 
 **工具**：electron-builder 26.18.0（仓库根 `package.json` 的 devDependency）。构建的项目目录是 `packages/main` —— 打包的对象是**应用**，而 asar 根部那份 `package.json` 就是它。
 
@@ -243,7 +243,7 @@ pnpm dist       # 出可分发安装包：release/AI-Zen Desktop-<version>.AppIm
 ```
 release/
 ├── linux-unpacked/
-│   ├── ai-zen-desktop             Electron 可执行（同时也是服务端的 Node 解释器）
+│   ├── ai-zen-desktop             Electron 可执行（同时也是宿主的 Node 解释器）
 │   └── resources/app.asar         3.2 MB，只有 dist/
 └── AI-Zen Desktop-0.1.0.AppImage  122 MB
 ```
@@ -252,15 +252,15 @@ asar 里就这五条，其余被 `files: [dist/**, !**/*.map]` 挡在门外：
 
 ```
 /dist/main.mjs      主进程入口（ESM）
-/dist/server.mjs    随包分发的服务端（自包含，1.5 MB）
+/dist/host.mjs    随包分发的宿主（自包含，1.5 MB）
 /dist/preload.js    contextBridge
 /dist/static/…      render 产物（index.html + assets/）
 /package.json       type: module + main: dist/main.mjs
 ```
 
-**`server.mjs` 为什么必须在 `main.mjs` 同目录**：`launch.ts` 用 `import.meta.url` 推同级路径（`dirname(main.mjs) + server.mjs`），它并不知道自己被打进了 asar。同目录这条约束在 asar 里同样成立 —— `ELECTRON_RUN_AS_NODE=1` 的 Electron 二进制也认 asar 路径，读得到、跑得起来，所以不需要 `asarUnpack`。
+**`host.mjs` 为什么必须在 `main.mjs` 同目录**：`launch.ts` 用 `import.meta.url` 推同级路径（`dirname(main.mjs) + host.mjs`），它并不知道自己被打进了 asar。同目录这条约束在 asar 里同样成立 —— `ELECTRON_RUN_AS_NODE=1` 的 Electron 二进制也认 asar 路径，读得到、跑得起来，所以不需要 `asarUnpack`。
 
-**产物里为什么没有 `node_modules`**：`main.mjs` 除 `electron` 外全内联（`rolldown.config.mjs` 里 core / sdk / shared 都从 `external` 拿掉了），`server.mjs` 本来就是全内联。于是 `packages/main` 的依赖全是**构建期输入**，全在 `devDependencies`；electron-builder 收不到任何生产依赖，asar 里也就没有 `node_modules` —— 那几条跨仓的 `link:` 路径（`../../../agents/…`）因此完全不出现在产物里。
+**产物里为什么没有 `node_modules`**：`main.mjs` 除 `electron` 外全内联（`rolldown.config.mjs` 里 core / sdk / shared 都从 `external` 拿掉了），`host.mjs` 本来就是全内联。于是 `packages/main` 的依赖全是**构建期输入**，全在 `devDependencies`；electron-builder 收不到任何生产依赖，asar 里也就没有 `node_modules` —— 那几条跨仓的 `link:` 路径（`../../../agents/…`）因此完全不出现在产物里。
 
 **asar 根 `package.json` 的 `type` / `main` 不是装饰**：这两个字段是 Electron 认出 ESM 主进程的依据（Electron 43 支持 ESM 主进程，但入口得能被解析成 ESM）。electron-builder 会剥掉 `scripts` / `devDependencies`，这两个字段原样留下。
 

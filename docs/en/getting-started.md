@@ -47,7 +47,7 @@ pnpm build
 # render type check (after changing apis/stores/views)
 cd packages/render && pnpm exec vue-tsc --noEmit
 
-# main build (after changing server/main)
+# main build (after changing host/main)
 cd packages/main && pnpm build
 ```
 
@@ -60,15 +60,15 @@ Once connected, on first launch you enter the **guide page** (when there is no w
 1. **Create a workspace**: Sidebar "Create" → fill in name + choose directory (`dialog:selectDirectory` native directory picker, defaults to Desktop, remembers last location)
 2. **Create a conversation**: Button + dropdown to select an Agent (default preselected) → enter the conversation
 3. **Send a message**: User message appears on screen → AI streams a reply (reasoning / tool calls can be collapsed)
-4. **Stop generation**: While streaming, the send button switches to "Stop" → the server cancels this turn, keeping the already-generated part
-5. **Switch conversations**: Switch at any time; `getState` asks the server for a live snapshot every time, so nothing is lost
+4. **Stop generation**: While streaming, the send button switches to "Stop" → the host cancels this turn, keeping the already-generated part
+5. **Switch conversations**: Switch at any time; `getState` asks the host for a live snapshot every time, so nothing is lost
 
 ## Core Concepts
 
-- **Workspace**: `{ id, name, cwd }`; `cwd` is the working directory conversations run in on the server, defaulting to Desktop as fallback; deleting a workspace cascades to delete its conversations.
-- **Conversation**: `{ id, workspaceId, agentId, modelId, name, messages, createdAt, updatedAt }`; `modelId` is the model this conversation **effectively** uses (the server's three-level resolution result).
+- **Workspace**: `{ id, name, cwd }`; `cwd` is the working directory conversations run in on the host, defaulting to Desktop as fallback; deleting a workspace cascades to delete its conversations.
+- **Conversation**: `{ id, workspaceId, agentId, modelId, name, messages, createdAt, updatedAt }`; `modelId` is the model this conversation **effectively** uses (the host's three-level resolution result).
 - **Model priority**: conversation `modelId` > Agent definition > global default.
-- **the agent belongs to the server**: each conversation has an agent on the server that lives as long as the conversation does (readable while streaming); the server reclaims it on an idle grace period. When idle, the server's archive takes over.
+- **the agent belongs to the host**: each conversation has an agent on the host that lives as long as the conversation does (readable while streaming); the host reclaims it on an idle grace period. When idle, the host's archive takes over.
 - **`chat:push` events**: `start → user → message… → done / error` (+ independent `migrated` / `renamed` / `notice` / `agents`).
 
 ## References

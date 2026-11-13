@@ -17,8 +17,8 @@ AI-Zen Desktop 是 AI-Zen 的**桌面工作台**：以 Electron + Vue 3 构建�
 | 主进程 | Electron 43（Node 24）+ TypeScript + rolldown 打包 |
 | 渲染进程 | Vue 3 + Vite + Pinia + Element Plus |
 | 流式 Markdown | markdown-it + highlight.js（按需注册语言，同步渲染） |
-| Agent 运行时 | `@ai-zen/agents-sdk`（Provider / Agent / MCP 能力）—— 跑在**常驻服务端**那边 |
-| 数据存储 | 常驻服务端 `agents-server`（工作区与会话存档都在它盘上；桌面端自己的持久化只有连接设置 `desktop/connection.json` 那一个文件） |
+| Agent 运行时 | `@ai-zen/agents-sdk`（Provider / Agent / MCP 能力）—— 跑在**常驻宿主**那边 |
+| 数据存储 | 常驻宿主 `agents-host`（工作区与会话存档都在它盘上；桌面端自己的持久化只有连接设置 `desktop/connection.json` 那一个文件） |
 
 ## 项目结构
 
@@ -38,16 +38,16 @@ desktop/
 
 - **调用**：`invokeService(service, method, ...args)` 动态分发到主进程对应 service（preload 暴露，极薄，零业务定义）
 - **推送**：`chat:push` 单通道事件流 `start → user → message… → done / error`（+ 独立的 `migrated` / `renamed` / `notice` / `agents`）
-- **例外：连接**：`connection:get` / `save` / `test` / `state` / `reconnect`（`state` 同时是推送通道）不属那六个 service —— 它要在服务端还不存在的时候回答「连哪台」。窗口先出来、连接在后面，连不上时窗口里是一块状态屏（重试 / 去设置）
+- **例外：连接**：`connection:get` / `save` / `test` / `state` / `reconnect`（`state` 同时是推送通道）不属那六个 service —— 它要在宿主还不存在的时候回答「连哪台」。窗口先出来、连接在后面，连不上时窗口里是一块状态屏（重试 / 去设置）
 
 详细架构见 [架构设计](./desktop-design.md)。
 
 ## 核心概念
 
-- **Workspace**：`{ id, name, cwd }`；`cwd` 是会话在服务端运行时的工作目录，一个 workspace 对应一个本地目录。
+- **Workspace**：`{ id, name, cwd }`；`cwd` 是会话在宿主运行时的工作目录，一个 workspace 对应一个本地目录。
 - **Conversation**：`{ id, workspaceId, agentId, modelId, name, messages, createdAt, updatedAt }`，每 workspace 下多个会话。
-- **模型优先级**：会话级 `modelId` > Agent 定义 > 全局默认（解析在服务端，客户端只读生效值）。
-- **agent 归服务端**：每个会话在服务端有一个 agent，会话活着它就活着；不运行时的状态由服务端的存档（`workspaces/<id>/sessions/`）接管。
+- **模型优先级**：会话级 `modelId` > Agent 定义 > 全局默认（解析在宿主，客户端只读生效值）。
+- **agent 归宿主**：每个会话在宿主有一个 agent，会话活着它就活着；不运行时的状态由宿主的存档（`workspaces/<id>/sessions/`）接管。
 
 ## 文档导航
 

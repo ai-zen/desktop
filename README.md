@@ -12,8 +12,8 @@ AI-Zen Desktop — 多 Workspace、多会话并存的 AI 工作台（Electron + 
 | 主进程 | Electron 43（Node 24）+ TypeScript + rolldown 打包 |
 | 渲染进程 | Vue 3 + Vite + Pinia + Element Plus |
 | 流式 Markdown | markdown-it + highlight.js（按需注册语言，同步渲染） |
-| Agent 运行时 | `@ai-zen/agents-sdk`（Provider / Agent / MCP 能力）—— 跑在**常驻服务端**那边 |
-| 数据存储 | 常驻服务端 `agents-server`（工作区与会话存档都在它盘上；桌面端自己的持久化只有连接设置那一个文件） |
+| Agent 运行时 | `@ai-zen/agents-sdk`（Provider / Agent / MCP 能力）—— 跑在**常驻宿主**那边 |
+| 数据存储 | 常驻宿主 `agents-host`（工作区与会话存档都在它盘上；桌面端自己的持久化只有连接设置那一个文件） |
 
 ## 项目结构
 
@@ -38,12 +38,12 @@ packages/main/src/
 ├── connection/        ← 连本地还是远程：桌面端唯一一处自己的持久化
 │   ├── settings.ts    ← 连接配置读写（`<AI_ZEN_DIR>/desktop/connection.json`，0600 + 原子写）
 │   └── controller.ts  ← ConnectionController：当前连着哪一层 / 保存即重连 / 测试连接
-└── server/            ← 常驻服务端的门面（组装根 = index.ts）
-    ├── index.ts       ← createServerLayer：六个 Service + 事件翻译器 + 那一条常驻连接
+└── host/            ← 常驻宿主的门面（组装根 = index.ts）
+    ├── index.ts       ← createHostLayer：六个 Service + 事件翻译器 + 那一条常驻连接
     ├── call.ts        ← 一次协议调用（取一条活着的连接，不缓存 client）
     ├── services.ts    ← 六个 Service：render 的形状 ↔ 协议调用
     ├── ServicesManager.ts ← invokeService 动态分发（薄）
-    ├── events.ts      ← 服务端事件 → `ChatStreamEvent`（订阅随连接重建自动重挂）
+    ├── events.ts      ← 宿主事件 → `ChatStreamEvent`（订阅随连接重建自动重挂）
     ├── noticeSlots.ts ← 通知槽位：连上就补看未确认的（`notice.list`），显示后确认（`notice.ack`）
     └── notices.ts     ← 通知 code → 中文文案
 ```
@@ -65,7 +65,7 @@ packages/render/src/
 │   │   ├── ChatPanel.vue      ← 对话面板（模型选择 / 消息列表 / 输入）
 │   │   ├── MessageBubble.vue  ← 消息气泡（流式 Markdown / 工具结果折叠）
 │   │   └── NewChatDialog.vue  ← 新建对话（选 Agent）
-│   ├── settings/index.vue     ← 设置页（服务端连接 / 默认模型 / 默认 Agent / API Key / 数据目录）
+│   ├── settings/index.vue     ← 设置页（宿主连接 / 默认模型 / 默认 Agent / API Key / 数据目录）
 │   └── status/index.vue       ← 连接状态屏（正在连接 / 连不上 + 重试 / 去设置）
 ├── composables/       ← 消息分页窗口 + 自动滚动策略
 ├── stores/            ← Pinia
@@ -108,52 +108,52 @@ packages/shared/src/
 
 - **调用**：`invokeService(service, method, ...args)` 动态分发到对应 service（preload 暴露，极薄，零业务定义）
 - **推送**：`chat:push` 单通道事件流 `start → user → message… → done / error`（+ 独立的 `migrated` / `renamed` / `notice` / `agents`）
-- **出口**：main 不再自己跑 Agent —— 每个动作都是对常驻 `agents-server` 的一次协议调用（`session.*` / `workspace.*` / `config.*` …），事件由服务端推回
-- **例外是「连哪台服务端」**：它不进那六个分发键，走五条专用通道 `connection:get` / `save` / `test` / `state` / `reconnect`（preload 暴露成 `window.electronAPI.connection`）—— 它要在服务端还不存在的时候回答，见「[设置页](#设置页)」。其中 `connection:state` 同时是一条**推送**通道（与查询同名）：起始态 `connecting(attempt 0)` 不推送，所以界面挂载时**先查一次、再听推送**
+- **出口**：main 不再自己跑 Agent —— 每个动作都是对常驻 `agents-host` 的一次协议调用（`session.*` / `workspace.*` / `config.*` …），事件由宿主推回
+- **例外是「连哪台宿主」**：它不进那六个分发键，走五条专用通道 `connection:get` / `save` / `test` / `state` / `reconnect`（preload 暴露成 `window.electronAPI.connection`）—— 它要在宿主还不存在的时候回答，见「[设置页](#设置页)」。其中 `connection:state` 同时是一条**推送**通道（与查询同名）：起始态 `connecting(attempt 0)` 不推送，所以界面挂载时**先查一次、再听推送**
 
-## 核心设计（会话执行与存档都在服务端）
+## 核心设计（会话执行与存档都在宿主）
 
 - **窗口先出来、连接在后面**：`app.whenReady()` → 原生外观 / 菜单 → `registerIpc()` → `createMainWindow()` → `void connection.start()`（**不 await**）。IPC 必须早于窗口（render 一挂载就会 `invokeService`）；窗口**不依赖**连接（远程不可达时窗口照样出现 —— 连不上只是窗口里的一个状态）；`start()` 不 await，失败交给状态机，`main.ts` 的入口另带 `.catch`，启动路径上漏网的失败只留一行日志，不会变成「双击没反应」
-- **连接是一台三态机器**（`connection/controller.ts`）：`connecting`（含首次尝试与重试等待，靠 `attempt` / `nextRetryInMs` 分开）→ `ready`（带服务端自报的 `protocol` / `version`）或者 `error`（重试也失败之后的终态，带一句人话 `message`）；三态都带 `label`（本地「本机服务端」/ 远程那个地址，不含凭证）。首次失败后最多再试 **3 次**（退避 **1s / 2s / 5s**），每次都是**整层重建**（`dispose` → `build` → `start`，因为事件桥重复 `start()` 会覆盖 `onOpen` 订阅）；仍失败就只留手动「重试」
-- **agent 活服务端**：每个会话在服务端有一个 agent，会话活着它就活着（流式中可读），服务端按空闲宽限期回收；不运行时的状态由服务端的工作区存档接管（`workspaces/<id>/sessions/`）
+- **连接是一台三态机器**（`connection/controller.ts`）：`connecting`（含首次尝试与重试等待，靠 `attempt` / `nextRetryInMs` 分开）→ `ready`（带宿主自报的 `protocol` / `version`）或者 `error`（重试也失败之后的终态，带一句人话 `message`）；三态都带 `label`（本地「本机宿主」/ 远程那个地址，不含凭证）。首次失败后最多再试 **3 次**（退避 **1s / 2s / 5s**），每次都是**整层重建**（`dispose` → `build` → `start`，因为事件桥重复 `start()` 会覆盖 `onOpen` 订阅）；仍失败就只留手动「重试」
+- **agent 活宿主**：每个会话在宿主有一个 agent，会话活着它就活着（流式中可读），宿主按空闲宽限期回收；不运行时的状态由宿主的工作区存档接管（`workspaces/<id>/sessions/`）
 - **`session.snapshot` 是运行时唯一真相**（含流式进行中的 user + assistant 占位）；桌面端收到的 `done` / `migrated` 就是这份快照的全量替换
 - **send 只提交**：`session.send` 立刻回 `turnId`，过程与结果全走事件（一轮可能跑几分钟）
-- **getState**：切回任何会话都问服务端要实时状态（`session.attach` + `session.snapshot`）——切换会话/窗口开关不丢状态
-- **自动命名**：服务端在首轮之后异步起名，推 `session-title-changed`；桌面端只把它翻成 `renamed`
-- 删除会话/工作空间 → 服务端在 `session.remove` / `workspace.remove` 里关掉活会话（桌面端不再挂钩子）
+- **getState**：切回任何会话都问宿主要实时状态（`session.attach` + `session.snapshot`）——切换会话/窗口开关不丢状态
+- **自动命名**：宿主在首轮之后异步起名，推 `session-title-changed`；桌面端只把它翻成 `renamed`
+- 删除会话/工作空间 → 宿主在 `session.remove` / `workspace.remove` 里关掉活会话（桌面端不再挂钩子）
 
 ## 数据存储
 
 ```
-~/.ai-zen/                    ← 共享根（CLI / Desktop 共用；服务端的 AI_ZEN_DIR）
+~/.ai-zen/                    ← 共享根（CLI / Desktop 共用；宿主的 AI_ZEN_DIR）
 ├── config.json               ← 全局配置（endpoints / models / 默认模型与 Agent）
 ├── agents/                   ← Agent 定义（入口 Agent）
 ├── sub-agents/               ← 子 Agent 定义
 ├── workspaces/<id>/          ← 每个工作区一个目录（workspace.json + sessions/*.json 存档）
 ├── desktop/                  ← 桌面端自己写（就这一个文件）
 │   └── connection.json       ← 连接设置（本地 / 远程 + 地址 + 凭证，0600；删掉即回到「本地」；本地模式下不存地址与凭证 —— 切到本地并保存会把它们清掉）
-└── run/                      ← 服务端自己写：怎么找到它
-    ├── server.json           ← 服务发现：常驻服务端此刻在哪个端口
-    └── token                 ← 凭证（服务端启动时读或生成，0600）
+└── run/                      ← 宿主自己写：怎么找到它
+    ├── host.json           ← 服务发现：常驻宿主此刻在哪个端口
+    └── token                 ← 凭证（宿主启动时读或生成，0600）
 ```
 
-- 数据文件仍然只归服务端：默认从 `<AI_ZEN_DIR>/run/server.json` 读地址、从 `<AI_ZEN_DIR>/run/token` 读凭证，之后一切读写都发生在服务端那一侧（会话清单 / 消息 / 工作区都由服务端给：`session.list` / `session.snapshot` / `workspace.list`）
-- **连接配置是唯一的例外，落在本机而不在服务端**：`<AI_ZEN_DIR>/desktop/connection.json`（权限 `0600`、原子写 —— 里面有凭证）。理由是先有鸡先有蛋：得先知道**连哪台**，才谈得上把它手上的配置发回来；把「连哪台」也存到服务端，等于要求用户先连上服务端才能选服务端。这个文件读不到 / 坏掉 / 字段不合法 → 一律回退「本地」并照常启动；**整个删掉就是回到默认**（本地 = 发现文件 + 本机 `run/token`）
-- 远程模式**只连、不拉起**捆绑的 server（本机拉起来的那份一定不在那个地址上；只留一条只说地址、不含凭证的 log）
+- 数据文件仍然只归宿主：默认从 `<AI_ZEN_DIR>/run/host.json` 读地址、从 `<AI_ZEN_DIR>/run/token` 读凭证，之后一切读写都发生在宿主那一侧（会话清单 / 消息 / 工作区都由宿主给：`session.list` / `session.snapshot` / `workspace.list`）
+- **连接配置是唯一的例外，落在本机而不在宿主**：`<AI_ZEN_DIR>/desktop/connection.json`（权限 `0600`、原子写 —— 里面有凭证）。理由是先有鸡先有蛋：得先知道**连哪台**，才谈得上把它手上的配置发回来；把「连哪台」也存到宿主，等于要求用户先连上宿主才能选宿主。这个文件读不到 / 坏掉 / 字段不合法 → 一律回退「本地」并照常启动；**整个删掉就是回到默认**（本地 = 发现文件 + 本机 `run/token`）
+- 远程模式**只连、不拉起**捆绑的 host（本机拉起来的那份一定不在那个地址上；只留一条只说地址、不含凭证的 log）
 
 ## 设置页
 
 **界面按连接状态放行**（`App.vue`）：优先级 `设置页 → 未就绪时的状态屏 → guide / main`。`connecting` 显示「正在连接 …」（重试等待中多一句「第 N 次重试，约 X 秒后」），`error` 显示那句 `message` + 「重试」+「去设置」；主界面（含侧栏、会话列表）只在 `ready` 之后才挂载，所以不会出现「窗口出来了但一片空白、也没有提示」。
 
-**未连接时也进得去设置页** —— 它是用户唯一的自救路径：窗口出来（可能整屏是「正在连接…」，也可能是一条错误 + 「已重试 3 次仍未连上」）→ 点「去设置」→ 在「服务端连接」一节改回「本地」或改地址 / 凭证 → 「保存并重连」→ 连上后自动进主界面。那时设置页里「默认模型 / 默认 Agent / API Key / 数据目录」那半部分留空并给一条说明（它们全是服务端的事实），而「服务端连接」这一节照常可用（它读 main 本地，不依赖服务端）。
+**未连接时也进得去设置页** —— 它是用户唯一的自救路径：窗口出来（可能整屏是「正在连接…」，也可能是一条错误 + 「已重试 3 次仍未连上」）→ 点「去设置」→ 在「宿主连接」一节改回「本地」或改地址 / 凭证 → 「保存并重连」→ 连上后自动进主界面。那时设置页里「默认模型 / 默认 Agent / API Key / 数据目录」那半部分留空并给一条说明（它们全是宿主的事实），而「宿主连接」这一节照常可用（它读 main 本地，不依赖宿主）。
 
-设置页开头是「**服务端连接**」一节：单选**本地** / **远程**，远程时填**地址**（`ws://` / `wss://` / `http://` / `https://`，支持 path，如 `wss://example.com/ai-zen`）与**凭证**（留空 = 用本机 `<AI_ZEN_DIR>/run/token`）。
+设置页开头是「**宿主连接**」一节：单选**本地** / **远程**，远程时填**地址**（`ws://` / `wss://` / `http://` / `https://`，支持 path，如 `wss://example.com/ai-zen`）与**凭证**（留空 = 用本机 `<AI_ZEN_DIR>/run/token`）。
 
-- **这一节自带两个按钮：「测试连接」与「保存并重连」** —— 与页面底部那个「保存」是两件事。底部那个保存把「默认模型 / 默认 Agent / API Key」写给**服务端**（连的还是同一台），不换连接
-- **测试连接**只探测候选值：不落盘、不影响当前连接。成功显示服务端自报的 `protocol` / `version` / 耗时；失败显示客户端翻好的人话（例如引导去核对凭证）
+- **这一节自带两个按钮：「测试连接」与「保存并重连」** —— 与页面底部那个「保存」是两件事。底部那个保存把「默认模型 / 默认 Agent / API Key」写给**宿主**（连的还是同一台），不换连接
+- **测试连接**只探测候选值：不落盘、不影响当前连接。成功显示宿主自报的 `protocol` / `version` / 耗时；失败显示客户端翻好的人话（例如引导去核对凭证）
 - **保存并重连**立刻生效：main 先落盘、再 dispose 旧连接、再按新配置建一条并 start，**不需要重启 App**；进行中的回答会中断（所以保存前有确认框）
-- 保存成功后回到主界面，并重拉所有来自服务端的数据（会话 / 工作区 / Agent / 模型列表）—— 换了服务端就是换了一整个世界；而如果此刻用户正停在设置页，后台自动重试成功**不会**把他从设置页拽走（数据照常加载，只是不切视图）
-- 远程模式下看到的会话 / 工作区都属于那台机器；远程**不会**在本机拉起服务端，本地模式才是「发现文件 + 按需拉起」
+- 保存成功后回到主界面，并重拉所有来自宿主的数据（会话 / 工作区 / Agent / 模型列表）—— 换了宿主就是换了一整个世界；而如果此刻用户正停在设置页，后台自动重试成功**不会**把他从设置页拽走（数据照常加载，只是不切视图）
+- 远程模式下看到的会话 / 工作区都属于那台机器；远程**不会**在本机拉起宿主，本地模式才是「发现文件 + 按需拉起」
 - 切到「**本地**」并保存，会把远端地址与凭证从 `desktop/connection.json` 里**清掉** —— 不用的时候不把钥匙留在盘上（`0600` 也只是同用户可读）；要再连那台，重新填一次即可（面板里的输入框在**保存前**只是临时副本，切来切去还能看见，但保存后盘上那份就没了）
 
 ## 开发
