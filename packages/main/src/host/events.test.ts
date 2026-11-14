@@ -176,6 +176,8 @@ function runState(overrides: Partial<RunState> = {}): RunState {
     conversationId: CONVERSATION,
     status: "running",
     assistantMessageId: "m-assistant",
+    // 默认没排队：这一轮的收尾/推流与排了几句无关，要排队的用例自己从 `overrides` 盖
+    inboxPending: 0,
     startedAt: "2026-01-01T00:00:00.000Z",
     settledAt: null,
     generation: { phase: "awaiting_first_token", since: "2026-01-01T00:00:00.000Z" },
