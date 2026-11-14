@@ -7,7 +7,7 @@
 
 import { defineStore } from "pinia";
 import type { ConversationSummary } from "@ai-zen/desktop-shared";
-import * as api from "../apis/index.js";
+import { deps } from "../deps.js";
 import { useChatStore } from "./chat.js";
 
 export const useConversationStore = defineStore("conversation", {
@@ -36,7 +36,7 @@ export const useConversationStore = defineStore("conversation", {
 
   actions: {
     async load(workspaceId: string) {
-      const list = await api.listConversations(workspaceId);
+      const list = await deps.api.listConversations(workspaceId);
       this.byWorkspace[workspaceId] = list;
       this.currentWorkspaceId = workspaceId;
       // 激活的会话若不在当前 workspace 列表，清空
@@ -49,7 +49,7 @@ export const useConversationStore = defineStore("conversation", {
     async preloadAll(workspaceIds: string[]) {
       await Promise.all(
         workspaceIds.map(async (wid) => {
-          this.byWorkspace[wid] = await api.listConversations(wid);
+          this.byWorkspace[wid] = await deps.api.listConversations(wid);
         }),
       );
     },
@@ -70,7 +70,7 @@ export const useConversationStore = defineStore("conversation", {
      * 也才知道该怎么把两件事分别说清。
      */
     async create(workspaceId: string, agentId: string) {
-      const conv = await api.createConversation(workspaceId, agentId);
+      const conv = await deps.api.createConversation(workspaceId, agentId);
       await this.load(workspaceId);
       return conv;
     },
@@ -102,14 +102,14 @@ export const useConversationStore = defineStore("conversation", {
     },
 
     async remove(workspaceId: string, id: string) {
-      await api.removeConversation(workspaceId, id);
+      await deps.api.removeConversation(workspaceId, id);
       useChatStore().remove(id);
       if (this.activeConversationId === id) await this.select(workspaceId, "");
       await this.load(workspaceId);
     },
 
     async rename(workspaceId: string, id: string, name: string) {
-      await api.renameConversation(workspaceId, id, name);
+      await deps.api.renameConversation(workspaceId, id, name);
       const c = (this.byWorkspace[workspaceId] ?? []).find((x) => x.id === id);
       if (c) c.name = name;
     },
@@ -123,7 +123,7 @@ export const useConversationStore = defineStore("conversation", {
     },
 
     async setModel(workspaceId: string, id: string, modelId: string) {
-      await api.setConversationModel(workspaceId, id, modelId);
+      await deps.api.setConversationModel(workspaceId, id, modelId);
       const c = (this.byWorkspace[workspaceId] ?? []).find((x) => x.id === id);
       if (c) c.modelId = modelId;
     },

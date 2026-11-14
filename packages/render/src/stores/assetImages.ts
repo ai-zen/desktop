@@ -34,7 +34,7 @@
 
 import type { AgentNS } from "@ai-zen/agents-core";
 import type { AssetVariant } from "@ai-zen/desktop-shared";
-import { getChatAsset } from "../apis/chat.js";
+import { deps } from "../deps.js";
 
 /**
  * 一个内容段引用的素材 id（没有这个字段就是 `null`）。
@@ -140,7 +140,7 @@ export function releaseAssetUrl(assetId: string, variant: AssetVariant): void {
 
 /** 取一次字节并造出 URL，写回这一份持有里 */
 async function load(lease: Lease, assetId: string, variant: AssetVariant): Promise<LoadedAsset> {
-  const { asset, bytes } = await getChatAsset(assetId, variant);
+  const { asset, bytes } = await deps.api.getChatAsset(assetId, variant);
   // 跨 IPC 过来的字节是结构化克隆出来的，一定是 ArrayBuffer 支撑的（`BlobPart` 认这个）
   const url = URL.createObjectURL(new Blob([bytes as Uint8Array<ArrayBuffer>], { type: asset.mime }));
   const { width, height } = asset;

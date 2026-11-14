@@ -4,7 +4,7 @@
 
 import { defineStore } from "pinia";
 import type { Workspace } from "@ai-zen/desktop-shared";
-import * as api from "../apis/index.js";
+import { deps } from "../deps.js";
 import { useConversationStore } from "./conversation.js";
 
 export const useWorkspaceStore = defineStore("workspace", {
@@ -21,7 +21,7 @@ export const useWorkspaceStore = defineStore("workspace", {
 
   actions: {
     async load() {
-      this.workspaces = await api.listWorkspaces();
+      this.workspaces = await deps.api.listWorkspaces();
       this.loaded = true;
       // 预载所有 workspace 的会话列表：树加载后即显示各 ws 是否有会话、能否展开、会话条数
       await useConversationStore().preloadAll(this.workspaces.map((w) => w.id));
@@ -32,20 +32,20 @@ export const useWorkspaceStore = defineStore("workspace", {
     },
 
     async create(input: { name: string; cwd: string }) {
-      const ws = await api.createWorkspace(input);
+      const ws = await deps.api.createWorkspace(input);
       this.workspaces.push(ws);
       this.setActive(ws.id);
       return ws;
     },
 
     async rename(id: string, name: string) {
-      await api.renameWorkspace(id, name);
+      await deps.api.renameWorkspace(id, name);
       const ws = this.workspaces.find((w) => w.id === id);
       if (ws) ws.name = name;
     },
 
     async remove(id: string) {
-      await api.removeWorkspace(id);
+      await deps.api.removeWorkspace(id);
       this.workspaces = this.workspaces.filter((w) => w.id !== id);
       if (this.activeWorkspaceId === id) {
         this.setActive(this.workspaces[0]?.id ?? "");

@@ -11,40 +11,32 @@
  *
  * ## 换掉的东西只有两处
  *
- * `apis/index.js`（不打真 IPC）与 `element-plus` 的 `ElMessage`（node 里没有 DOM，弹不出 toast；
+ * `deps.api`（`stubDeps`，不打真 IPC）与 `deps.notify`（node 里没有 DOM，弹不出 toast；
  * 而「切过去之后说了哪两句」恰好是要断言的东西）。`workspace` / `conversation` 两个 store 用**真件**
  * —— 「按 effects 切会话」这件事就是它们俩合作的结果，mock 掉等于把被测的行为也 mock 了。
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import type { ChatState, ConversationSummary, QuestionView } from "@ai-zen/desktop-shared";
+import { resetDeps, stubDeps } from "../deps.js";
 import { useChatStore } from "./chat.js";
 import { useConversationStore } from "./conversation.js";
 
-/** `apis/index.js` 的入口（`vi.mock` 的工厂会被提升，所以用 `vi.hoisted` 拿变量） */
-const apiMocks = vi.hoisted(() => ({
+/** 宿主那一侧（IPC）：只摆本文件会走的四条 */
+const apiMocks = {
   getChatState: vi.fn(),
   listQuestions: vi.fn(),
   answerQuestion: vi.fn(),
   listConversations: vi.fn(),
-}));
-
-vi.mock("../apis/index.js", () => ({
-  getChatState: apiMocks.getChatState,
-  listQuestions: apiMocks.listQuestions,
-  answerQuestion: apiMocks.answerQuestion,
-  listConversations: apiMocks.listConversations,
-}));
+};
 
 /** toast 的三个入口（`showNotice` 用它说话） */
-const messageMocks = vi.hoisted(() => ({
+const messageMocks = {
   info: vi.fn(),
   warning: vi.fn(),
   error: vi.fn(),
-}));
-
-vi.mock("element-plus", () => ({ ElMessage: messageMocks }));
+};
 
 const WS = "ws-1";
 const CONV = "conv-1";
@@ -153,11 +145,16 @@ function pending<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 
 beforeEach(() => {
   setActivePinia(createPinia());
+  stubDeps({ api: apiMocks, notify: messageMocks });
   vi.clearAllMocks();
   // 缺省的宿主回答：快照里没有问题、现拉也没有、侧栏里就这一段
   apiMocks.getChatState.mockImplementation((_ws: string, id: string) => Promise.resolve(idleState(id)));
   apiMocks.listQuestions.mockResolvedValue([]);
   apiMocks.listConversations.mockResolvedValue([summary(CONV)]);
+});
+
+afterEach(() => {
+  resetDeps();
 });
 
 /** 打开一段对话（`select` 才是真正的「打开」：它会让 chat store 去拉快照与问题） */

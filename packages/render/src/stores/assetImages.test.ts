@@ -17,11 +17,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentNS } from "@ai-zen/agents-core";
 import type { AssetContent, AssetVariant } from "@ai-zen/desktop-shared";
 
-const mocks = vi.hoisted(() => ({
+const mocks = {
   getChatAsset: vi.fn<(assetId: string, variant: AssetVariant) => Promise<AssetContent>>(),
-}));
-
-vi.mock("../apis/chat.js", () => ({ getChatAsset: mocks.getChatAsset }));
+};
 
 /** 每份素材的整份引用（宽高在里面）+ 字节（字节内容是假的：这一层不读字节，只把它塞进 Blob） */
 function bytesOf(): AssetContent {
@@ -35,9 +33,16 @@ function bytesOf(): AssetContent {
 /** 落库形态的内容段：core 的段 + 本地扩展字段（宿主存的就是这个形状） */
 type StoredSection = AgentNS.MessageContentSection & { __asset_id?: string };
 
-/** 模块级状态（那份缓存）要做用例之间清零，所以每个用例重新 import 一次 */
+/**
+ * 模块级状态（那份缓存）要做用例之间清零，所以每个用例重新 import 一次。
+ *
+ * `vi.resetModules()` 之后 `deps` 也是新一代的那份：注入必须紧跟着做，否则改的是上一代
+ * 对象，新的 `assetImages` 根本看不到。
+ */
 async function module(): Promise<typeof import("./assetImages.js")> {
   vi.resetModules();
+  const { stubDeps } = await import("../deps.js");
+  stubDeps({ api: { getChatAsset: mocks.getChatAsset } });
   return await import("./assetImages.js");
 }
 
@@ -56,8 +61,10 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
+  const { resetDeps } = await import("../deps.js");
+  resetDeps();
 });
 
 // ==================================================================

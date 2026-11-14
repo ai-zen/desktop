@@ -18,8 +18,6 @@
  */
 
 import { defineStore } from "pinia";
-// 通知用 toast 弹（与设置页同一种提示）：element-plus 已在 render 的 dependencies 里
-import { ElMessage } from "element-plus";
 import { AgentNS } from "@ai-zen/agents-core";
 import type {
   AttachmentInput,
@@ -29,7 +27,7 @@ import type {
   StreamPhase,
   SubAgentView,
 } from "@ai-zen/desktop-shared";
-import * as api from "../apis/index.js";
+import { deps } from "../deps.js";
 import { useWorkspaceStore } from "./workspace.js";
 import { useConversationStore } from "./conversation.js";
 import { MAIN_AGENT_VIEW_ID, resolveActiveAgentId } from "./agentView.js";
@@ -113,15 +111,13 @@ const PHASE_TEXT: Record<StreamPhase, string> = {
 /**
  * 弹一条通知（`type: "notice"` 的唯一出口）。
  *
- * 三档语气对应 element-plus 的三个入口：`info` 是「顺带说一句」（迁移被跳过、交接文档
- * 落在哪），`warning` 是「这次打了折扣，但事情做完了」（交接方式降级），`error` 是「事情没做成」
- * （存档没写成功、子 Agent 挂了）。**不是** `type: "error"` 那条红色错误条 —— 那个位置
- * 留给「这一轮失败了」。
+ * 三档语气对应 `deps.notify` 的三个入口（产品里就是 element-plus 的 `ElMessage`）：`info` 是
+ * 「顺带说一句」（迁移被跳过、交接文档落在哪），`warning` 是「这次打了折扣，但事情做完了」
+ * （交接方式降级），`error` 是「事情没做成」（存档没写成功、子 Agent 挂了）。**不是**
+ * `type: "error"` 那条红色错误条 —— 那个位置留给「这一轮失败了」。
  */
 function showNotice(level: "info" | "warning" | "error", text: string): void {
-  if (level === "warning") ElMessage.warning(text);
-  else if (level === "error") ElMessage.error(text);
-  else ElMessage.info(text);
+  deps.notify[level](text);
 }
 
 /**
@@ -282,7 +278,7 @@ export const useChatStore = defineStore("chat", {
       const st = this.ensure(conversationId);
       // 保留重试上下文（切走再切回，失败内容仍在）
       const lastFailedContent = st.lastFailedContent;
-      const state = await api.getChatState(workspaceId, conversationId);
+      const state = await deps.api.getChatState(workspaceId, conversationId);
       // 快照里的现场状态原样读：`run` / `context` / `thinking` / `usage` / `questions` /
       // `statusBlocks` 都在这一份里，下面只取界面今天用得到的那几样
       const generation = state.run.generation;
@@ -354,7 +350,7 @@ export const useChatStore = defineStore("chat", {
     async refreshQuestions(conversationId: string): Promise<void> {
       let pulled: QuestionView[];
       try {
-        pulled = await api.listQuestions(conversationId);
+        pulled = await deps.api.listQuestions(conversationId);
       } catch {
         return;
       }
@@ -380,7 +376,7 @@ export const useChatStore = defineStore("chat", {
      * 题已经不 pending 了（面板自己消失），顺手再拉一次问题清单 —— 多端时别处可能又挂上了新的题。
      */
     async answerQuestion(questionId: string, value: string): Promise<void> {
-      const result = await api.answerQuestion(questionId, value);
+      const result = await deps.api.answerQuestion(questionId, value);
       const conversationId = result.question.conversationId;
       const st = this.byConversation[conversationId] ?? this.ensure(conversationId);
       // 宿主给的答完那份（`state: "answered"`）并回去：面板据此消失，不必等下一次推送
@@ -427,7 +423,7 @@ export const useChatStore = defineStore("chat", {
      *
      * ## 附件怎么走
      *
-     * 这里只把字节交出去（`api.sendChatMessage` → main），**不本地乐观插入缩略图**：附件最后是
+     * 这里只把字节交出去（`deps.api.sendChatMessage` → main），**不本地乐观插入缩略图**：附件最后是
      * 文件引用、内联、还是退化成文字，只有宿主知道（F-H7），结局走 `attachments` 事件。重试（
      * `retry`）只重发文字：上传已经在 main 做过一次，带着同一批字节再传一遍会多出一份素材。
      */
@@ -445,7 +441,7 @@ export const useChatStore = defineStore("chat", {
       // 只提交：user 消息上屏 / streaming 均由事件驱动（user / start），
       // render 不本地乐观插入也不自行置位 —— 状态源是常驻宿主
       try {
-        await api.sendChatMessage(workspaceId, conversationId, content, attachments);
+        await deps.api.sendChatMessage(workspaceId, conversationId, content, attachments);
       } catch (err) {
         // 仅兜底 invoke 层异常（业务错误都走 error 事件）
         st.error = err instanceof Error ? err.message : String(err);
@@ -483,7 +479,7 @@ export const useChatStore = defineStore("chat", {
       const conversationId = this.activeConversationId;
       if (!conversationId) return;
       try {
-        await api.abortChatMessage(conversationId);
+        await deps.api.abortChatMessage(conversationId);
       } catch (err) {
         // 兜底：invoke 层异常（正常收尾走 done 事件）
         const st = this.ensure(conversationId);

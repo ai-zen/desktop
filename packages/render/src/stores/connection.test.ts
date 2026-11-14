@@ -13,13 +13,13 @@
  * 「现在该不该说话」（窗口先出来、连接在后面，D25 / D26）。那几条的重点全在**顺序**上：
  * 起始态 main 不推，所以必须**先查一次再订阅**。
  *
- * 换掉的东西只有两处：`apis/connection`（用 `vi.mock`，不打真 IPC）与
+ * 换掉的东西只有两处：`deps.api` 里 `connection` 那几条（`stubDeps`，不打真 IPC）与
  * `window.electronAPI`（一份假宿主 + 一对假的 `on` / `off`）。`ui` / `workspace` /
- * `conversation` 三个 store 用的是**真件** —— 「保存后到底刷新了什么」必须是可断言的，
- * 而不是一句被 mock 掉的空话。
+ * `conversation` 三个 store 用的是**真件**（`realApi` 那一份，经假宿主走真 `apis/*`）——
+ * 「保存后到底刷新了什么」必须是可断言的，而不是一句被 mock 掉的空话。
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Mock } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import type {
@@ -29,29 +29,21 @@ import type {
   ModelOption,
   Workspace,
 } from "@ai-zen/desktop-shared";
+import { realApi, resetDeps, stubDeps } from "../deps.js";
 import { useConnectionStore } from "./connection.js";
 import { useConversationStore } from "./conversation.js";
 import { useUiStore } from "./ui.js";
 import { useWorkspaceStore } from "./workspace.js";
 
-/** `apis/connection` 的入口（`vi.mock` 的工厂会被提升，所以用 `vi.hoisted` 拿变量） */
-const mocks = vi.hoisted(() => ({
+/** 只换 `connection` 那一个 service 的六个入口；其余走 `realApi`（经下面的假宿主） */
+const mocks = {
   getConnectionSettings: vi.fn(),
   saveConnectionSettings: vi.fn(),
   testConnection: vi.fn(),
   getConnectionState: vi.fn(),
   reconnectConnection: vi.fn(),
   onConnectionState: vi.fn(),
-}));
-
-vi.mock("../apis/connection.js", () => ({
-  getConnectionSettings: mocks.getConnectionSettings,
-  saveConnectionSettings: mocks.saveConnectionSettings,
-  testConnection: mocks.testConnection,
-  getConnectionState: mocks.getConnectionState,
-  reconnectConnection: mocks.reconnectConnection,
-  onConnectionState: mocks.onConnectionState,
-}));
+};
 
 // 「新宿主」端上有什么：换连接之后界面显示的必须是这一份，而不是上一台留下的
 const REMOTE_AGENTS: AgentOption[] = [{ id: "agent-b", name: "远端 Agent" }];
@@ -88,6 +80,8 @@ function pushState(state: ConnectionState): void {
 
 beforeEach(() => {
   setActivePinia(createPinia());
+  // `connection` 那六条换掉，其余（agent / model / workspace / conversation）仍是真件
+  stubDeps({ api: { ...realApi, ...mocks } });
   vi.clearAllMocks();
 
   // 假宿主：只回答「联上来的是哪台」这件事（数据随宿主变，这正是换连接要重拉的原因）
@@ -120,6 +114,12 @@ beforeEach(() => {
     onMock("connection:state", listener);
     return () => offMock("connection:state", listener);
   });
+});
+
+afterEach(() => {
+  resetDeps();
+  // 假宿主是挂在进程级 `globalThis` 上的：隔离关掉之后它不会自己消失，用例跑完得摘掉
+  delete (globalThis as unknown as { window?: unknown }).window;
 });
 
 describe("connection store · load", () => {

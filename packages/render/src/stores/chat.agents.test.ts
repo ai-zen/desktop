@@ -10,27 +10,24 @@
  * 纯规则的穷举（Tab 循环顺序、各种"消失"的组合）在 `agentView.test.ts` 里；这里只锁
  * 「store 有没有把那条规则接上」以及两个 getter 的取值口径。
  *
- * 发送那几条唯一换掉的东西是 `apis/chat`（`vi.mock`，不打真 IPC）；`workspace` / `conversation`
- * 两个 store 用**真件** —— 早退的判据就是它们俩的 active id，mock 掉等于把被测条件也 mock 了。
+ * 发送那几条唯一换掉的东西是 `deps.api.sendChatMessage`（`stubDeps`，不打真 IPC）；`workspace` /
+ * `conversation` 两个 store 用**真件** —— 早退的判据就是它们俩的 active id，mock 掉等于把被测条件也
+ * mock 了。
+ *
+ * `api` 只摆出 `sendChatMessage` 一个键：其余调用要是被走到，就是这条路径上多出来的事（硬错）。
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import type { ChatStreamEvent, SubAgentView } from "@ai-zen/desktop-shared";
 import { AgentNS } from "@ai-zen/agents-core";
+import { resetDeps, stubDeps } from "../deps.js";
 import { useChatStore } from "./chat.js";
 import { useConversationStore } from "./conversation.js";
 import { useWorkspaceStore } from "./workspace.js";
 import { MAIN_AGENT_VIEW_ID } from "./agentView.js";
 
-/** `apis/chat` 的入口（`vi.mock` 的工厂会被提升，所以用 `vi.hoisted` 拿变量） */
-const chatMocks = vi.hoisted(() => ({ sendChatMessage: vi.fn() }));
-
-vi.mock("../apis/chat.js", () => ({
-  sendChatMessage: chatMocks.sendChatMessage,
-  abortChatMessage: vi.fn(),
-  getChatState: vi.fn(),
-  onChatPush: vi.fn(),
-}));
+/** 宿主那一侧：本文件只需要「消息交出去了没有」这一件事 */
+const chatMocks = { sendChatMessage: vi.fn() };
 
 const CONV = "conv-1";
 const WS = "ws-1";
@@ -52,10 +49,15 @@ let store: ReturnType<typeof useChatStore>;
 
 beforeEach(() => {
   setActivePinia(createPinia());
+  stubDeps({ api: chatMocks });
   vi.clearAllMocks();
   store = useChatStore();
   store.activeConversationId = CONV;
   store.ensure(CONV);
+});
+
+afterEach(() => {
+  resetDeps();
 });
 
 /** 摆出「一个工作区 + 一个打开的会话」：`send` 的前置条件，缺一条就走早退 */

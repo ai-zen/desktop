@@ -29,7 +29,7 @@
 
 import { defineStore } from "pinia";
 import type { ConnectionProbe, ConnectionSettings, ConnectionState } from "@ai-zen/desktop-shared";
-import * as api from "../apis/index.js";
+import { deps } from "../deps.js";
 import { useUiStore } from "./ui.js";
 import { useWorkspaceStore } from "./workspace.js";
 import { useConversationStore } from "./conversation.js";
@@ -82,7 +82,7 @@ export const useConnectionStore = defineStore("connection", {
      * 必须是盘上那一份，否则用户改完文件、重新打开面板，看到的还是个旧值。
      */
     async load() {
-      this.settings = await api.getConnectionSettings();
+      this.settings = await deps.api.getConnectionSettings();
     },
 
     /**
@@ -98,7 +98,7 @@ export const useConnectionStore = defineStore("connection", {
     async save(next: ConnectionSettings) {
       this.saving = true;
       try {
-        const saved = await api.saveConnectionSettings(next);
+        const saved = await deps.api.saveConnectionSettings(next);
         this.settings = saved.settings;
         // 上一次的探测结果说的是「换之前那条链路」，换完就不再代表当前状态了
         this.probe = null;
@@ -118,7 +118,7 @@ export const useConnectionStore = defineStore("connection", {
       this.testing = true;
       this.probe = null;
       try {
-        this.probe = await api.testConnection(candidate);
+        this.probe = await deps.api.testConnection(candidate);
       } finally {
         this.testing = false;
       }
@@ -131,7 +131,7 @@ export const useConnectionStore = defineStore("connection", {
 
     /** 查一次当前连接状态（`connection:state`）：挂载时先问一遍，之后再听推送 */
     async loadState() {
-      this.state = await api.getConnectionState();
+      this.state = await deps.api.getConnectionState();
     },
 
     /**
@@ -149,7 +149,7 @@ export const useConnectionStore = defineStore("connection", {
      */
     async startWatching(): Promise<() => void> {
       await this.loadState();
-      return api.onConnectionState((state) => {
+      return deps.api.onConnectionState((state) => {
         this.state = state;
       });
     },
@@ -163,7 +163,7 @@ export const useConnectionStore = defineStore("connection", {
     async reconnect() {
       this.reconnecting = true;
       try {
-        this.state = await api.reconnectConnection();
+        this.state = await deps.api.reconnectConnection();
       } finally {
         this.reconnecting = false;
       }

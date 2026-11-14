@@ -4,7 +4,7 @@
 
 import { defineStore } from "pinia";
 import type { AgentOption, ModelOption } from "@ai-zen/desktop-shared";
-import * as api from "../apis/index.js";
+import { deps } from "../deps.js";
 
 export type ViewName = "guide" | "main" | "settings";
 
@@ -22,8 +22,8 @@ export const useUiStore = defineStore("ui", {
 
     /** 加载 Agent / 模型选项（新建对话下拉、模型选择用） */
     async loadOptions() {
-      this.agents = await api.listAgents();
-      this.models = await api.listModels();
+      this.agents = await deps.api.listAgents();
+      this.models = await deps.api.listModels();
     },
   },
 });

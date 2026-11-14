@@ -12,17 +12,21 @@
  *
  * 为什么敢在 node 环境里直接调 store：`stores/*.ts` 的模块级 import（element-plus / pinia /
  * apis）在 vitest 的 node 环境下能正常加载（apis 层对 `window.electronAPI` 是惰性访问）。
- * 唯一被换掉的是 `apis/index.js`（不打真 IPC），`chat` / `workspace` 两个 store 用**真件**
+ * 唯一被换掉的是 `deps.api`（`stubDeps`，不打真 IPC），`chat` / `workspace` 两个 store 用**真件**
  * —— 被测条件恰恰是「conversation store 有没有把它俩接对」，mock 掉等于把条件也 mock 了。
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import type { ChatState, ConversationSummary } from "@ai-zen/desktop-shared";
+import { resetDeps, stubDeps } from "../deps.js";
 import { useChatStore } from "./chat.js";
 import { useConversationStore } from "./conversation.js";
 
-/** `apis/index.js` 的入口（`vi.mock` 的工厂会被提升，所以用 `vi.hoisted` 拿变量） */
-const apiMocks = vi.hoisted(() => ({
+/**
+ * 宿主那一侧（IPC）只摆出本文件用得到的几个键：`stubDeps` 不给默认值，用不到的键
+ * 留着「不存在」—— 真被调用就说明这条用例测到了它不该测的路径。
+ */
+const apiMocks = {
   listConversations: vi.fn(),
   createConversation: vi.fn(),
   removeConversation: vi.fn(),
@@ -31,19 +35,7 @@ const apiMocks = vi.hoisted(() => ({
   getChatState: vi.fn(),
   // `activate` 会现拉一次问题（多端看到同一个问题，PRD F-I9）：不打真 IPC，回一份空清单
   listQuestions: vi.fn(),
-}));
-
-// 只给本文件用得到的那几个键：模块是按命名空间用的（`api.xxx`），用不到的键留着 undefined
-// 不会在 import 期炸，只会在真被调用时才炸 —— 而真被调用就说明这条用例测到了它不该测的路径。
-vi.mock("../apis/index.js", () => ({
-  listConversations: apiMocks.listConversations,
-  createConversation: apiMocks.createConversation,
-  removeConversation: apiMocks.removeConversation,
-  renameConversation: apiMocks.renameConversation,
-  setConversationModel: apiMocks.setConversationModel,
-  getChatState: apiMocks.getChatState,
-  listQuestions: apiMocks.listQuestions,
-}));
+};
 
 const WS = "ws-1";
 const CONV = "conv-1";
@@ -110,8 +102,13 @@ function idleState(): ChatState {
 
 beforeEach(() => {
   setActivePinia(createPinia());
+  stubDeps({ api: apiMocks });
   vi.clearAllMocks();
   apiMocks.listQuestions.mockResolvedValue([]);
+});
+
+afterEach(() => {
+  resetDeps();
 });
 
 describe("select", () => {
