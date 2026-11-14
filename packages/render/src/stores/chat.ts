@@ -280,7 +280,7 @@ export const useChatStore = defineStore("chat", {
       const lastFailedContent = st.lastFailedContent;
       const state = await deps.api.getChatState(workspaceId, conversationId);
       // 快照里的现场状态原样读：`run` / `context` / `thinking` / `usage` / `questions` /
-      // `statusBlocks` 都在这一份里，下面只取界面今天用得到的那几样
+      // 上下文 / 思考 / 用量 / 问题都在这一份里，下面只取界面今天用得到的那几样
       const generation = state.run.generation;
       this.byConversation[conversationId] = {
         messages: state.messages,

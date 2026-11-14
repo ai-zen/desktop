@@ -128,7 +128,7 @@ export interface ConversationSummary {
  *
  * 前半截就是宿主 `conversation.state` 的原文 —— `run`（在不在跑、跑到哪一态、结局、子 Agent、
  * 本轮用量）/ `context`（上下文占用与两条线）/ `thinking`（思考强度档位）/ `usage`（三个口径与
- * 速率）/ `questions`（挂在这段对话上的问题）/ `statusBlocks`（状态栏那几块事实）全在里面，一个
+ * 速率）/ `questions`（挂在这段对话上的问题）全在里面，一个
  * 字段都不在客户端侧丢掉：界面今天只画其中一部分，不等于另一部分不存在。
  *
  * 后半截是 `message.list` 给的消息本体（宿主的现场状态里没有消息，而「重开这段对话看到的那一屏」

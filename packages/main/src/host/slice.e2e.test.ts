@@ -194,22 +194,22 @@ describe.runIf(ENABLED)("竖切：连接 → 项目 → 会话 → 发消息 →
       thinking: { selected: string | null };
       usage: { total: { total_tokens: number } };
       questions: unknown[];
-      statusBlocks: Array<{ id: string }>;
     };
     log(
       `✓ conversation.state + message.list → ${restored.messages.length} 条历史，run.status=${restored.run.status}：` +
         restored.messages.map(textOf).map((text) => JSON.stringify(text)).join(" "),
     );
-    // 除了消息，宿主那份现场状态也整份回来了（状态栏那类事实在 `statusBlocks` 里）
+    // 除了消息，宿主那份现场状态也整份回来了（状态栏要的上下文 / 思考 / 用量都在里面）
     log(
       `✓ 现场事实：上下文 ${restored.context.usage.total_tokens}/${restored.context.handoffThreshold} token，` +
         `思考档位=${restored.thinking.selected}，累计用量=${restored.usage.total.total_tokens}，` +
-        `问题 ${restored.questions.length} 条，状态栏块=${restored.statusBlocks.map((block) => block.id).join(",")}`,
+        `问题 ${restored.questions.length} 条`,
     );
     expect(restored.messages.map(textOf).join("")).toContain("世界");
     // 这一轮早就结束了：`run.status` 回到 `idle`（「在不在跑」就是读它）
     expect(restored.run.status).toBe("idle");
-    expect(restored.statusBlocks.length).toBeGreaterThan(0);
+    // 上下文两条阈值也在（状态栏那一格按它算百分比）
+    expect(restored.context.handoffThreshold).toBeGreaterThan(0);
 
     // ---- 9. 断线补拉的那一半：`message.list({ after })` -------------------------
     // 重连之后客户端库就是靠这一步把「本地最后一条」之后的内容补回来（L5 / A12）。

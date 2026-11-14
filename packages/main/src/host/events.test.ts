@@ -201,7 +201,6 @@ function conversationState(run: RunState): WireConversationState {
     thinking: { preset: null, levels: [], selected: null, source: "not_adjustable", params: {} },
     usage: usageSnapshot(),
     questions: [],
-    statusBlocks: [],
     updatedAt: "2026-01-01T00:00:00.000Z",
   };
 }

@@ -128,7 +128,6 @@ function wireConversationState(run: Partial<RunState> = {}): WireConversationSta
       updatedAt: "a",
     },
     questions: [],
-    statusBlocks: [],
     updatedAt: "a",
   };
 }
@@ -681,9 +680,9 @@ describe("chat", () => {
     // 不再补一跳 `message.list`：消息就跟着 `conversation.state` 回来
     expect(h.calls.map((call) => call.method)).toEqual(["conversation.state"]);
     expect(state.messages).toEqual(messages);
-    // 宿主的现场状态原样整份回来：`run` 在跑，上下文 / 思考 / 用量 / 问题 / 状态栏都在
+    // 宿主的现场状态原样整份回来：`run` 在跑，上下文 / 思考 / 用量 / 问题都在
     expect(state.run.status).toBe("running");
-    for (const field of ["context", "thinking", "usage", "questions", "statusBlocks"] as const) {
+    for (const field of ["context", "thinking", "usage", "questions"] as const) {
       expect(state[field]).toEqual(wireConversationState()[field]);
     }
     // 派生布尔不在这里：要判「在不在跑」读 `run.status`
