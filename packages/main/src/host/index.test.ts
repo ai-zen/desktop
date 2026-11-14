@@ -21,7 +21,6 @@ const HELLO: HostHelloResult = {
   hostVersion: "0.1.0-alpha.0",
   protocolVersion: "1",
   startedAt: "2026-01-01T00:00:00.000Z",
-  capabilities: ["F-C1"],
   limits: { maxAssetBytes: 20 * 1024 * 1024, maxAssetsPerMessage: 4 },
 };
 
