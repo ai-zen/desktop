@@ -81,6 +81,7 @@ import type {
   ConnectionState,
 } from "@ai-zen/desktop-shared";
 import { CONNECTION_LANGUAGE } from "../language.js";
+import { helloOf } from "../host/index.js";
 import type { LayerHello, HostLayerOptions } from "../host/index.js";
 // 措辞与映射全部来自包（`connection-settings.ts`）：`labelOf` / `describe` / `connectionConfigOf`
 // 在本仓只是别名，没有第二份实现 —— CLI 与桌面端说的是同一句话
@@ -378,17 +379,11 @@ export class ConnectionController {
         // 界面说中文（见 `language.ts`）：本地的几句文案也按它取
         language: CONNECTION_LANGUAGE,
       });
-      const hello = client.hello;
+      const hello = helloOf(client.hello);
       if (!hello) {
         return { ok: false, message: "连上了宿主，但它的握手回执里没有身份（拿不到协议版本）" };
       }
-      const protocol = Number.parseInt(hello.protocolVersion, 10);
-      return {
-        ok: true,
-        protocol: Number.isFinite(protocol) ? protocol : 0,
-        version: hello.hostVersion,
-        elapsedMs: Date.now() - startedAt,
-      };
+      return { ok: true, ...hello, elapsedMs: Date.now() - startedAt };
     } catch (error) {
       return { ok: false, message: messageOf(error) };
     } finally {

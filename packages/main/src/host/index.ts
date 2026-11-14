@@ -201,8 +201,13 @@ export function createHostLayer(options: HostLayerOptions): HostLayer {
   };
 }
 
-/** 握手回执 → 界面上那两位；拿不到就是 `null`（连上了但不知道自己连的是哪一版，比编一个数字诚实） */
-function helloOf(hello: HostHelloResult | null): LayerHello | null {
+/**
+ * 握手回执 → 界面上那两位；拿不到就是 `null`（连上了但不知道自己连的是哪一版，比编一个数字诚实）。
+ *
+ * 导出给「试连」那条路（`connection/controller.ts`）复用：`protocolVersion` 怎么解析成数字
+ * 只有一个口径，两处各写一遍时漏改一处就会出现「设置页显示 1、状态栏显示 0」。
+ */
+export function helloOf(hello: HostHelloResult | null): LayerHello | null {
   if (!hello) return null;
   const protocol = Number.parseInt(hello.protocolVersion, 10);
   return {

@@ -539,11 +539,6 @@ export type ChatStreamEvent =
    */
   | { conversationId: string; type: "agents"; agents: SubAgentView[] };
 
-/** 窗口最大化状态变更 */
-export interface WindowStateEvent {
-  maximized: boolean;
-}
-
 // ==================== IPC 协议 ====================
 
 export interface WindowControls {
