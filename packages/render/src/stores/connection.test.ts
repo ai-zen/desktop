@@ -61,6 +61,8 @@ const OLD_CONVERSATION: ConversationSummary = {
   name: "上一台的会话",
   messageCount: 3,
   updatedAt: "2024-01-01T00:00:00.000Z",
+  // 没在跑（宿主对空闲会话给 null）
+  run: null,
 };
 
 let invokeService: ReturnType<typeof vi.fn>;

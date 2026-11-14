@@ -32,6 +32,7 @@ import type {
   QuestionOption,
   QuestionState,
   QuestionView,
+  RunState,
 } from "@ai-zen/agents-host";
 
 // ==================== 宿主已有的形状（原样再导出）====================
@@ -121,6 +122,15 @@ export interface ConversationSummary {
   updatedAt: string;
   /** 会话运行中标记（侧栏显示） */
   running?: boolean;
+  /**
+   * 这段对话此刻的运行状态：`null` = 没在跑，在跑就是 `{ status: "running", startedAt }`。
+   *
+   * 与 `running` 是同一件事实的两种说法，条目**不重**：`running` 是「在不在跑」那个布尔，
+   * 而活跃会话列表要按「什么时候开始的」排 —— 一个布尔说不出时间。`status` 直接用
+   * `RunState` 的那一组取值（不另造一套列表用的取值表），`startedAt` 与 `RunState.startedAt`
+   * 同口径。宿主两份都给，这里两份都留。
+   */
+  run: { status: RunState["status"]; startedAt: string | null } | null;
 }
 
 /**
@@ -386,12 +396,18 @@ export interface SubAgentView {
 export type ChatStreamEvent =
   | { conversationId: string; type: "start" }
   /**
-   * 本轮的用户消息上屏（render 据此上屏，不本地乐观插入）。
+   * 用户消息上屏。两个来源，同一个键：
    *
-   * 载荷是**宿主落库的那条消息本体**（core 的 `AgentNS.Message`），不是把正文拍成一句字：
-   * 带图的那一句在库里是 `image_url` 内容段数组，压成字符串就只能显示文字、图要等整轮跑完
-   * 的 `done` 全量替换才出现。id 是宿主受理时就分配好的那个（L6），所以 `done` 那次全量
-   * 替换里同一条消息用的是同一个 id —— 不会画成两条。
+   *   · **宿主落库的那条**（开新一轮时）：载荷是消息本体（core 的 `AgentNS.Message`），不是把
+   *     正文拍成一句字 —— 带图的那一句在库里是 `image_url` 内容段数组，压成字符串就只能显示
+   *     文字、图要等整轮跑完的 `done` 全量替换才出现；
+   *   · **排队受理的乐观回显**（`conversation.send` 回了 `queued: true`）：那一句要等这一轮的
+   *     轮末才落库，此刻库里还没有它，所以载荷只能是手上这句正文 + 宿主入队时定死的 id。
+   *     它只活到轮末 —— 库里那条到达时用的是同一个 id，按 id 就地替换（内容段数组与图片跟着
+   *     补上）。
+   *
+   * 两种来源的 id 都是宿主给的（L6 / D5），所以 `done` 那次全量替换里同一条消息用的是同一个
+   * id —— 不会画成两条。
    */
   | { conversationId: string; type: "user"; message: AgentNS.Message }
   /**

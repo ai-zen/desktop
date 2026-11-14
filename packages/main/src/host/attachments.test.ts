@@ -444,6 +444,36 @@ describe("chat.send：附件从 IPC 走到 conversation.send", () => {
     expect(h.events.map((event) => event.type)).toEqual(["start", "user"]);
   });
 
+  it("排队受理（queued）：图照传、附件结局照推，但不回宿主取消息（轮末才落库）", async () => {
+    const h = harness(() => ({
+      // 排进了正在跑的那一轮：这一句轮末才落库，此刻库里没有它（回宿主取就会抛）
+      ...accepted([
+        { assetId: "asset-upload-1", deliveredAs: "file_reference", section: null, problem: null },
+      ]),
+      assistantMessageId: null,
+      queued: true,
+      userMessageId: "m-queued",
+    }));
+
+    await new HostChatService(h.ctx).send("ws-1", CONVERSATION, "看看这张", [attachment("图.png")]);
+
+    // 素材照传、`assetIds` 照进 input：排队不等于「附件被静默丢掉」
+    expect(h.calls.map((call) => call.method)).toEqual([
+      "asset.begin",
+      "asset.end",
+      "conversation.send",
+      // 没有 `message.list`：这一句还没落库
+    ]);
+    // 回显 → 提示 → 这一轮各附件的结局（结局按宿主给的那个 id 挂在气泡上）
+    expect(h.events.map((event) => event.type)).toEqual(["user", "notice", "attachments"]);
+    const outcome = h.events.find((event) => event.type === "attachments");
+    if (outcome?.type !== "attachments") throw new Error("应当推一条 attachments");
+    expect(outcome.userMessageId).toBe("m-queued");
+    expect(outcome.attachments.map((item) => [item.name, item.deliveredAs])).toEqual([
+      ["图.png", "file_reference"],
+    ]);
+  });
+
   it("一张都没传上去：文字照发（全失败退回纯文本），失败逐张上屏", async () => {
     const h = harness(() => accepted(), {
       reject: (method) =>

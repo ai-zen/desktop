@@ -63,6 +63,9 @@ import type {
   RunState,
 } from "@ai-zen/agents-client";
 import { DEFAULT_RECONNECT_POLICY, mergeResumed, reconnectUntilConnected } from "@ai-zen/agents-client";
+// 消息本体是 core 的形状：乐观回显那一条要现造一个 user 消息，`Role` 只有 core 这边的值
+// （客户端库只转出类型，见它的 `index.ts`）
+import { AgentNS as CoreNS } from "@ai-zen/agents-core";
 import type { ChatStreamEvent, AttachmentOutcome, ProblemFact, StreamPhase } from "@ai-zen/desktop-shared";
 import type { ContractCall, ContractConnection } from "./contract.js";
 import { localText, problemOf } from "./problem.js";
@@ -70,6 +73,14 @@ import { StreamingMessage } from "./stream.js";
 
 /** 断线之后最多再敲几次门（连不上就不假装还在连：留一条通知给人看） */
 const RECONNECT_POLICY = { ...DEFAULT_RECONNECT_POLICY, maxAttempts: 5 };
+
+/**
+ * 「这一句排进了正在跑的那一轮」的提示（`echoQueuedSend` 里说的那句）。
+ *
+ * 是本进程自己的话，不是宿主给的：宿主对排队受理不发任何事件。桌面端的界面文案全是中文
+ * （`packages/main/src/language.ts`：桌面端没有语言开关），所以这句也照旧写中文、只写一句。
+ */
+const QUEUED_SEND_NOTICE = "已排队，会在当前这一轮的工具轮结束后送出。";
 
 export interface ChatEventBridgeOptions {
   /** 发一次契约方法（收尾要的 `message.list`、改名后要的 `conversation.get`） */
@@ -156,6 +167,45 @@ export class ChatEventBridge {
     const message = listed.messages.find((item) => item.id === userMessageId);
     if (!message) throw new Error(`受理回执里的用户消息 ${userMessageId} 不在 message.list 里`);
     this.push({ conversationId, type: "user", message });
+  }
+
+  /**
+   * 一句用户输入排进了**正在跑的那一轮**（`conversation.send` 回了 `queued: true`，PRD D3）。
+   *
+   * ## 为什么这一条不走 `beginTurn`
+   *
+   * 排队那句要等这一轮的**轮末**才落库，此刻 `message.list` 里根本没有它 —— 而 `beginTurn` 干的
+   * 正是回宿主按 id 取那条消息，取不到就抛。于是宿主明明已经收下（会送出），界面上却弹一条
+   * error 气泡。
+   *
+   * ## 回显用宿主给的 id，手上这句原样上屏
+   *
+   * id 是宿主在**入队那一刻**就定死的（D5），与轮末落库那条是同一个；render 按 id upsert
+   * （有则替换、无则追加），所以几秒后库里那条到达时是**替换**（内容段数组、图片跟着补上），
+   * 不会画成两条。这也是它敢用「手上这句正文」的原因：这条消息只活到轮末，之后以宿主那份为准。
+   *
+   * 内容只能用手上这句：宿主怎么把文字与 `assetIds` 拼成内容段（文件引用 / 内联 / 退化成文字）
+   * 要等落库才算数，这里没有第二份、也不该猜一份。带图的那句在轮末那条到达之前只显示文字；
+   * 附件各自的结局照常按 `userMessageId` 推（见 `pushAttachments`），所以「图到底发出去没有」
+   * 当场就能看见。
+   *
+   * ## 为什么不推 `start`
+   *
+   * `start` 说的是「这一轮开始了」（render 拿它切流式态、清错误条）。排队的前提是这一轮**本来
+   * 就在跑**，没有新的一轮 —— 再推一次等于替一段已经在跑的轮次重开现场。
+   *
+   * ## 那句提示只能由这里说
+   *
+   * 宿主对排队不发事件（那条消息落库时只更新 `run.state.inboxPending` 这个数），于是「这句会晚
+   * 一步送出」没有别的来源。不说的话，界面看上去就是「点了发送、什么都没发生」。
+   */
+  echoQueuedSend(conversationId: string, userMessageId: string, content: string): void {
+    this.push({
+      conversationId,
+      type: "user",
+      message: { id: userMessageId, role: CoreNS.Role.User, content },
+    });
+    this.pushNotice("info", QUEUED_SEND_NOTICE, conversationId);
   }
 
   /** `chat.getState` 拿到的基线消息（补拉合并要有它） */

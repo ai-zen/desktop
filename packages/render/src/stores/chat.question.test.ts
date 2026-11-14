@@ -132,6 +132,8 @@ function summary(id: string): ConversationSummary {
     name: `会话 ${id}`,
     messageCount: 0,
     updatedAt: "2026-11-11T00:00:00.000Z",
+    // 这一段没在跑：宿主对空闲会话给的就是 null（`running` 那边同理，省略即「不是 true」）
+    run: null,
   };
 }
 

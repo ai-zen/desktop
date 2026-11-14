@@ -21,7 +21,7 @@
  */
 
 import { getAsset as fetchAssetContent } from "@ai-zen/agents-client";
-import type { AgentNS } from "@ai-zen/agents-client";
+import type { AgentNS, RunState } from "@ai-zen/agents-client";
 import type {
   AgentOption,
   AssetContent,
@@ -340,13 +340,22 @@ export class HostChatService {
    * 一张都没传上去时这一轮就是**纯文本**（F-H7 的「全失败退回纯文本」）：文字照发，附件的结局逐张
    * 上屏。把失败往上抛只会让用户连字都发不出去 —— 而失败原因本来就是他要看的一句话，不是异常。
    *
-   * ## 三条出口
+   * ## 四条出口
    *
-   *   · 受理了 → 立刻把 `user` + `start` 推给 render（id 是宿主给的，不必编），随后推这一轮各附件
-   *     的结局；
-   *   · `busy`（这段对话正跑着一轮，PRD D14）→ 什么都不推：那是「多点了一下发送」，不是错误；
+   *   · 受理了**这一句**（开新一轮）→ 立刻把 `user` + `start` 推给 render（id 是宿主给的，不必编），
+   *     随后推这一轮各附件的结局；
+   *   · 受理了**排进正在跑的那一轮**（`queued: true`，PRD D3）→ 不走 `beginTurn`（那条消息要等
+   *     这一轮的轮末才落库，此刻 `message.list` 里没有它，`beginTurn` 找不到就会抛），改成按宿主
+   *     给的 id 把那句原样回显 + 一句中文提示（见 `ChatEventBridge.echoQueuedSend`）；
+   *   · `busy`（这段对话正跑着一轮，PRD D14）→ 什么都不推：那是「多点了一下发送」，不是错误。
+   *     宿主现在会把跑中发送排进那一轮的 inbox，`busy` 只剩老路径上的竞态（入队窗口刚关上）；
    *   · 其余（`question_pending`、会话不在、连接断了）→ 推 `error`。不让 IPC 抛错：render 的
    *     `send()` 因此永远正常返回，错误条由事件驱动。
+   *
+   * ## 「排队了没有」读 `queued`，不靠 `assistantMessageId === null` 反推
+   *
+   * 前者是宿主的显式意图（`queued: true` = 排进了那一轮），后者只是它的推论（排队时确实没有
+   * 属于这一句的助手消息，但那是「助手消息还没轮到」的结果，不是判据）。
    */
   async send(
     workspaceId: string,
@@ -370,8 +379,14 @@ export class HostChatService {
         conversationId,
         input: { content, ...(assetIds.length > 0 ? { assetIds } : {}) },
       });
-      // 上屏的是宿主落库的那条消息（`message.list` 里取回来），不是手上这句 `content`
-      await this.ctx.events.beginTurn(conversationId, accepted.userMessageId);
+      if (accepted.queued === true) {
+        // 排进了正在跑的那一轮：那条消息轮末才落库，现在取不到 —— 只能拿手上这句先回显一条
+        // （id 是宿主给的，轮末落库那条用的是同一个，render 按 id 替换，不会画成两条）
+        this.ctx.events.echoQueuedSend(conversationId, accepted.userMessageId, content);
+      } else {
+        // 上屏的是宿主落库的那条消息（`message.list` 里取回来），不是手上这句 `content`
+        await this.ctx.events.beginTurn(conversationId, accepted.userMessageId);
+      }
       // 上传阶段已有的失败与宿主给的结局合到一份逐张账上（顺序 = 用户摆放的顺序）
       this.ctx.events.pushAttachments(
         conversationId,
@@ -517,6 +532,7 @@ function toSummary(view: {
   messageCount: number;
   updatedAt: string;
   running: boolean;
+  run: { status: RunState["status"]; startedAt: string | null } | null;
 }): ConversationSummary {
   return {
     id: view.id,
@@ -528,7 +544,10 @@ function toSummary(view: {
     name: view.name,
     messageCount: view.messageCount,
     updatedAt: view.updatedAt,
+    // 两份都给：`running` 是老的布尔（界面今天在用它），`run` 多一个「什么时候开始的」
+    // （活跃会话列表要按开始时刻排，一个布尔说不出时间）。宿主两份都发，这里整块搬
     running: view.running,
+    run: view.run,
   };
 }
 

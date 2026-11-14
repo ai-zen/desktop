@@ -261,7 +261,7 @@ describe("workspace", () => {
 // ==================================================================
 
 describe("conversation", () => {
-  it("list：name / messageCount / running / modelId 都取自宿主那一项", async () => {
+  it("list：name / messageCount / running / run / modelId 都取自宿主那一项", async () => {
     const h = harness(() => ({
       conversations: [
         {
@@ -273,6 +273,8 @@ describe("conversation", () => {
           messageCount: 3,
           updatedAt: "2026-01-01T00:00:00.000Z",
           running: true,
+          // 宿主对「在跑」的那一段两份都给：布尔 + 什么时候开始的
+          run: { status: "running", startedAt: "2026-01-01T00:00:00.000Z" },
         },
       ],
       total: 1,
@@ -281,6 +283,7 @@ describe("conversation", () => {
     const list = await new HostConversationService(h.ctx).list("ws-1");
 
     expect(h.calls[0]).toEqual({ method: "conversation.list", params: { workspaceId: "ws-1" } });
+    // `running` 与 `run` 两份都搬（一个说在不在跑，一个说什么时候开始的）
     expect(list).toEqual([
       {
         id: "conv-1",
@@ -291,6 +294,7 @@ describe("conversation", () => {
         messageCount: 3,
         updatedAt: "2026-01-01T00:00:00.000Z",
         running: true,
+        run: { status: "running", startedAt: "2026-01-01T00:00:00.000Z" },
       },
     ]);
   });
@@ -536,7 +540,52 @@ describe("chat", () => {
     ]);
   });
 
-  it("send 撞上 busy：什么都不推（那是多点了一下发送，不是错误）", async () => {
+  // 工单 I：跑中发送不再回 `busy`，而是排进那一轮的 inbox（回包 `queued: true`）。
+  // 这条原先是「撞上 busy → 什么都不推」，按新契约改成「收下了 → 回显 + 一句提示」
+  it("send 跑中（宿主回 queued）：不走 beginTurn，回显这句 + 一句中文提示，不推 error", async () => {
+    const h = harness((method) => {
+      if (method === "message.list") {
+        // 排队那句要等这一轮的轮末才落库：此刻库里就是没有它 —— 取它就是那条 bug
+        return { conversationId: CONVERSATION, anchor: null, messages: [] };
+      }
+      return {
+        userMessageId: "m-queued",
+        assistantMessageId: null,
+        queued: true,
+        attachments: [],
+        acceptedAt: "2026-01-01T00:00:00.000Z",
+      };
+    });
+
+    await new HostChatService(h.ctx).send("ws-1", CONVERSATION, "再看看这个");
+
+    // 不走 `beginTurn`：一次 `message.list` 都没发（那一头取不到，会抛成 error 气泡）
+    expect(h.calls).toEqual([
+      {
+        method: "conversation.send",
+        params: { conversationId: CONVERSATION, input: { content: "再看看这个" } },
+      },
+    ]);
+    // 没有 error，也没有 `start`（这一轮本来就在跑，没有新的一轮可开）
+    expect(h.events.map((event) => event.type)).toEqual(["user", "notice"]);
+    // 乐观回显：id 用宿主入队时定死的那个（轮末落库那条是同一个，render 按 id 替换），
+    // 内容是手上这句
+    expect(h.events[0]).toEqual({
+      conversationId: CONVERSATION,
+      type: "user",
+      message: { id: "m-queued", role: AgentNS.Role.User, content: "再看看这个" },
+    });
+    const notice = h.events[1];
+    if (notice?.type !== "notice") throw new Error("应当推一条 notice");
+    expect(notice.level).toBe("info");
+    expect(notice.text.message).toBe("已排队，会在当前这一轮的工具轮结束后送出。");
+    // 句子归这段对话（不是全局通知）：界面照着它说在哪个会话里排的队
+    expect(notice.conversationId).toBe(CONVERSATION);
+  });
+
+  // `busy` 现在只剩老路径上的竞态（这一轮刚跑完、正在收尾写库，入队窗口刚好关上）：宿主确实
+  // **没收下**这一句，所以照旧什么都不推 —— 它是「多点了一下发送」，不是本轮失败。
+  it("send 撞上 busy（入队窗口刚关上的竞态）：什么都不推（那是多点了一下发送，不是错误）", async () => {
     const h = harness(() => {
       throw new ClientErrorValue("busy", "这段对话正在跑一轮");
     });
