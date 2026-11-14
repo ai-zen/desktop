@@ -34,14 +34,16 @@ packages/main/src/
 ├── connection/ local or remote (the only persistence Desktop owns)
 │   ├── settings.ts    **only binds the path** (`<AI_ZEN_DIR>/desktop/connection.json`); read/write/validate/wording live in `connection-settings.ts` in `@ai-zen/agents-client` (shared with the CLI)
 │   └── controller.ts  ConnectionController: which layer is live / saving means reconnecting / testing a connection / three states + bounded retries
-└── host/     the host facade (directly verifiable by vitest + a real daemon)
-    ├── index.ts            assembly root: createHostLayer
-    ├── call.ts             one protocol call (fetches a live connection each time, caches no client)
-    ├── services.ts         six Services: render's shapes ↔ protocol calls
+└── host/     the host facade (directly verifiable by vitest + a real host)
+    ├── index.ts            assembly root: createHostLayer (six services + event bridge + the one connection)
+    ├── contract.ts         the **narrow seam** to the client library (declares only what this layer uses; no `Client` class in parameter types)
+    ├── services.ts         the six services: render's shapes ↔ contract calls
     ├── ServicesManager.ts  invokeService dynamic dispatch
     ├── events.ts           host events → ChatStreamEvent
-    ├── launch.ts           starts the host shipped with the app (on Electron's Node)
-    └── notices.ts          notice code → Chinese text
+    ├── stream.ts           streaming deltas → one core `AgentNS.Message` (only concatenates, never judges)
+    ├── attachments.ts      attachment choreography: bytes → `asset.begin` / binary chunks / `asset.end` → assetId
+    ├── problem.ts          a failure / a hint → `LocalizedText` / `ProblemFact`
+    └── launch.ts           starts the host shipped with the app (on Electron's Node)
 ```
 
 Two hard boundaries:
@@ -69,10 +71,10 @@ This order is the one thing in this document that has to be read literally; each
 
 ## 4. One connection (`HostConnection`)
 
-"Which host, which key, and what if the connection dies" lives in exactly one implementation: `agents/packages/client/src/transport/connection.ts` in `@ai-zen/agents-client`. `packages/main/src/host/index.ts` assembles it once:
+"Which host, which key, and what if the connection dies" lives in exactly one implementation: `agents/packages/client/src/connection.ts` in `@ai-zen/agents-client` (private, unpublished, inlined at build time). `packages/main/src/host/index.ts` assembles it once:
 
-- **Which host** is answered by the discovery file (`<AI_ZEN_DIR>/run/host.json`) **by default**. A restarted host switches ports and rewrites the file; this layer caches no port and remembers no pid. When the user picks **remote** in the settings page, the address comes from `hostUrl` in the connection settings (persisted by `connection/settings.ts`) instead, and this default path steps aside — this layer still caches nothing and interprets nothing (the shape of an address is defined once, in the client package's `wire/host-url.ts`).
-- **Which key gets you in**: the credential defaults to `<AI_ZEN_DIR>/run/token` (read or created by the host at startup, `0600`); an explicit `hostToken` from the connection settings wins. Desktop only **passes both values through** — parsing, precedence and the plain sentence printed on `unauthorized` all live in one place, `resolve-target.ts` in the client package.
+- **Which host** is answered by the discovery file (`<AI_ZEN_DIR>/run/host.json`) **by default**. A restarted host switches ports and rewrites the file; this layer caches no port and remembers no pid. When the user picks **remote** in the settings page, the address comes from `hostUrl` in the connection settings (persisted by `connection/settings.ts`) instead, and this default path steps aside — this layer still caches nothing and interprets nothing (the shape of an address is defined once, in the client package's `address.ts`).
+- **Which key gets you in**: the credential defaults to `<AI_ZEN_DIR>/run/token` (read or created by the host at startup, `0600`); an explicit `hostToken` from the connection settings wins. Desktop only **passes both values through** — parsing, precedence and the plain sentence printed on `unauthorized` all live in one place in the client package (`connection.ts` and `errors.ts`).
 - **Launching one when none is running**: `startHostProcess` is injected as `host/launch.ts`, which starts the copy **shipped with the app** (`dist/host.mjs`, built as a self-contained file by the `host` entry in `rolldown.config.mjs`) on Electron's bundled Node (`ELECTRON_RUN_AS_NODE=1`). A customer machine may have neither Node.js nor npm, so this path cannot use `npx` — that is the CLI's route, and it assumes npm is there.
 
 Note that "prefer one that is already running" is not this layer's doing: it is `ensureHost`'s order — read the discovery file, `ping` once, use it if it answers. Spawning only happens when no live host exists. With an explicit address it never happens at all: whatever would be started on this machine is not listening on that address, so `launch.ts` only leaves one log line carrying the address and no credential.
@@ -80,7 +82,7 @@ Note that "prefer one that is already running" is not this layer's doing: it is 
 
 All of these matter, and re-attaching after a reconnect is the easiest to miss: listeners are attached to one **specific** `HostClient`, and the client clears its listener table the moment the socket drops. Without re-attaching, the new connection can send requests but receives no events at all — the UI just sits there silently (no error, no reconnect, no notice).
 
-`packages/main/src/host/call.ts` is the only seam between this layer and the connection: `protocolCall(connection)` awaits `connection.client()` and then `call(method, params)` on every invocation. It holds no state, so there is no second place that could stash a stale client.
+`packages/main/src/host/contract.ts` is the only seam between this layer and the connection: it declares just what this layer needs (`call` / `subscribe` / `track` / `setAnchor` / `resolveTarget` …) and holds no state, so there is no second place that could stash a stale client. The client library swaps the underlying socket when it reconnects while the `HostConnection` object stays the same, so subscriptions never need re-hanging.
 
 ### Local / remote: the section in the settings page
 
@@ -116,37 +118,47 @@ The four exits of one attempt (connected → `ready` / schedule the next retry /
 
 ## 5. Protocol surface
 
-The business surface has exactly one entry point: `electronAPI.invokeService(service, method, ...args)`, which `ServicesManager` looks up and dispatches to one of six Services. A few channels deliberately stay **off** that table: the connection settings and connection state `connection:get` / `save` / `test` / `state` / `reconnect` (section 4), window controls `window:xxx`, and the native directory picker `dialog:selectDirectory` — they answer questions that belong to the main process itself, not methods of the host.
+There is exactly one business entry point: `electronAPI.invokeService(service, method, ...args)`, dispatched by `ServicesManager` to six services. A few channels sit **outside** that table: connection settings and state `connection:get` / `save` / `test` / `state` / `reconnect` (section 4), window control `window:xxx`, and the native directory picker `dialog:selectDirectory` — none of them answers a host method; they answer questions of the main process itself.
 
-The last two of those five are **the query** and **the manual retry**: `connection:state` asks "what state is it in right now", `connection:reconnect` lets the user start another round themselves (it clears the pending timer, resets `attempt` to zero and returns the moment it enters `connecting`; the whole round runs in the background). A **push** channel shares the same name `connection:state` (main → render), so "ask once" and "listen for changes" are one name to the caller. Neither of them goes into the service table either — those six keys are the host's method surface.
+The last two of the five connection channels are **a query** and **a manual retry**: `connection:state` asks "what is the state right now", `connection:reconnect` lets the user kick another round (clearing the pending timer, resetting `attempt`, returning the moment `connecting` begins while the round runs in the background). The same name `connection:state` is also a **push** channel (main → render), so "ask once" and "listen for changes" are the same name to callers. Neither is in the service table — those six keys are the host's method surface.
 
-**The initial state is not pushed**: `connecting / attempt 0` is word-for-word what `state()` already reports before `start()` runs, so pushing it would be pure noise. That is why render must **query once first, then listen** when it mounts — listening alone misses the change that happened before the mount, querying alone never learns about the ones after it. `preload` exposes these as `electronAPI.connection = { get, save, test, state, reconnect }`.
+**The initial state is never pushed**: `connecting / attempt 0` is byte-identical to what `state()` returns before `start()`, so pushing it is noise. That is why render must **query once, then subscribe** on mount — pushing alone misses the change before mount, querying alone misses everything after it. `preload` exposes them as `electronAPI.connection = { get, save, test, state, reconnect }`.
 
-| Dispatch key | Implementation | Main actions |
-|--------------|----------------|--------------|
-| `workspace` | `HostWorkspaceService` | `workspace.list` / `create` (= `workspace.resolve`, plus one `workspace.rename` when a name was given) / `rename` / `remove` |
-| `conversation` | `HostConversationService` | `session.list` / `create` / `attach` + `snapshot` / `rename` / `remove` / `model.set` |
-| `agent` | `HostAgentService` | `agent.list` (entry Agents only) |
-| `model` | `HostModelService` | `models` out of `config.get` |
-| `chat` | `HostChatService` | `session.send` / `cancel` / `close` / `attach` + `snapshot` |
-| `config` | `HostConfigService` | `config.get` / narrow setters for defaults / `config.save` |
+On the host side it is **JSON-RPC 2.0 over WebSocket** (`agents/packages/host/src/wire/`): `host.hello` carries the credential plus client identity, every later call is `{ jsonrpc, id, method, params }` and the reply is a `result` or an `error` under the same `id` (`error.data` holds `code` + an already-rendered `message` + `detail`). The contract has **63 methods** (`METHOD_NAMES` in `wire/methods.ts`) across a dozen domains: `host.*` / `workspace.*` / `conversation.*` / `message.*` / `search.*` / `question.*` / `notice.*` / `config.*` / `agent.*` / `model.*` / `asset.*` (these three also use binary frames) / `completion.*` / `handoff.*`.
 
-On the event side the contract has three unions (`agents/packages/host/src/protocol/sessions.ts`): `AgentEventName` with 8 entries (the original names of core's `Agent.events`), `SessionEventName` with 6 (things the host derives or decides), `HostEventName` with 1 (a host notice bound to no conversation). Event names are always kebab-case — `session-turn-end`, `session-title-changed`, `host-notice`.
+| Dispatch key | Implementation | Host methods actually called today |
+|--------|------|----------|
+| `workspace` | `HostWorkspaceService` | `workspace.list` / `create` / `rename` / `remove` |
+| `conversation` | `HostConversationService` | `conversation.list` / `create` / `get` / `rename` / `remove` / `setModel` / `state` |
+| `agent` | `HostAgentService` | `agent.list` |
+| `model` | `HostModelService` | `model.list` |
+| `chat` | `HostChatService` | `conversation.send` / `abort` / `message.list` / `question.list` / `question.answer` |
+| `config` | `HostConfigService` | `config.get` / `saveEndpoint` / `setDefaults` |
 
-Method and event names are **literal union types** in `@ai-zen/agents-host/protocol`, never written as literals: a contract change then fails to compile here instead of returning a 500 at runtime.
+**This table doubles as the desktop's outstanding-debt list**: of 63 methods the desktop uses 21. Search (`search.*`), revert (`conversation.revert`), pinning (`conversation.pin`), thinking effort (`conversation.setThinking`), transient conversations (`conversation.transient`), the notice bar (`notice.*`), `@` completion (`completion.files`), MCP and endpoint editing (`config.saveMcp` / `deleteMcp` / `getDiscovery` / `deleteEndpoint`), agent and model CRUD (`agent.*` / `model.*`), handoff (`handoff.*`), and `host.reload` / `upgrade` / `shutdown` / `capabilities` / `setLanguage` still have zero call sites — the debt is tracked in `agents/packages/host/docs/PLAN.md` §6.
+
+Method and event names are **literal union types** in `@ai-zen/agents-host`'s `wire` (`MethodName` / `EventName`), never written as string literals: a contract change breaks the build here instead of failing at runtime.
 
 ## 6. Event translation (`packages/main/src/host/events.ts`)
 
-`ChatEventBridge` subscribes to 12 of them and translates into the 9 `ChatStreamEvent` kinds render knows: `start` / `user` / `message` / `done` / `migrated` / `error` / `renamed` / `notice` / `agents`.
+The host pushes exactly **6 events** (`EVENT_NAMES` in `wire/events.ts`): `run.state` / `message.delta` / `conversation.changed` / `notice` / `question` / `usage`. `ChatEventBridge` turns them into the **12 `ChatStreamEvent` variants** render knows (`packages/shared/src/types.ts`):
 
-"what has to be remembered within a turn" is *not* here — which message deltas accumulate onto, how sub-agent deltas merge with host snapshots, whether a failure is terminal — that belongs to `SessionStream` in `@ai-zen/agents-client` (a pure state machine, zero I/O). Desktop has one connection carrying many concurrent conversations, so this layer keeps **one state machine per conversation** (`Map<conversationId, SessionStream>`); background conversations keep receiving events.
+| Host event | Emitted as | Notes |
+|---|---|---|
+| `message.delta` | `message` | The delta is folded into that assistant message with core's `applyChunk` (`stream.ts`); the whole `AgentNS.Message` is passed through |
+| `run.state` | `stream` + `done` / `error` | Phase names and running tools pass through; on `settled` the bridge fetches `message.list` once and pushes `done` |
+| `usage` | `message` | This turn's usage is pinned onto that assistant message (render replaces the whole message by id) |
+| `notice` | `notice` | Level, duration, `LocalizedText` and owning conversation pass through (PRD D8) |
+| `question` | `question` | The whole `QuestionView` passes through (see below) |
+| `conversation.changed` | `renamed` | The new name is fetched with `conversation.get`; the push only says "it was renamed" |
 
-The translation layer does four things:
+Three more are not host pushes: `start` (a turn began, driven by `conversation.send` being accepted), `user` (the stored copy of the user message is fetched from the host), `attachments` (this turn's attachment outcomes) — plus `migrated` (full replacement after a handoff moved the task into a new conversation).
 
-1. **The body of `user`.** The protocol does not push user messages (`chunk-parsed` carries model deltas only), so the body is registered on the `chat.send` side (`noteSend`) and consumed when `start` is dispatched. The placeholder id is `${conversation}:user:${turnId}` — it exists to give render a stable `v-for` key.
-2. **The id of the placeholder assistant message.** The streaming temporary message inside the state machine deliberately carries no id (the settling snapshot supplies the real one; inventing a fake id would collide with it), so the key is minted here: one per turn (`${conversation}:assistant:${turnId}`). Text and tool calls land on the same message, whichever arrives first.
-3. **Settling and migration follow the host snapshot.** `session-turn-end` carries only `ok` / `error`, so the layer fetches `session.snapshot` once, hands it to `stream.settle()`, and pushes the merged result as `done` (message status and the host's cleanup of history exist only in the snapshot). `session-id-changed` must **collapse aliases** (new id → the key render knows) and push `migrated`, otherwise a running conversation waits forever on the old id for a completion that will never come.
-4. **`question` is carried over whole, never auto-answered.** The host's product object (`prompt` / `options[]` / `blocking` / `state` / `kind`) is pushed to render as-is (`onQuestion` in `events.ts`); how to lay it out is render's business. There is **no** "auto-answer skip": no default option, no answer-on-timeout — picking one for the user means deciding for them whether (and where) to hand off, and the host does not time the question out (PRD D23), so it stays pending until someone answers. The `session-question` event no longer exists in the contract; desktop already has the full question-answering view: candidates and input blocking are drawn by `views/main/QuestionPanel.vue` (fed by `pendingQuestions` / `inputBlocked` in `stores/chat.ts`), and answering goes `apis/chat.ts`'s `answerQuestion` → main's `chat.answerQuestion` → the host's `question.answer` (`answerQuestion` in `host/services.ts`).
+Folding a structure into one string is **not** done here (R75): everything carrying messages or content uses core's original shapes (`AgentNS.Message` / `MessageContentSection` / `ToolCall` / `Usage`) or the host's structures (`LocalizedText` / `ProblemFact` / `QuestionView`).
+
+**Why settling always refetches from the host**: `run.state` only says "this turn ended and how". The message the client folded is merely an approximation good enough to scroll — tool-call arguments, message `status` and the host's cleanup of history exist only in the database. So after `settled` the bridge fetches `message.list` once and pushes the whole array as `done` (render's `done` is a full replacement). The same holds for the user message: the stored form of a message with images is an array of `image_url` content sections, while the client only has the characters the user typed.
+
+**Question objects pass through whole, never auto-answered**: `prompt` / `options[]` / `blocking` / `state` / `kind` go to render unchanged and how to lay them out is render's business. There is **no** "auto-answer / skip on timeout" — picking an option for the user means deciding "whether to hand off, and where to", and the host never expires a question (PRD D23), so it stays pending until someone answers.
 
 ## 7. render's layering
 
@@ -154,10 +166,11 @@ The translation layer does four things:
 packages/render/src/
 ├── main.ts        Vue entry (Pinia / ElementPlus)
 ├── App.vue        root: TitleBar + gating on connection state (settings → status → guide/main); subscribes to chat:push and connection:state
-├── views/         setup/index.vue (first-run), guide/index.vue, main/{index,Sidebar,ChatPanel,MessageBubble,NewChatDialog}.vue, settings/index.vue, status/index.vue
+├── deps.ts        the replaceable dependency entry (`deps.api` = the whole `apis/*` export, `deps.notify` = the three toast levels; tests stub it instead of using `vi.mock`)
+├── views/         setup/index.vue (first-run), guide/index.vue, main/{index,Sidebar,ChatPanel,MessageBubble,NewChatDialog,QuestionPanel}.vue, settings/index.vue, status/index.vue
 ├── components/    TitleBar.vue, MarkdownContent.vue
 ├── composables/   useMessageWindow (paged window), useAutoScroll (scroll policy)
-├── stores/        ui / workspace / conversation / chat / agentView / connection
+├── stores/        ui / workspace / conversation / chat / agentView / assetImages / connection / messageVisibility
 └── apis/          base + workspace / conversation / chat / agent / model / config + connection + dialog
 ```
 
@@ -172,49 +185,62 @@ packages/render/src/
 
 ## 8. Where data lives
 
-Everything on disk is **data**, and data belongs to the host (its `AI_ZEN_DIR`); the only exception is Desktop's own connection-settings file (the `desktop/` line below):
+All **data** on disk belongs to the host (under its `AI_ZEN_DIR`); the only exception is Desktop's own connection-settings file (the `desktop/` line below):
 
 ```
 <AI_ZEN_DIR>/
-├── config.json                  global config (endpoints / models / default model & Agent)
-├── agents/                      entry Agent definitions
+├── config.json                  global config (endpoints / models / default model & agent / language)
+├── mcp.json                     MCP server list (scopes and OAuth masks included)
+├── mcp-oauth/                   OAuth tokens (the host owns them; clients only see masks)
+├── agents/                      entry agent definitions (one file each)
 ├── sub-agents/                  sub-agent definitions
-├── workspaces/<workspaceId>/    workspace.json + sessions/<id>.json (with .meta.json listing)
-├── desktop/                     written by Desktop itself (this one file only)
+├── tools/ · skills/             capability directories (per-workspace cwd and per data root)
+├── ai-zen.db                    SQLite: workspaces / conversations / messages / assets / notices / questions / credentials (with -wal / -shm)
+├── assets/                      asset bytes (named by digest; the database only holds relative paths)
+├── logs/                        host logs
+├── desktop/
 │   └── connection.json          connection settings (local / remote + address + credential, 0600; **deleting it returns to the first-run screen**)
 └── run/                         written by the host: how to reach it
-    ├── host.json              service discovery: which port the resident host is on
+    ├── host.json                service discovery: the host's pid / address / port / version
     └── token                    credential (read or created by the host, 0600)
 ```
 
-Desktop reads two things from disk here: `host.json` (the **default** source of the address) and `token` (the credential), both under `<AI_ZEN_DIR>/run/`; in remote mode the address comes from the connection settings and `host.json` is not read at all. It **writes exactly one place**: `<AI_ZEN_DIR>/desktop/connection.json` (connection settings, see the chicken-and-egg note in section 3; deleting that file returns to the default "local"). Session lifetime is reclaimed by the host on an idle grace period (`DEFAULT_SESSION_IDLE_TIMEOUT_MS`); `session.close` releases a session immediately because the user stopped looking at it. Neither deletes the archive.
+Desktop reads exactly two things under `<AI_ZEN_DIR>/run/`: `host.json` (**the default** source of the address) and `token` (the credential); in remote mode the address comes from the connection settings and `host.json` is not read at all. It **writes exactly one place**: `<AI_ZEN_DIR>/desktop/connection.json` (connection settings, see the chicken-and-egg note in section 3; deleting that file returns to first-run — not "returns to local", which would read a deletion as a choice).
 
 "Which host" and "which key" live in that file as `{ mode, hostUrl?, hostToken? }`: in `local` both values are `undefined` for the connection layer (= the old path), in `remote` they are what the user typed. The only way to change it is the settings-page section (section 4) — editing the file by hand is no longer needed.
 
+The host retires itself on the "no connections, no turn running" criterion (PRD L4), and retiring deletes no archive — the next launch finds everything again.
+
 ## 9. Model resolution has exactly one implementation
 
-The three-level resolution ("conversation override > Agent definition > global default") lives on the host (SDK's `resolveModel`). Desktop neither caches nor recomputes it; it reads two fields:
+The three-level resolution ("conversation override > agent definition > global default") lives in the host (the SDK's `resolveModel`). Desktop neither caches nor recomputes it; it only reads the `ModelState` the host hands over (`wire/states.ts`):
 
-- `SessionListEntry.modelId` — whether this conversation **has** its own override;
-- `SessionListEntry.effectiveModelId` — which model it is **actually using** (omitted when it cannot be resolved).
+```ts
+{ modelId: string; name: string; vision: boolean; source: "conversation" | "agent" | "default" }
+```
 
-The sidebar's model dropdown reads the latter; recomputing "override + definition + default" on the client would be a second copy of the precedence rule, and the two copies eventually diverge at some edge.
+Each row of `conversation.list` carries `modelId` (that is what the sidebar dropdown shows), while `conversation.get` / `conversation.state` carry the whole `ModelState` (including `source` — after a model switch the UI has to say whether it now follows the agent or is this conversation's own choice). Re-deriving "override + definition + default" on the client would write the precedence rules a second time, and the two copies inevitably diverge at some edge.
 
 ## 10. Test shape
 
-The `host/` layer is verified directly by vitest: `packages/main/src/host/test-harness.ts` starts a **real daemon** (real port, real frames, real `SessionManager`) plus a **fake Agent** (the test decides when which delta is pushed). What is under test is the protocol mapping itself, so the Agent's streaming loop should be fake while the socket and discovery file must be real. Tests assert on the `ChatStreamEvent` sequence the facade pushes — that channel is the only acceptance surface the translation layer has.
+Each of the two layers has its own acceptance method, and neither opens a window:
 
-The `connection/` layer takes another road: every dependency of `ConnectionController` is injected (layer factory, settings I/O, log sink), so a test can pin the order "write to disk → dispose → build → start" with a **fake layer plus counters** (when the write fails, `dispose` must not be called even once) without starting a real daemon or opening a window; the `settings.ts` tests do touch a real disk (a temporary `AI_ZEN_DIR`) and verify `0600`, atomic writes and "never throws on a bad file". Current size: `packages/main` 9 test files / 128 cases (including the state machine's push sequence across the three states, the backoff retries and `reconnect` discarding a pending timer), `packages/render` 3 files / 38 cases (including the connection store's "testing refetches nothing, saving refetches everything" and "query once, then subscribe").
+- **`host/`** uses a **fake connection plus counters**: `ContractConnection` is the injected narrow seam (`host/contract.ts`), so tests answer in contract shapes and push events at will, and read back the `ChatStreamEvent` sequence the facade emits — the only acceptance surface for the translation layer. What is under test is the "protocol → render shapes" mapping itself, so the agent and the socket should both be fakes.
+- **`connection/`** injects everything into `ConnectionController` (layer factory, settings I/O, log sink): a **fake layer plus counters** pins down the order "write to disk → `dispose` the old layer → build → `start`" (when the write fails, `dispose` must not be called even once), with no real host and no window; the `settings.ts` tests do touch a real disk (a temporary `AI_ZEN_DIR`) and verify `0600`, atomic writes and "never throws on a bad file".
+
+**Size** (`pnpm --filter @ai-zen/desktop-main test` / `… desktop-render test`): `packages/main` 10 files / 131 cases (128 passing + 3 skipped), `packages/render` 9 files / 81 cases.
+
+Both packages set **`isolate: false`** (reusing the module graph in one process, matching sdk / host / client in the `agents` repo and `cli`). The cost is carried by the tests themselves: no `vi.mock` (it registers stand-ins **process-wide** by module specifier, so they bleed into the next file once the module graph is shared); what needs replacing goes through `stubDeps()` / `resetDeps()` in `src/deps.ts`. This is not a matter of taste — it was measured here: with isolation off, the five files that used `vi.mock` bled into each other (green alone, red when two ran together).
 
 ## 11. Trade-offs
 
 | Trade-off | Rationale |
 |-----------|-----------|
-| Splitting the connection from "how to send a request" (`HostConnection` / `packages/main/src/host/call.ts`) | A client cached in an object dies permanently when the host restarts, and the only symptom is "nothing happens" |
-| The state machine lives in the package, not in main | The "how to assemble a turn" rules can exist only once across this repo and the CLI; two copies diverge at edge cases |
+| Splitting the connection from "how to send a request" (`HostConnection` / `packages/main/src/host/contract.ts`) | A client cached in an object dies permanently when the host restarts, and the only symptom is "nothing happens" |
+| The rule for folding streaming deltas lives in the library (core's `applyChunk`), not in main | The "how to assemble a turn" rules can exist only once across this repo and the CLI; two copies diverge at edge cases |
 | Wholesale event replacement (`message` / `agents`) | Consumers need no merge logic; incremental events spread that complexity across every consumer |
 | Unknown notice codes still get text | Version skew is normal; silently dropping them shows the user "nothing happened" |
-| The dictionary lives in main, not render | Text and "which event becomes which code" are the same concern, and all event translation already sits in main |
+| Copy lives in the host (`LocalizedText` carries code + params); main only re-renders it per connection language | Version skew is the normal case: "which event says what" follows the contract, and the client only swaps languages |
 
 ## 12. Packaging and distribution
 
