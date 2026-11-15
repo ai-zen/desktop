@@ -135,7 +135,7 @@ void connection.start()       ← 后台连，**不 await**
 | `chat` | `HostChatService` | `conversation.send` / `abort` / `message.list` / `question.list` / `question.answer` |
 | `config` | `HostConfigService` | `config.get` / `saveEndpoint` / `setDefaults` |
 
-**这张表就是桌面端的欠账清单**：63 个方法里桌面上只用到 21 个。搜索（`search.*`）、撤回（`conversation.revert`）、置顶（`conversation.pin`）、思考强度（`conversation.setThinking`）、临时对话（`conversation.transient`）、通知栏（`notice.*`）、`@` 补全（`completion.files`）、MCP 与端点编辑（`config.saveMcp` / `deleteMcp` / `getDiscovery` / `deleteEndpoint`）、助手与模型的增删改（`agent.*` / `model.*`）、交接（`handoff.*`）、`host.reload` / `upgrade` / `shutdown` / `capabilities` / `setLanguage` 都还是零调用点 —— 该还的账写在 `agents/packages/host/docs/PLAN.md` §6。
+**这张表就是桌面端的欠账清单**：63 个方法里桌面上只用到 21 个。搜索（`search.*`）、撤回（`conversation.revert`）、置顶（`conversation.pin`）、思考强度（`conversation.setThinking`）、临时对话（`conversation.transient`）、通知栏（`notice.*`）、`@` 补全（`completion.files`）、MCP 与端点编辑（`config.saveMcp` / `deleteMcp` / `getDiscovery` / `deleteEndpoint`）、助手与模型的增删改（`agent.*` / `model.*`）、交接（`handoff.*`）、`host.reload` / `upgrade` / `shutdown` / `capabilities` / `setLanguage` 都还是零调用点 —— 该还的账写在 `agents/PLAN.md` 的欠账清单里。
 
 方法名与事件名都是 `@ai-zen/agents-host` 的 `wire` 里的**字面量联合类型**（`MethodName` / `EventName`），不写字面量：改契约时这里编译不过，而不是运行期 500。
 
