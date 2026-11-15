@@ -196,8 +196,10 @@ export class ChatEventBridge {
    *
    * ## 那句提示只能由这里说
    *
-   * 宿主对排队不发事件（那条消息落库时只更新 `run.state.inboxPending` 这个数），于是「这句会晚
-   * 一步送出」没有别的来源。不说的话，界面看上去就是「点了发送、什么都没发生」。
+   * 宿主对排队不发专门的事件 —— 它在 `run.state` 里给的是条目数组 `run.inbox`（每条含
+   * `messageId` / `source` / `createdAt` / `preview` 一行摘要），排队条目落成消息时数组少一条、
+   * 同时推一次 `run.state`。于是「这句会晚一步送出」没有别的来源。不说的话，界面看上去就是
+   * 「点了发送、什么都没发生」。
    */
   echoQueuedSend(conversationId: string, userMessageId: string, content: string): void {
     this.push({

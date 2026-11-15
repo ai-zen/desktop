@@ -103,8 +103,8 @@ function wireConversationState(run: Partial<RunState> = {}): WireConversationSta
       conversationId: CONVERSATION,
       status: "idle",
       assistantMessageId: null,
-      // 空闲时恒为 0（没有在跑的一轮就没有队列）；要验排队的用例从 `run` 盖掉
-      inboxPending: 0,
+      // 空闲时是空数组（没有在跑的一轮就没有队列）；要验排队的用例从 `run` 盖掉
+      inbox: [],
       startedAt: null,
       settledAt: null,
       generation: null,

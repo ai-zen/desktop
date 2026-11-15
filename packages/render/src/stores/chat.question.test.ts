@@ -104,8 +104,8 @@ function idleState(conversationId: string, questions: QuestionView[] = []): Chat
       conversationId,
       status: "idle",
       assistantMessageId: null,
-      // 空闲时恒为 0：没有在跑的一轮，就没有谁的队列可排（PRD D3）
-      inboxPending: 0,
+      // 空闲时是空数组：没有在跑的一轮，就没有谁的队列可排（PRD D3）
+      inbox: [],
       startedAt: null,
       settledAt: null,
       generation: null,
