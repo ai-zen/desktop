@@ -53,7 +53,7 @@ cd packages/main && pnpm build
 
 ## Usage Flow (User Perspective)
 
-The first screen after launch is the **connection status screen** (the window comes up first, the connection after): it shows "connecting to <label>" (during a retry wait it adds "retry N, in about X seconds"); only once the connection is `ready` does the app fall through to the guide page or the main interface, depending on whether any workspace exists. When it cannot connect, that screen shows the error (including "still not connected after 3 retries") together with "retry" and "go to settings" — **the settings page is reachable while disconnected**: switch back to "local" or change the address / credential there, and a successful save-and-reconnect takes you to the main interface.
+The first screen after launch is the **connection status screen** (the window comes up first, the connection after): it shows "connecting to `<label>`" (during a retry wait it adds "retry N, in about X seconds"); only once the connection is `ready` does the app fall through to the guide page or the main interface, depending on whether any workspace exists. When it cannot connect, that screen shows the error (including "still not connected after 3 retries") together with "retry" and "go to settings" — **the settings page is reachable while disconnected**: switch back to "local" or change the address / credential there, and a successful save-and-reconnect takes you to the main interface.
 
 Once connected, on first launch you enter the **guide page** (when there is no workspace), create a workspace (name/directory are both optional; directory defaults to Desktop), then enter the main interface:
 
